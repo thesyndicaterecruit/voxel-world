@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#8fc9f2">
+<title>Voxel Island</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+
+<div id="ui">
+  <div id="cross"></div>
+  <div id="hotbar" data-act="none"></div>
+  <div id="joy"><div id="knob"></div></div>
+  <div id="toast"></div>
+  <div id="fs" class="btn" data-act="fs" role="button" aria-label="Fullscreen">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+  </div>
+  <div id="mode" class="btn break" data-act="mode" role="button"><span class="ic">⛏️</span><span class="lb">BREAK</span></div>
+  <div id="jump" class="btn" data-act="jump" role="button">JUMP</div>
+</div>
+
+<div id="start">
+  <div class="card">
+    <h1>VOXEL ISLAND</h1>
+    <p class="sub">A tiny block world for your pocket</p>
+    <div class="ctl">
+      <span class="k">LEFT SIDE</span><span>Drag to walk &middot; push far to sprint</span>
+      <span class="k">RIGHT SIDE</span><span>Drag to look &middot; tap to break / place</span>
+      <span class="k">JUMP</span><span>Jump (1-block steps auto-jump)</span>
+      <span class="k">⛏️ / 🧱</span><span>Switch Break &harr; Place mode</span>
+      <span class="k">TOP BAR</span><span>Pick a block to build with</span>
+    </div>
+    <button id="play" disabled>LOADING 3D ENGINE…</button>
+    <p id="note">Best in landscape &middot; goes fullscreen when you play</p>
+  </div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
