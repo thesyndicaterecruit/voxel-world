@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { AIR, B, T_DIRT, T_GRASS_SIDE } from './blocks';
 import { boxesGeometry } from './meshing';
-import { get } from './world';
+import { world } from './world';
 
 /* ===================== TARGET OUTLINE, GHOST, PARTICLES ===================== */
 export interface Effects {
@@ -65,7 +65,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
       p.v[1] -= 20 * dt;
       q.x += p.v[0] * dt; q.z += p.v[2] * dt;
       const ny = q.y + p.v[1] * dt;
-      if (p.v[1] < 0 && get(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z)) !== AIR) {
+      if (p.v[1] < 0 && world.getBlock(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z)) !== AIR) {
         q.y = Math.floor(ny - 0.08) + 1.08; p.v[1] *= -0.3; p.v[0] *= 0.6; p.v[2] *= 0.6;
       } else q.y = ny;
       p.m.scale.setScalar(Math.min(1, (p.life / p.max) * 1.6));

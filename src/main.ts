@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { W, D, EYE, HORIZON } from './config';
+import { EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { SEED } from './noise';
 import { createTextures } from './textures';
-import { vox, get, setBlock, onBlockChange, generateWorld } from './world';
+import { world, generateWorld, ISLAND_X, ISLAND_Z, ISLAND_LIFT } from './world';
 import { createChunkMesher } from './meshing';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
@@ -37,11 +37,12 @@ function boot(): void {
   camera.rotation.order = 'YXZ';
 
   const mesher = createChunkMesher(scene, materials);
-  onBlockChange((x, _y, z) => mesher.markDirty(x, z));
+  world.onChange = (x, _y, z) => mesher.markDirty(x, z);
   const env = createEnvironment(scene);
   const fx = createEffects(scene, textures);
 
-  spawn();
+  const CX = ISLAND_X + 16, CZ = ISLAND_Z + 16;   // island centre
+  spawn(CX, CZ);
   const interaction = createInteraction(fx);
   initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
 
@@ -78,8 +79,8 @@ function boot(): void {
       camera.rotation.set(player.pitch, player.yaw, 0);
     } else { // slow fly-around behind the title card
       orbit += dt * 0.12;
-      camera.position.set(W / 2 + Math.sin(orbit) * 30, 24, D / 2 + Math.cos(orbit) * 30);
-      camera.lookAt(W / 2, 9, D / 2);
+      camera.position.set(CX + Math.sin(orbit) * 30, ISLAND_LIFT + 24, CZ + Math.cos(orbit) * 30);
+      camera.lookAt(CX, ISLAND_LIFT + 9, CZ);
     }
     mesher.flush();
     interaction.updateTarget(playing);
@@ -99,10 +100,11 @@ function boot(): void {
 
   // small debug handle (handy for testing from the console)
   (window as unknown as { __voxel: unknown }).__voxel = {
-    P, V, get, setBlock, act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED,
+    P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world),
+    act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; },
-    count: () => vox.reduce((a, v) => a + (v ? 1 : 0), 0),
+    count: () => world.count(),
   };
 }
 

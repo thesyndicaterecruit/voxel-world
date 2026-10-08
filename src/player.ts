@@ -1,5 +1,5 @@
-import { W, D, H, PR, PH, EYE, GRAV, JUMP, WALK, RUN, REACH, EPS } from './config';
-import { solid, topY, raycast, type Hit } from './world';
+import { H, PR, PH, EYE, GRAV, JUMP, WALK, RUN, REACH, EPS } from './config';
+import { world, raycast, type Hit } from './world';
 
 /* ============================ PLAYER ============================ */
 /** Feet position (x, y, z). Mutated in place — never reassign. */
@@ -19,9 +19,9 @@ export interface Controls {
   jump: boolean;
 }
 
-/** Place the player on the ground at the centre of the island. Call after generateWorld(). */
-export function spawn(): void {
-  P[0] = W / 2 + 0.5; P[1] = topY(W / 2, D / 2) + 1; P[2] = D / 2 + 0.5;
+/** Stand the player on top of column (x, z), centred in the block. Its chunk must be loaded. */
+export function spawn(x: number, z: number): void {
+  P[0] = x + 0.5; P[1] = world.topY(x, z) + 1; P[2] = z + 0.5;
 }
 
 /** Buffer a jump so a tap slightly before landing still jumps. */
@@ -31,7 +31,7 @@ export function collides(px: number, py: number, pz: number): boolean {
   const x0 = Math.floor(px - PR + EPS), x1 = Math.floor(px + PR - EPS);
   const y0 = Math.floor(py + EPS), y1 = Math.floor(py + PH - EPS);
   const z0 = Math.floor(pz - PR + EPS), z1 = Math.floor(pz + PR - EPS);
-  for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (solid(x, y, z)) return true;
+  for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) if (world.isSolid(x, y, z)) return true;
   return false;
 }
 // move along one axis, then snap flush against whatever we hit
@@ -43,7 +43,7 @@ function moveAxis(a: number, d: number): boolean {
   const z0 = Math.floor(P[2] - PR + EPS), z1 = Math.floor(P[2] + PR - EPS);
   let lim = d > 0 ? Infinity : -Infinity, hit = false;
   for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
-    if (!solid(x, y, z)) continue;
+    if (!world.isSolid(x, y, z)) continue;
     hit = true;
     const c = a === 0 ? x : a === 1 ? y : z;
     lim = d > 0 ? Math.min(lim, c) : Math.max(lim, c);

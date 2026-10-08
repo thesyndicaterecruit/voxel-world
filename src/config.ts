@@ -1,6 +1,11 @@
-// World size & chunk size (blocks)
-export const W = 32, D = 32, H = 40, CS = 16, NCX = W / CS, NCZ = D / CS;
-export const SEA = 6.88;                                // ocean surface height
+// Chunks are CS×CS columns, full world height. Chunk index math uses shifts, so CS must be 1 << CB.
+export const CB = 4, CS = 1 << CB, H = 64;
+// World size in chunks and in blocks: 32×32 chunks = 512×512 blocks
+export const NCX = 32, NCZ = 32, W = NCX * CS, D = NCZ * CS;
+// Blocks below y = SEA_LEVEL are under water. The water surface sits just below the top of a
+// sea-level beach (y = SEA_LEVEL) so the two never z-fight.
+export const SEA_LEVEL = 20;
+export const WATER_Y = SEA_LEVEL - 0.12;
 
 // Player half-width, height, eye height
 export const PR = 0.3, PH = 1.8, EYE = 1.62;

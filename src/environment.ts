@@ -1,7 +1,11 @@
 import * as THREE from 'three';
-import { W, D, SEA, HORIZON, ZENITH } from './config';
+import { WATER_Y, HORIZON, ZENITH } from './config';
 import { rand } from './noise';
 import { boxesGeometry } from './meshing';
+import { ISLAND_X, ISLAND_Z, ISLAND_LIFT } from './world';
+
+// the island's footprint: ocean and clouds are laid out around it
+const X0 = ISLAND_X, Z0 = ISLAND_Z, X1 = ISLAND_X + 32, Z1 = ISLAND_Z + 32;
 
 /* ======================= SKY, SUN, OCEAN, CLOUDS ======================= */
 export interface Environment {
@@ -27,11 +31,11 @@ export function createEnvironment(scene: THREE.Scene): Environment {
   const sun = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshBasicMaterial({ color: 0xfff6c8, fog: false }));
   scene.add(sun);
   {
-    // ocean: four big quads around the island at sea level
+    // ocean: four big quads around the island at the water surface
     const OC = 300, pos: number[] = [], ind: number[] = [];
-    for (const [x0, z0, x1, z1] of [[-OC, -OC, W + OC, 0], [-OC, D, W + OC, D + OC], [-OC, 0, 0, D], [W, 0, W + OC, D]]) {
+    for (const [x0, z0, x1, z1] of [[X0 - OC, Z0 - OC, X1 + OC, Z0], [X0 - OC, Z1, X1 + OC, Z1 + OC], [X0 - OC, Z0, X0, Z1], [X1, Z0, X1 + OC, Z1]]) {
       const b = pos.length / 3;
-      pos.push(x0, SEA, z1, x1, SEA, z1, x1, SEA, z0, x0, SEA, z0);
+      pos.push(x0, WATER_Y, z1, x1, WATER_Y, z1, x1, WATER_Y, z0, x0, WATER_Y, z0);
       ind.push(b, b + 1, b + 2, b, b + 2, b + 3);
     }
     const g = new THREE.BufferGeometry();
@@ -48,14 +52,14 @@ export function createEnvironment(scene: THREE.Scene): Environment {
       boxes.push([ox, 0, oz, ox + w, 1.2, oz + d]);
     }
     const c = new THREE.Mesh(boxesGeometry(boxes), cloudMat);
-    c.position.set(-80 + rand() * 190, 44 + rand() * 7, -70 + rand() * 170);
+    c.position.set(X0 - 80 + rand() * 190, ISLAND_LIFT + 44 + rand() * 7, Z0 - 70 + rand() * 170);
     scene.add(c);
     clouds.push(c);
   }
 
   return {
     update(dt, camera) {
-      for (const c of clouds) { c.position.x += dt * 0.9; if (c.position.x > W + 100) c.position.x -= 220; }
+      for (const c of clouds) { c.position.x += dt * 0.9; if (c.position.x > X1 + 100) c.position.x -= 220; }
       sky.position.copy(camera.position);
       sun.position.copy(camera.position).addScaledVector(SUN_DIR, 210);
       sun.lookAt(camera.position);

@@ -1,8 +1,9 @@
 # Voxel Island
 
 A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and Vite.
-A 32×32×40 island is generated from a seed; you walk around with an on-screen joystick, look by
-dragging, and break/place 8 block types. All textures are painted procedurally at startup — there
+The world is 512×512×64 blocks, stored as 32×32 chunks of 16×16 columns (full height). For now only
+the four centre chunks are loaded, holding the original 32×32 island generated from a seed; you walk
+around with an on-screen joystick, look by dragging, and break/place 8 block types. All textures are painted procedurally at startup — there
 are no image assets and no runtime network requests.
 
 Every push is built and deployed to GitHub Pages by `.github/workflows/deploy.yml`:
@@ -27,12 +28,13 @@ Space jump, mouse drag on the right half to look, click/F to act, Q/E switch mod
 index.html           Markup for the HUD and start screen; loads src/style.css and src/main.ts
 src/
   main.ts            Boot: renderer, scene, camera, wiring of all modules, resize, frame loop, window.__voxel
-  config.ts          World size, chunk size, sea level, player dimensions & physics constants, sky colours
+  config.ts          Chunk size, world size (chunks/blocks), height, sea level, player & physics constants, sky colours
   blocks.ts          Block ids, texture tile ids, block definitions (B), HOTBAR, rotatable tiles
   noise.ts           SEED (from ?seed=), hash2/hash3, mulberry PRNG, shared world `rand`, value noise, fbm
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, materials
-  world.ts           Voxel storage (vox, I, get, solid, topY), setBlock + change listener, generateWorld, raycast
-  meshing.ts         Per-chunk mesh building with face culling, baked face light, ambient occlusion; boxesGeometry
+  world.ts           Chunk storage + World class (getBlock/setBlock/isSolid/topY in world coords), island generator, raycast
+  mesher.ts          Pure chunk mesher: padded chunk data → typed arrays (face culling, baked face light, AO)
+  meshing.ts         paddedCopy, mesher output → BufferGeometry, per-chunk meshes + dirty rebuilds; boxesGeometry
   environment.ts     Sky dome, sun, ocean, drifting clouds
   effects.ts         Target outline, placement ghost, block-break particles
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
@@ -61,11 +63,19 @@ Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update
   Keep it unless you have a reason.
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`ChunkMesher`, `Environment`,
-  `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off.
-  `P` and `V` are arrays mutated in place, so never reassign them.
-- **Coordinates:** `vox[I(x, y, z)]`, x fastest, then z, then y. Block (x, y, z) occupies
-  [x, x+1)×[y, y+1)×[z, z+1). Player `P` is the feet position; the eye is at `P[1] + EYE`.
-  `yaw = 0` looks toward −Z.
+  `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
+  (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
+  place, so never reassign them.
+- **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
+  chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
+  player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
+  `world`, so they work across chunk borders.
+- **Coordinates:** world (x, y, z) lives in chunk (x >> CB, z >> CB) at `data[CI(x & 15, y, z & 15)]`
+  — x fastest, then z, then y. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is
+  the feet position; the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
+- **Meshing is pure.** `meshChunk` in `mesher.ts` only sees a padded copy of the chunk (one block
+  of each neighbour, see `paddedCopy`) and must not import three.js or touch `world`, so it can
+  move off the main thread. Per-block hashes use world coordinates, never chunk-local ones.
 - **Mobile first.** Every feature must work on a touchscreen with no keyboard. Keep the gesture
   blocking in `input.ts` (no scroll, zoom, pull-to-refresh or long-press menus), respect
   `env(safe-area-inset-*)` in CSS, and keep the frame budget in mind (adaptive pixel ratio in `main.ts`).
