@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CS, NCX, EYE, HORIZON } from './config';
+import { CB, CS, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
 import { createTextures } from './textures';
@@ -12,9 +12,10 @@ import { createEffects } from './effects';
 import { P, V, player, spawn, update, collides } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initMenu, initStartScreen, showError } from './ui';
+import { els, hud, initHotbar, initMenu, initStartScreen, selectSlot, setMode, setNote, showError, showWorlds, toast } from './ui';
+import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
-/** Play is enabled once everything within this many blocks of the spawn point is meshed. */
+/** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
 const RD_KEY = 'voxel-island.renderDistance';
 
@@ -26,7 +27,28 @@ function savedRenderDistance(): number {
   return RENDER_DISTANCE.def;
 }
 
-function boot(): void {
+/** Reload the page into world `id` (or the most recently played one). Switching worlds is a reload. */
+function reopen(id: string | null): void {
+  location.replace(location.pathname + (id ? '?world=' + encodeURIComponent(id) : ''));
+}
+
+/** Which world to load: ?seed=N (a world for that seed), ?world=id, the most recent, or a new one. */
+async function pickWorld(): Promise<{ record: WorldRecord; list: WorldRecord[] }> {
+  const params = new URLSearchParams(location.search), forced = urlSeed(), wanted = params.get('world');
+  let list = await listWorlds(), record: WorldRecord | undefined;
+  if (forced !== null) record = list.find((w) => w.seed === forced && w.name === `Seed ${forced}`);
+  else record = list.find((w) => w.id === wanted) ?? list[0];
+  if (!record) {
+    record = await createWorld(forced !== null ? `Seed ${forced}` : nextName(list), forced ?? randomSeed());
+    list = [record, ...list];
+  }
+  if (wanted) history.replaceState(null, '', location.pathname);   // a refresh reopens the most recent world
+  return { record, list };
+}
+const nextName = (list: WorldRecord[]) =>
+  `Island ${list.reduce((n, w) => Math.max(n, +(/^Island (\d+)$/.exec(w.name)?.[1] ?? 0)), 0) + 1}`;
+
+async function boot(): Promise<void> {
   let renderer: THREE.WebGLRenderer;
   try {
     renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -39,9 +61,20 @@ function boot(): void {
     return;
   }
 
-  const seed = urlSeed() ?? randomSeed();
+  /* ============================ SAVE FILES ============================ */
+  if (!(await openSaves())) setNote('Saving is not available in this browser (private mode?), so this island will not be kept.');
+  const { record, list } = await pickWorld();
+  const seed = record.seed;
   world.seed = seed;
   const [sx, sz] = findSpawn(seed);
+  // where the player starts: the saved position, or the spawn point of a new world
+  const home = record.player ? { x: record.player.x, z: record.player.z } : { x: sx + 0.5, z: sz + 0.5 };
+  showWorlds(list.map((w) => ({ id: w.id, name: w.name, seed: w.seed, lastPlayed: w.lastPlayed, played: !!w.player })), record.id, {
+    open: (id) => reopen(id),
+    remove: (id) => void deleteWorld(id).then(() => reopen(id === record.id ? null : record.id)),
+    create: () => void createWorld(nextName(list), randomSeed()).then((w) => reopen(w.id)),
+  });
+
   const { canvases, textures, chunkMaterial } = createTextures(renderer);
 
   /* ============================ RENDERER ============================ */
@@ -53,20 +86,14 @@ function boot(): void {
   const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 320);
   camera.rotation.order = 'YXZ';
 
+  let playing = false, ready = false;
+  const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
+    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode } : null));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
-  // edited chunks that stream out are kept in memory, so edits survive walking away and back
-  const kept = new Map<number, Uint8Array>();
-  const streamer = createStreamer(scene, chunkMaterial, pool, {
-    load(cx, cz) {
-      const d = kept.get(cx + cz * NCX);
-      if (!d) return null;
-      kept.delete(cx + cz * NCX);
-      return Promise.resolve(d);
-    },
-    unload(c) { if (c.edited) kept.set(c.cx + c.cz * NCX, c.data); },
-  });
-  world.onChange = (x, _y, z) => streamer.markDirty(x, z);
-  const env = createEnvironment(scene, renderer, seed, sx, sz);
+  // edited chunks come from the save; everything else is generated
+  const streamer = createStreamer(scene, chunkMaterial, pool, save);
+  world.onChange = (x, _y, z) => { streamer.markDirty(x, z); save.touch(x >> CB, z >> CB); };
+  const env = createEnvironment(scene, renderer, seed, home.x, home.z);
   const fx = createEffects(scene, textures);
 
   // view distance: how far chunks are streamed, and where the fog ends
@@ -81,8 +108,17 @@ function boot(): void {
   const interaction = createInteraction(fx);
   initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
 
-  let playing = false, ready = false;
-  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act });
+  // autosave: within 5 s of a change, and right away when the app is hidden, closed or exited
+  let quitting = false;
+  const quit = () => {
+    if (quitting) return;
+    quitting = true;
+    toast('Saving…', 5000);
+    void save.save().finally(() => reopen(record.id));
+  };
+  document.addEventListener('visibilitychange', () => { if (document.hidden && playing) void save.save(); });
+  window.addEventListener('pagehide', () => { if (playing) void save.save(); });
+  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit });
 
   /* ============================ RESIZE ============================ */
   function resize(): void {
@@ -98,16 +134,17 @@ function boot(): void {
   window.addEventListener('orientationchange', () => setTimeout(resize, 150));
   resize();
 
-  // the title fly-around circles the spawn point, high enough to clear the hills on its path
-  let orbitY = columnHeight(seed, sx, sz) + 12;
+  // the title fly-around circles the start point, high enough to clear the hills on its path
+  const hx = Math.floor(home.x), hz = Math.floor(home.z);
+  let orbitY = columnHeight(seed, hx, hz) + 12;
   for (let a = 0; a < 64; a++) {
-    const x = Math.round(sx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(sz + Math.cos(a / 64 * Math.PI * 2) * 30);
+    const x = Math.round(hx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(hz + Math.cos(a / 64 * Math.PI * 2) * 30);
     orbitY = Math.max(orbitY, columnHeight(seed, x, z) + 6);
   }
-  els.play.textContent = 'GENERATING ISLANDS…';
+  els.play.textContent = record.player ? 'LOADING ISLAND…' : 'GENERATING ISLANDS…';
 
   /* ============================ LOOP ============================ */
-  const look = new THREE.Vector3();
+  const look = new THREE.Vector3(), lastState = [NaN, NaN, NaN, NaN, NaN];
   let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0;
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -119,19 +156,28 @@ function boot(): void {
       if (streamer.areaLoaded(P[0], P[2])) update(dt, readControls());
       camera.position.set(P[0], P[1] + EYE, P[2]);
       camera.rotation.set(player.pitch, player.yaw, 0);
+      // moving or looking around counts as a change worth saving
+      const st = [P[0], P[1], P[2], player.yaw, player.pitch];
+      if (st.some((v, i) => Math.abs(v - lastState[i]) > 0.01)) { st.forEach((v, i) => (lastState[i] = v)); save.requestSave(); }
     } else { // slow fly-around behind the title card
       orbit += dt * 0.12;
-      camera.position.set(sx + Math.sin(orbit) * 30, orbitY, sz + Math.cos(orbit) * 30);
-      camera.lookAt(sx, orbitY - 14, sz);
+      camera.position.set(hx + Math.sin(orbit) * 30, orbitY, hz + Math.cos(orbit) * 30);
+      camera.lookAt(hx, orbitY - 14, hz);
     }
     camera.getWorldDirection(look);
     const t0 = performance.now();
-    streamer.update(playing ? P[0] : sx + 0.5, playing ? P[2] : sz + 0.5, look.x, look.z);
+    streamer.update(playing ? P[0] : home.x, playing ? P[2] : home.z, look.x, look.z);
     streamMs = Math.max(streamMs * 0.98, performance.now() - t0);
-    if (!ready && streamer.isReady(sx + 0.5, sz + 0.5, READY_RADIUS)) {
+    if (!ready && streamer.isReady(home.x, home.z, READY_RADIUS)) {
       ready = true;
-      spawn(sx, sz);
-      initStartScreen(() => { playing = true; });
+      const ps = record.player;
+      if (ps) {
+        P[0] = ps.x; P[1] = ps.y; P[2] = ps.z;
+        player.yaw = ps.yaw; player.pitch = ps.pitch;
+      } else spawn(sx, sz);
+      selectSlot(record.slot);
+      setMode(record.mode);
+      initStartScreen(() => { playing = true; save.requestSave(); });
     }
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
@@ -157,11 +203,8 @@ function boot(): void {
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
+    worldId: record.id, save: () => save.save(),
   };
 }
 
-try {
-  boot();
-} catch (err) {
-  showError('SOMETHING WENT WRONG', String((err as Error)?.message || err));
-}
+boot().catch((err) => showError('SOMETHING WENT WRONG', String((err as Error)?.message || err)));

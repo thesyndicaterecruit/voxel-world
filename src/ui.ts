@@ -18,6 +18,8 @@ export const els = {
   fs: $('fs'),
   hotbar: $('hotbar'),
   rd: $('rd'),
+  worlds: $('worlds'),
+  newWorld: $('newWorld') as HTMLButtonElement,
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -111,13 +113,59 @@ export function showError(button: string, note: string): void {
   els.note.textContent = note;
 }
 
+/** Note under the play button (e.g. when saving is unavailable). */
+export function setNote(text: string): void { els.note.textContent = text; }
+
+export interface WorldEntry { id: string; name: string; seed: number; lastPlayed: number; played: boolean }
+export interface WorldActions { open(id: string): void; remove(id: string): void; create(): void }
+
+const ago = (t: number) => {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  return d < 30 ? `${d} day${d > 1 ? 's' : ''} ago` : new Date(t).toLocaleDateString();
+};
+
+/**
+ * List the saved worlds on the start card; `current` is the one loaded behind it. Tapping another
+ * world opens it, ✕ asks for a second tap before deleting.
+ */
+export function showWorlds(list: WorldEntry[], current: string, act: WorldActions): void {
+  els.worlds.textContent = '';
+  for (const w of list) {
+    const row = document.createElement('div'), text = document.createElement('div');
+    const name = document.createElement('span'), meta = document.createElement('span'), del = document.createElement('button');
+    row.className = 'wrow' + (w.id === current ? ' sel' : '');
+    text.className = 'wtext';
+    name.className = 'wname'; name.textContent = w.name;
+    meta.className = 'wmeta'; meta.textContent = `${w.played ? ago(w.lastPlayed) : 'new'} · seed ${w.seed}`;
+    del.className = 'wdel'; del.textContent = '✕'; del.setAttribute('aria-label', 'Delete ' + w.name);
+    text.append(name, meta);
+    row.append(text, del);
+    row.addEventListener('click', () => { if (w.id !== current) act.open(w.id); });
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'DELETE?'; return; }
+      act.remove(w.id);
+    });
+    els.worlds.appendChild(row);
+    if (w.id === current) requestAnimationFrame(() => row.scrollIntoView({ block: 'nearest' }));
+  }
+  els.newWorld.hidden = false;
+  els.newWorld.onclick = () => act.create();
+}
+
 /** Enable the play button; `onStart` runs once, on the first tap of the start screen. */
 export function initStartScreen(onStart: () => void): void {
   let started = false;
   if (!canFS) els.fs.style.display = 'none';
   els.play.disabled = false;
   els.play.textContent = 'TAP TO PLAY';
-  els.start.addEventListener('click', () => {
+  els.start.addEventListener('click', (e) => {
+    if ((e.target as Element).closest('[data-ui]')) return;     // world list, new island
     if (started) return;
     started = true;
     onStart();

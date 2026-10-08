@@ -33,9 +33,11 @@ export interface InputOptions {
   canvas: HTMLCanvasElement;
   isPlaying: () => boolean;
   act: () => void;
+  /** Menu → Save & exit */
+  quit: () => void;
 }
 
-export function initInput({ canvas, isPlaying, act }: InputOptions): void {
+export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void {
   const { joy: joyEl, knob } = els;
 
   function down(id: PointerId, x: number, y: number, target: EventTarget | null, ts: number): void {
@@ -50,6 +52,7 @@ export function initInput({ canvas, isPlaying, act }: InputOptions): void {
       else if (a === 'menu') showMenu(true);
       else if (a === 'resume') showMenu(false);
       else if (a === 'rd-' || a === 'rd+') stepRenderDistance(a === 'rd+' ? 1 : -1);
+      else if (a === 'quit') quit();
       return;
     }
     if (x < window.innerWidth * 0.5) {
@@ -119,7 +122,10 @@ export function initInput({ canvas, isPlaying, act }: InputOptions): void {
     for (const t of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) el.addEventListener(t, stop, { passive: false });
     el.addEventListener('contextmenu', stop);
   }
-  document.addEventListener('touchmove', stop, { passive: false });
+  // (scrollable lists on the start card, [data-scroll], may still scroll)
+  document.addEventListener('touchmove', (e) => {
+    if (!(e.target as Element).closest?.('[data-scroll]')) stop(e);
+  }, { passive: false });
   document.addEventListener('gesturestart', stop, { passive: false });
   document.addEventListener('dblclick', stop, { passive: false });
   document.addEventListener('contextmenu', stop);

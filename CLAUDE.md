@@ -4,9 +4,10 @@ A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js
 The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of 16×16
 columns (full height). Chunks stream in and out around the player; generation and meshing run in
 Web Workers, and each chunk draws in one call. You walk around with an on-screen joystick, look by
-dragging, and break/place 8 block types. Mid-range Android phones in Chrome are the target. All
-textures are painted procedurally at startup — there are no image assets and no runtime network
-requests. WebGL 2 is required (texture arrays).
+dragging, and break/place 8 block types. Worlds are save files in IndexedDB: edited chunks plus the
+player state, picked from a list on the start card. Mid-range Android phones in Chrome are the
+target. All textures are painted procedurally at startup — there are no image assets and no runtime
+network requests. WebGL 2 is required (texture arrays).
 
 Every push is built and deployed to GitHub Pages by `.github/workflows/deploy.yml`:
 https://thesyndicaterecruit.github.io/voxel-world/
@@ -29,7 +30,8 @@ Space jump, mouse drag on the right half to look, click/F to act, Q/E switch mod
 ```
 index.html           Markup for the HUD and start screen; loads src/style.css and src/main.ts
 src/
-  main.ts            Boot: renderer, scene, camera, wiring of all modules, view distance, resize, frame loop, window.__voxel
+  main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
+                     resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sea level, player & physics constants, sky colours
   blocks.ts          Block ids, texture tile ids, block definitions (B), HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
@@ -40,6 +42,9 @@ src/
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
   streaming.ts       Chunk streaming: load/mesh/unload regions, job priorities, upload budget, edit re-meshes
   world.ts           Chunk storage + World class (getBlock/setBlock/isSolid/topY in world coords, seed), raycast
+  saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
+  db.ts              Tiny promise wrapper over IndexedDB
+  rle.ts             Run-length encoding of chunk data (varint run lengths)
   mesher.ts          Pure chunk mesher: padded chunk data → typed arrays (face culling, baked face light, AO, tile layer)
   meshing.ts         paddedCopy (chunk + 1-block border), mesher output → BufferGeometry; boxesGeometry
   environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
@@ -47,7 +52,8 @@ src/
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
   interact.ts        Break/place logic (act) and target highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons, mouse + keyboard fallback, gesture blocking
-  ui.ts              HUD DOM: toast, mode button, hotbar, fullscreen, start screen, error display
+  ui.ts              HUD DOM: toast, mode button, hotbar, menu (view distance, save & exit), fullscreen,
+                     start screen + world list, error display
   style.css          All styles
 .github/workflows/deploy.yml   Build + deploy to GitHub Pages on every push
 ```
@@ -79,8 +85,8 @@ borders) ahead of everything else.
   blue (fog, clear colour, `body.under` CSS tint) when the camera is below it. The player walks on
   the seabed as if it were dry. Proper water blocks (and swimming) come in a later milestone.
 - **Module style:** plain functions and module-level state. Modules that need the scene or
-  renderer expose a `createX(deps)` factory returning a small interface (`ChunkMesher`, `Environment`,
-  `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
+  renderer expose a `createX(deps)` factory returning a small interface (`Streamer`, `WorkerPool`,
+  `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
   (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
   place, so never reassign them.
 - **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
@@ -105,8 +111,19 @@ borders) ahead of everything else.
   name for `DataArrayTexture`), the tile is a per-vertex `layer` attribute, and `chunkMaterial` is a
   `MeshBasicMaterial` patched in `onBeforeCompile` to sample the array. Vertex data is Uint8
   (positions relative to the chunk, normalized colours). Dispose geometries when meshes go away.
-- **Edited chunks** (`chunk.edited`) are kept in memory when they stream out, and come back from
-  there instead of being regenerated.
+- **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
+  world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar
+  slot, break/place mode); store `chunks` holds only *edited* chunks, run-length encoded, under
+  `${worldId}:${cx},${cz}`. Everything else regenerates from the seed — so changing `gen.ts`
+  changes the unedited terrain of existing saves; bump `SAVE_VERSION` (and migrate in `openSaves`)
+  when the stored format changes. The save is the streamer's chunk source: a loaded chunk reads its
+  saved data instead of being generated, and an edited chunk that streams out keeps an RLE snapshot
+  in memory until it is written. Autosave runs within 5 s of the first unsaved change (edits, or the
+  player moving/looking), and immediately on `visibilitychange → hidden`, `pagehide` and the menu's
+  Save & exit. `navigator.storage.persist()` is requested once. Without IndexedDB (some private
+  modes) the game still runs and keeps edits in memory for the session.
+- **Switching worlds reloads the page** (`?world=<id>`, removed from the URL right away). The start
+  card lists worlds by last played; `?seed=123` opens (or creates) the world "Seed 123".
 - **Mobile first.** Every feature must work on a touchscreen with no keyboard. Keep the gesture
   blocking in `input.ts` (no scroll, zoom, pull-to-refresh or long-press menus), respect
   `env(safe-area-inset-*)` in CSS, and keep the frame budget in mind (adaptive pixel ratio in `main.ts`).
@@ -118,8 +135,8 @@ borders) ahead of everything else.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
   `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
   (non-air blocks in loaded chunks), `stream()` (loaded/meshed/visible counts, draw calls),
-  `chunk(cx, cz)` (one chunk's streaming state) and `setRenderDistance(r)`. Keep it working.
-  Headless tests can use it. `?seed=123` in the URL fixes the seed.
+  `chunk(cx, cz)` (one chunk's streaming state), `setRenderDistance(r)`, `worldId` and `save()`.
+  Keep it working. Headless tests can use it; `?seed=123` in the URL gives a fixed world.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
 
@@ -127,10 +144,11 @@ borders) ahead of everything else.
 
 Ideas, roughly in priority order. Nothing here is committed to.
 
-1. **Save/load:** persist edits (diff against the seeded world) and the player position in
-   `localStorage`, plus a "new island" button on the start card.
-2. **Automated checks:** a Playwright smoke test driving `window.__voxel` (fixed `?seed=`), run in CI
-   before deploying.
+1. **Automated checks:** unit tests for the pure modules (generation determinism across chunk order,
+   trees across borders, RLE round trip) and a Playwright smoke test driving `window.__voxel` (fixed
+   `?seed=`: stream, edit, save, reload), run in CI before deploying.
+2. **Saves:** rename worlds, export/import a world as a file, guard against two tabs writing the same
+   world.
 3. **PWA:** web app manifest + service worker for home-screen install and offline play.
 4. **Water:** real water blocks below `SEA_LEVEL` (replacing the single surface), with swimming physics.
 5. **Faster meshing:** greedy meshing (fewer vertices), smarter job cancellation when the player

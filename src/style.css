@@ -54,7 +54,7 @@ body.playing #ui{display:block}
   padding:16px;background:rgba(8,18,34,.55);pointer-events:auto;touch-action:none}
 body.menu #menu{display:flex}
 body.menu #cross,body.menu #joy{display:none}
-#menu .card{max-width:340px}
+#menu .card{max-width:340px;background:rgba(14,24,38,.95)}
 h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
 .setting{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:15px;color:#dce8f4}
 .stepper{display:flex;align-items:center;gap:10px}
@@ -65,12 +65,13 @@ h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
 .sbtn.down,.mbtn.down{transform:scale(.92);background:rgba(255,255,255,.28)}
 .hint{margin:8px 0 0;font-size:11.5px;color:#8ea6bd;text-align:left}
 .mbtn{height:48px;margin-top:16px;background:#4fae3f;letter-spacing:.12em;font-size:16px;box-shadow:inset 0 -4px 0 rgba(0,0,0,.25)}
+.mbtn.sec{margin-top:8px;height:42px;font-size:14px}
 
 /* ---------- start screen ---------- */
 #start{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;display:flex;align-items:center;justify-content:center;padding:16px;
   background:radial-gradient(ellipse at center,rgba(8,22,40,.2),rgba(8,18,34,.7));transition:opacity .35s}
 #start.hide{opacity:0;pointer-events:none}
-.card{width:100%;max-width:400px;padding:22px 20px 18px;border-radius:18px;text-align:center;
+.card{width:100%;max-width:400px;max-height:100%;overflow-y:auto;touch-action:pan-y;padding:22px 20px 18px;border-radius:18px;text-align:center;
   background:rgba(14,24,38,.76);border:1px solid rgba(255,255,255,.14);box-shadow:0 18px 50px rgba(0,0,0,.4)}
 h1{margin:0;font-size:32px;font-weight:900;letter-spacing:.07em;text-shadow:0 3px 0 #3a7d24,0 6px 16px rgba(0,0,0,.4)}
 .sub{margin:4px 0 0;color:#a9c3dc;font-size:13px}
@@ -79,7 +80,28 @@ h1{margin:0;font-size:32px;font-weight:900;letter-spacing:.07em;text-shadow:0 3p
 #play{display:block;width:100%;height:52px;margin:16px 0 0;border:0;border-radius:12px;background:#4fae3f;color:#fff;
   font:800 17px system-ui,Roboto,sans-serif;letter-spacing:.12em;box-shadow:inset 0 -5px 0 rgba(0,0,0,.25);cursor:pointer}
 #play:disabled{background:#56606e;letter-spacing:.04em;font-size:15px}
+.sec{background:rgba(255,255,255,.14)!important;box-shadow:none!important}
+#newWorld{display:block;width:100%;height:40px;margin:8px 0 0;border:0;border-radius:12px;color:#fff;
+  font:800 13px system-ui,Roboto,sans-serif;letter-spacing:.12em;cursor:pointer}
+#newWorld[hidden]{display:none}
+/* saved worlds */
+#worlds{margin:14px 0 0;max-height:132px;overflow-y:auto;text-align:left;touch-action:pan-y;-webkit-overflow-scrolling:touch}
+#worlds:empty{display:none}
+.wrow{display:flex;align-items:center;gap:10px;min-height:42px;padding:6px 6px 6px 12px;margin:0 0 5px;border-radius:10px;
+  background:rgba(255,255,255,.07);border:1px solid transparent;cursor:pointer}
+.wrow.sel{background:rgba(79,174,63,.22);border-color:rgba(124,214,104,.6)}
+.wtext{flex:1;min-width:0}
+.wname{display:block;font-size:14px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wmeta{display:block;font-size:11px;color:#9fb6cc}
+.wdel{flex:none;width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:#c9d6e3;font-size:16px;cursor:pointer}
+.wdel.arm{background:#c83a2a;color:#fff;width:auto;padding:0 10px;font:800 11px system-ui,Roboto,sans-serif;letter-spacing:.06em}
 #note{margin:10px 0 0;font-size:11.5px;color:#8ea6bd}
+/* short landscape screens (phones on their side): intro on the left, worlds and buttons on the right */
+@media (orientation:landscape) and (max-height:500px){
+  #start .card{display:flex;gap:20px;max-width:760px;align-items:center}
+  .intro,.actions{flex:1;min-width:0}
+  #worlds{margin-top:0}
+}
 @media (max-height:440px){
   .card{padding:12px 18px}h1{font-size:24px}.sub{display:none}
   .ctl{margin-top:10px;gap:5px 12px;font-size:12.5px}#play{height:42px;margin-top:10px}#note{margin-top:6px}

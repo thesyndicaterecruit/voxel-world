@@ -41,23 +41,30 @@
       </div>
       <p class="hint">Lower it if the game stutters</p>
       <div class="mbtn" data-act="resume" role="button">RESUME</div>
+      <div class="mbtn sec" data-act="quit" role="button">SAVE &amp; EXIT</div>
     </div>
   </div>
 </div>
 
 <div id="start">
-  <div class="card">
-    <h1>VOXEL ISLAND</h1>
-    <p class="sub">A tiny block world for your pocket</p>
-    <div class="ctl">
-      <span class="k">LEFT SIDE</span><span>Drag to walk &middot; push far to sprint</span>
-      <span class="k">RIGHT SIDE</span><span>Drag to look &middot; tap to break / place</span>
-      <span class="k">JUMP</span><span>Jump (1-block steps auto-jump)</span>
-      <span class="k">⛏️ / 🧱</span><span>Switch Break &harr; Place mode</span>
-      <span class="k">TOP BAR</span><span>Pick a block to build with</span>
+  <div class="card" data-scroll>
+    <div class="intro">
+      <h1>VOXEL ISLAND</h1>
+      <p class="sub">A tiny block world for your pocket</p>
+      <div class="ctl">
+        <span class="k">LEFT SIDE</span><span>Drag to walk &middot; push far to sprint</span>
+        <span class="k">RIGHT SIDE</span><span>Drag to look &middot; tap to break / place</span>
+        <span class="k">JUMP</span><span>Jump (1-block steps auto-jump)</span>
+        <span class="k">⛏️ / 🧱</span><span>Switch Break &harr; Place mode</span>
+        <span class="k">TOP BAR</span><span>Pick a block to build with</span>
+      </div>
     </div>
-    <button id="play" disabled>LOADING 3D ENGINE…</button>
-    <p id="note">Best in landscape &middot; goes fullscreen when you play</p>
+    <div class="actions">
+      <div id="worlds" data-ui data-scroll></div>
+      <button id="play" disabled>LOADING 3D ENGINE…</button>
+      <button id="newWorld" class="sec" data-ui hidden>NEW ISLAND</button>
+      <p id="note">Best in landscape &middot; goes fullscreen when you play</p>
+    </div>
   </div>
 </div>
 
