@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { WATER_Y, HORIZON, ZENITH } from './config';
 import { mulberry } from './noise';
 import { boxesGeometry } from './meshing';
+import { radialFog } from './fog';
 
 /* ======================= SKY, SUN, WATER, CLOUDS ======================= */
 const WATER = 0x3b86cc;
@@ -46,7 +47,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   // one water surface over the whole world (it follows the camera, so it never ends); seen from
   // both sides, and slightly see-through so shallow seabeds show
   const waterGeo = new THREE.PlaneGeometry(1600, 1600).rotateX(-Math.PI / 2);
-  const water = new THREE.Mesh(waterGeo, new THREE.MeshBasicMaterial({ color: WATER, side: THREE.DoubleSide, transparent: true, opacity: 0.82 }));
+  const water = new THREE.Mesh(waterGeo, radialFog(new THREE.MeshBasicMaterial({ color: WATER, side: THREE.DoubleSide, transparent: true, opacity: 0.82 })));
   water.position.y = WATER_Y;
   scene.add(water);
 

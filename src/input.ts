@@ -1,6 +1,6 @@
 import { B, HOTBAR } from './blocks';
 import { player, bufferJump, type Controls } from './player';
-import { els, hud, setMode, selectSlot, toast, toggleFullscreen } from './ui';
+import { els, hud, setMode, selectSlot, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance } from './ui';
 
 /* ======================= TOUCH CONTROLS ======================= */
 // Left half = floating joystick, right half = drag-to-look (+ tap to act), buttons handled by data-act.
@@ -21,6 +21,7 @@ export function setSensitivity(s: number): void { sens = s; }
 
 /** Movement intent for this frame: keyboard overrides the joystick. */
 export function readControls(): Controls {
+  if (menuOpen()) return { x: 0, z: 0, run: false, jump: false };
   let x = joy.x, z = joy.y;
   const kx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
   const kz = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
@@ -46,6 +47,9 @@ export function initInput({ canvas, isPlaying, act }: InputOptions): void {
       if (a === 'jump') { jumpHeld = true; bufferJump(); }
       else if (a === 'mode') { setMode(hud.mode === 'break' ? 'place' : 'break'); toast(hud.mode === 'break' ? 'Break mode' : 'Place mode: ' + B[HOTBAR[hud.sel]].name, 900); }
       else if (a === 'slot') { selectSlot(+el.dataset.i!); setMode('place'); toast(B[HOTBAR[hud.sel]].name, 900); }
+      else if (a === 'menu') showMenu(true);
+      else if (a === 'resume') showMenu(false);
+      else if (a === 'rd-' || a === 'rd+') stepRenderDistance(a === 'rd+' ? 1 : -1);
       return;
     }
     if (x < window.innerWidth * 0.5) {
@@ -162,6 +166,8 @@ export function initInput({ canvas, isPlaying, act }: InputOptions): void {
   window.addEventListener('keydown', (e) => {
     keys[e.code] = true;
     if (!isPlaying()) return;
+    if (e.code === 'Escape' || e.code === 'KeyM') showMenu(!menuOpen());
+    if (menuOpen()) return;
     if (/^Digit[1-8]$/.test(e.code)) { selectSlot(+e.code.slice(5) - 1); setMode('place'); }
     if (e.code === 'KeyQ' || e.code === 'KeyE') setMode(hud.mode === 'break' ? 'place' : 'break');
     if (e.code === 'KeyF' || e.code === 'Enter') act();

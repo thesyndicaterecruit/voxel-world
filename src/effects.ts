@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { AIR, B, T_DIRT, T_GRASS_SIDE } from './blocks';
 import { boxesGeometry } from './meshing';
 import { world } from './world';
+import { radialFog } from './fog';
 
 /* ===================== TARGET OUTLINE, GHOST, PARTICLES ===================== */
 export interface Effects {
@@ -24,17 +25,17 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     beams.push([a - bt, -be, b - bt, a + bt, 1 + be, b + bt]); // along Y
     beams.push([a - bt, b - bt, -be, a + bt, b + bt, 1 + be]); // along Z
   }
-  const outline = new THREE.Mesh(boxesGeometry(beams), new THREE.MeshBasicMaterial({ color: 0x151515 }));
+  const outline = new THREE.Mesh(boxesGeometry(beams), radialFog(new THREE.MeshBasicMaterial({ color: 0x151515 })));
   outline.visible = false;
   scene.add(outline);
-  const ghostMat = new THREE.MeshBasicMaterial({ map: tex[T_GRASS_SIDE], transparent: true, opacity: 0.5, depthWrite: false });
+  const ghostMat = radialFog(new THREE.MeshBasicMaterial({ map: tex[T_GRASS_SIDE], transparent: true, opacity: 0.5, depthWrite: false }));
   const ghost = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.98, 0.98), ghostMat);
   ghost.visible = false;
   scene.add(ghost);
 
   const pGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16), parts: Particle[] = [];
   for (let i = 0; i < 36; i++) {
-    const m = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ map: tex[T_DIRT] }));
+    const m = new THREE.Mesh(pGeo, radialFog(new THREE.MeshBasicMaterial({ map: tex[T_DIRT] })));
     m.visible = false;
     scene.add(m);
     parts.push({ m, v: [0, 0, 0], life: 0, max: 1 });

@@ -25,6 +25,7 @@ body.playing #ui{display:block}
 #mode.break{background:rgba(200,58,42,.7)}
 #mode.place{background:rgba(40,150,72,.7)}
 #fs{top:calc(10px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
+#menuBtn{top:calc(10px + env(safe-area-inset-top));right:calc(62px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
 #hotbar{position:fixed;left:50%;top:calc(8px + env(safe-area-inset-top));transform:translateX(-50%);display:flex;gap:5px;padding:5px;
   border-radius:13px;background:rgba(0,0,0,.3);pointer-events:auto;touch-action:none}
 .slot{width:36px;height:36px;border-radius:8px;border:2px solid rgba(255,255,255,.25);transition:transform .1s;
@@ -32,7 +33,7 @@ body.playing #ui{display:block}
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2)}
 .slot.sel{border-color:#fff;transform:scale(1.14);
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2),0 0 0 2px rgba(0,0,0,.4)}
-@media (max-width:540px){#hotbar{top:calc(60px + env(safe-area-inset-top))}}
+@media (max-width:600px){#hotbar{top:calc(60px + env(safe-area-inset-top))}}
 #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px}
 #cross:before,#cross:after{content:"";position:absolute;background:#fff;border-radius:1px;box-shadow:0 0 2px rgba(0,0,0,.7)}
 #cross:before{left:10px;top:0;width:2px;height:22px}
@@ -47,6 +48,23 @@ body.playing #ui{display:block}
 #toast{position:fixed;left:50%;top:26%;transform:translateX(-50%);padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.5);
   font-size:14px;font-weight:600;white-space:nowrap;opacity:0;transition:opacity .25s}
 #toast.show{opacity:1}
+
+/* ---------- in-game menu ---------- */
+#menu{position:fixed;top:0;left:0;right:0;bottom:0;z-index:4;display:none;align-items:center;justify-content:center;
+  padding:16px;background:rgba(8,18,34,.55);pointer-events:auto;touch-action:none}
+body.menu #menu{display:flex}
+body.menu #cross,body.menu #joy{display:none}
+#menu .card{max-width:340px}
+h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
+.setting{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:15px;color:#dce8f4}
+.stepper{display:flex;align-items:center;gap:10px}
+#rd{min-width:22px;text-align:center;font-size:18px;font-weight:800;color:#fff}
+.sbtn,.mbtn{display:flex;align-items:center;justify-content:center;border-radius:10px;background:rgba(255,255,255,.14);
+  font-weight:800;color:#fff;cursor:pointer;transition:transform .08s}
+.sbtn{width:44px;height:44px;font-size:24px}
+.sbtn.down,.mbtn.down{transform:scale(.92);background:rgba(255,255,255,.28)}
+.hint{margin:8px 0 0;font-size:11.5px;color:#8ea6bd;text-align:left}
+.mbtn{height:48px;margin-top:16px;background:#4fae3f;letter-spacing:.12em;font-size:16px;box-shadow:inset 0 -4px 0 rgba(0,0,0,.25)}
 
 /* ---------- start screen ---------- */
 #start{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;display:flex;align-items:center;justify-content:center;padding:16px;

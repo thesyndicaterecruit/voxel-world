@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
+import { radialFogVertex } from './fog';
 
 /* ================= PROCEDURAL PIXEL-ART TEXTURES (32×32) ================= */
 const TS = 32;
@@ -148,12 +149,15 @@ const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSid
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
   canvases: HTMLCanvasElement[];
+  /** One texture per tile (particles, placement ghost) */
   textures: THREE.CanvasTexture[];
-  /** One material per tile; chunk meshes use the whole array with draw groups */
-  materials: THREE.MeshBasicMaterial[];
+  /** Every tile as one layer of a texture array, layer = tile id */
+  tileArray: THREE.DataTexture2DArray;
+  /** Material for chunk meshes: samples tileArray with the per-vertex `layer`, so a chunk is one draw call */
+  chunkMaterial: THREE.MeshBasicMaterial;
 }
 
-/** Paint every tile and wrap it in a texture + material. Call exactly once. */
+/** Paint every tile and wrap it in textures + the chunk material. Call exactly once. */
 export function createTextures(renderer: THREE.WebGLRenderer): Textures {
   const canvases = TILE_PAINTERS.map(tile);
   const aniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
@@ -164,6 +168,31 @@ export function createTextures(renderer: THREE.WebGLRenderer): Textures {
     t.anisotropy = aniso;
     return t;
   });
-  const materials = textures.map((t) => new THREE.MeshBasicMaterial({ map: t, vertexColors: true }));
-  return { canvases, textures, materials };
+
+  // The same pixels as a texture array (WebGL2; three r128 calls it DataTexture2DArray). Rows are
+  // flipped so that v = 1 is the top of the canvas, as with the flipY canvas textures.
+  const row = TS * 4, data = new Uint8Array(row * TS * canvases.length);
+  canvases.forEach((cv, l) => {
+    const px = cv.getContext('2d')!.getImageData(0, 0, TS, TS).data;
+    for (let y = 0; y < TS; y++) data.set(px.subarray(y * row, (y + 1) * row), (l * TS + TS - 1 - y) * row);
+  });
+  const tileArray = new THREE.DataTexture2DArray(data, TS, TS, canvases.length);
+  tileArray.magFilter = THREE.NearestFilter;
+  tileArray.minFilter = THREE.LinearMipmapLinearFilter;
+  tileArray.generateMipmaps = true;
+  tileArray.anisotropy = aniso;
+  tileArray.needsUpdate = true;
+
+  const chunkMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
+  chunkMaterial.onBeforeCompile = (sh) => {
+    sh.uniforms.tiles = { value: tileArray };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float layer;\nvarying vec3 vTile;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvTile = vec3( uv, layer );');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;')
+      .replace('#include <map_fragment>', 'diffuseColor *= texture( tiles, vTile );');
+    radialFogVertex(sh);
+  };
+  return { canvases, textures, tileArray, chunkMaterial };
 }

@@ -6,6 +6,8 @@ export interface Chunk {
   readonly cx: number;
   readonly cz: number;
   readonly data: Uint8Array;
+  /** Differs from what the seed generates (edited by the player, now or in an earlier session) */
+  edited: boolean;
 }
 
 /* ============================ WORLD ============================ */
@@ -25,8 +27,8 @@ export class World {
     return cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ ? this.chunks[cx + cz * NCX] : undefined;
   }
   /** Install chunk data (it is used directly, not copied). */
-  setChunk(cx: number, cz: number, data: Uint8Array): Chunk {
-    const c: Chunk = { cx, cz, data };
+  setChunk(cx: number, cz: number, data: Uint8Array, edited = false): Chunk {
+    const c: Chunk = { cx, cz, data, edited };
     this.chunks[cx + cz * NCX] = c;
     return c;
   }
@@ -48,6 +50,7 @@ export class World {
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     if (!c) return false;
     c.data[CI(x & (CS - 1), y, z & (CS - 1))] = id;
+    c.edited = true;
     if (this.onChange) this.onChange(x, y, z);
     return true;
   }

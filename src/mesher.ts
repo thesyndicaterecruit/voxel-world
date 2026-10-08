@@ -1,5 +1,5 @@
 import { CS, H } from './config';
-import { AIR, B, NT, ROT } from './blocks';
+import { AIR, B, ROT } from './blocks';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO) ======================= */
@@ -58,30 +58,37 @@ export interface MeshData {
   col: Uint8Array;
   /** Texture coords, 0 or 1 */
   uv: Uint8Array;
+  /** Texture tile (layer of the tile array) per vertex */
+  layer: Uint8Array;
   index: Uint16Array | Uint32Array;
-  /** Draw groups as [start, count, tile] triples, one per tile in use */
-  groups: number[];
 }
 
 /**
  * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
  * outside the world or in missing chunks are air). (x0, z0) is the chunk's world origin: the
  * per-block brightness and tile rotation hash world coordinates with the world seed, so the result
- * does not depend on which chunk is meshed first.
+ * does not depend on which chunk is meshed first. Every face goes in one index list: the tile is a
+ * vertex attribute, so a chunk draws in a single call.
  */
 export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number): MeshData {
-  let cap = 4096, n = 0;                           // vertex capacity / count
+  let cap = 8192, n = 0, ni = 0;                  // vertex capacity, vertex count, index count
   let pos = new Uint8Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
-  const lists: number[][] = [];
-  for (let t = 0; t < NT; t++) lists.push([]);   // one index list per texture → one draw group each
+  let lay = new Uint8Array(cap), idx = new Uint32Array(cap * 1.5);
   const occ = (px: number, y: number, pz: number) => (y >= 0 && y < H && pad[PI(px, y, pz)] !== AIR ? 1 : 0);
   const aoAt = (px: number, y: number, pz: number, o: number[]) => {
     const s1 = occ(px + o[0], y + o[1], pz + o[2]), s2 = occ(px + o[3], y + o[4], pz + o[5]);
     return s1 && s2 ? AO[0] : AO[3 - s1 - s2 - occ(px + o[6], y + o[7], pz + o[8])];
   };
   const L = [0, 0, 0, 0];
+  // skip the empty layers above the highest block
+  let top = H - 1;
+  for (; top >= 0; top--) {
+    let any = false;
+    for (let pz = 1; pz <= CS && !any; pz++) for (let px = 1; px <= CS; px++) if (pad[PI(px, top, pz)] !== AIR) { any = true; break; }
+    if (any) break;
+  }
 
-  for (let y = 0; y < H; y++) for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
+  for (let y = 0; y <= top; y++) for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
     const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
     if (id === AIR) continue;
     const x = x0 + lx, z = z0 + lz;
@@ -95,11 +102,12 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number)
       const tl = b.t[F.k];
       const rot = ROT.has(tl) ? Math.floor(hash3(seed, x * 3 + f, y, z - f) * 4) : 0;
       const sh = F.s * j;
-      if (n + 4 > cap) {                           // grow the vertex buffers
+      if (n + 4 > cap) {                           // grow the buffers
         cap *= 2;
         const p2 = new Uint8Array(cap * 3), c2 = new Uint8Array(cap * 3), u2 = new Uint8Array(cap * 2);
-        p2.set(pos); c2.set(col); u2.set(uv);
-        pos = p2; col = c2; uv = u2;
+        const l2a = new Uint8Array(cap), i2 = new Uint32Array(cap * 1.5);
+        p2.set(pos); c2.set(col); u2.set(uv); l2a.set(lay); i2.set(idx);
+        pos = p2; col = c2; uv = u2; lay = l2a; idx = i2;
       }
       const base = n;
       for (let i = 0; i < 4; i++, n++) {
@@ -107,24 +115,18 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number)
         pos[n * 3] = lx + v[0]; pos[n * 3 + 1] = y + v[1]; pos[n * 3 + 2] = lz + v[2];
         col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = k;   // baked light + AO tints the texture
         uv[n * 2] = q[0]; uv[n * 2 + 1] = q[1];
+        lay[n] = tl;
       }
       // flip the quad diagonal so AO interpolates smoothly
-      const list = lists[tl];
-      if (l0 + l2 > l1 + l3) list.push(base + 1, base + 2, base + 3, base + 1, base + 3, base);
-      else list.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      if (l0 + l2 > l1 + l3) {
+        idx[ni++] = base + 1; idx[ni++] = base + 2; idx[ni++] = base + 3;
+        idx[ni++] = base + 1; idx[ni++] = base + 3; idx[ni++] = base;
+      } else {
+        idx[ni++] = base; idx[ni++] = base + 1; idx[ni++] = base + 2;
+        idx[ni++] = base; idx[ni++] = base + 2; idx[ni++] = base + 3;
+      }
     }
   }
-
-  let total = 0;
-  for (const l of lists) total += l.length;
-  const index = n > 65535 ? new Uint32Array(total) : new Uint16Array(total), groups: number[] = [];
-  let at = 0;
-  for (let t = 0; t < NT; t++) {
-    const l = lists[t];
-    if (!l.length) continue;
-    groups.push(at, l.length, t);
-    index.set(l, at);
-    at += l.length;
-  }
-  return { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), index, groups };
+  const index = n > 65535 ? idx.slice(0, ni) : Uint16Array.from(idx.subarray(0, ni));
+  return { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), layer: lay.slice(0, n), index };
 }

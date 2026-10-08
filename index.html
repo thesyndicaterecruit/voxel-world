@@ -18,12 +18,31 @@
   <div id="hotbar" data-act="none"></div>
   <div id="joy"><div id="knob"></div></div>
   <div id="toast"></div>
+  <div id="menuBtn" class="btn" data-act="menu" role="button" aria-label="Menu">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+      <path d="M5 7h14M5 12h14M5 17h14"/></svg>
+  </div>
   <div id="fs" class="btn" data-act="fs" role="button" aria-label="Fullscreen">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
       <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
   </div>
   <div id="mode" class="btn break" data-act="mode" role="button"><span class="ic">⛏️</span><span class="lb">BREAK</span></div>
   <div id="jump" class="btn" data-act="jump" role="button">JUMP</div>
+  <div id="menu" data-act="none">
+    <div class="card">
+      <h2>MENU</h2>
+      <div class="setting">
+        <span>View distance</span>
+        <div class="stepper">
+          <div class="sbtn" data-act="rd-" role="button" aria-label="Less">&minus;</div>
+          <span id="rd">6</span>
+          <div class="sbtn" data-act="rd+" role="button" aria-label="More">+</div>
+        </div>
+      </div>
+      <p class="hint">Lower it if the game stutters</p>
+      <div class="mbtn" data-act="resume" role="button">RESUME</div>
+    </div>
+  </div>
 </div>
 
 <div id="start">

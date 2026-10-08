@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { CS, H, NCX, CI } from './config';
-import { world, type World } from './world';
-import { FACES, PAD_VOL, PI, meshChunk, type MeshData } from './mesher';
+import { CS, H, CI } from './config';
+import type { World } from './world';
+import { FACES, PI, type MeshData } from './mesher';
 
 /**
  * Copy chunk (cx, cz) plus a one-block border from its 8 neighbours into `out` (PI layout).
@@ -29,63 +29,10 @@ export function chunkGeometry(m: MeshData): THREE.BufferGeometry {
   geo.setAttribute('position', new THREE.BufferAttribute(m.pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(m.col, 3, true));
   geo.setAttribute('uv', new THREE.BufferAttribute(m.uv, 2));
+  geo.setAttribute('layer', new THREE.BufferAttribute(m.layer, 1));
   geo.setIndex(new THREE.BufferAttribute(m.index, 1));
-  for (let i = 0; i < m.groups.length; i += 3) geo.addGroup(m.groups[i], m.groups[i + 1], m.groups[i + 2]);
   geo.computeBoundingSphere();
   return geo;
-}
-
-export interface ChunkMesher {
-  /** Mark the chunks touched by a change at (x, z) — including neighbours, for AO — for rebuilding. */
-  markDirty(x: number, z: number): void;
-  /** A chunk was loaded: build its mesh when the per-frame budget allows. */
-  addChunk(cx: number, cz: number): void;
-  /** Rebuild every dirty chunk, and build up to `budget` newly added ones. Called once per frame. */
-  flush(budget: number): void;
-  /** Added chunks still waiting for their first mesh. */
-  pending(): number;
-}
-
-/** Builds one mesh per loaded chunk (adding them to `scene`) and returns the rebuild API. */
-export function createChunkMesher(scene: THREE.Scene, materials: THREE.Material[]): ChunkMesher {
-  const meshes = new Map<number, THREE.Mesh>(), dirty = new Set<number>(), added = new Set<number>();
-  const pad = new Uint8Array(PAD_VOL);
-
-  function buildChunk(ci: number): void {
-    const cx = ci % NCX, cz = Math.floor(ci / NCX);
-    if (!world.chunk(cx, cz)) return;
-    paddedCopy(world, cx, cz, pad);
-    const geo = chunkGeometry(meshChunk(pad, cx * CS, cz * CS, world.seed));
-    let m = meshes.get(ci);
-    if (!m) {
-      m = new THREE.Mesh(geo, materials);
-      m.position.set(cx * CS, 0, cz * CS);
-      m.matrixAutoUpdate = false;
-      m.updateMatrix();
-      meshes.set(ci, m);
-      scene.add(m);
-    } else { m.geometry.dispose(); m.geometry = geo; }
-  }
-
-  return {
-    markDirty(x, z) {
-      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
-        const X = x + dx, Z = z + dz;
-        const ci = Math.floor(X / CS) + Math.floor(Z / CS) * NCX;
-        if (world.isLoaded(X, Z) && meshes.has(ci)) dirty.add(ci);
-      }
-    },
-    addChunk(cx, cz) { added.add(cx + cz * NCX); },
-    flush(budget) {
-      if (dirty.size) { dirty.forEach(buildChunk); dirty.clear(); }
-      for (const ci of added) {
-        if (budget-- <= 0) break;
-        added.delete(ci);
-        buildChunk(ci);
-      }
-    },
-    pending: () => added.size,
-  };
 }
 
 /** Many axis-aligned boxes [x0,y0,z0,x1,y1,z1] in one vertex-coloured geometry (outline, clouds). */

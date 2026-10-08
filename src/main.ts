@@ -1,21 +1,30 @@
 import * as THREE from 'three';
-import { CB, NCX, NCZ, EYE, HORIZON } from './config';
+import { CS, NCX, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
 import { createTextures } from './textures';
 import { world } from './world';
 import { columnHeight, findSpawn } from './gen';
 import { createWorkerPool } from './workers';
-import { createChunkMesher } from './meshing';
+import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
 import { P, V, player, spawn, update, collides } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initStartScreen, showError } from './ui';
+import { els, hud, initHotbar, initMenu, initStartScreen, showError } from './ui';
 
-/** Chunks generated around the spawn point (square radius, in chunks). */
-const LOAD_RADIUS = 4;
+/** Play is enabled once everything within this many blocks of the spawn point is meshed. */
+const READY_RADIUS = 24;
+const RD_KEY = 'voxel-island.renderDistance';
+
+function savedRenderDistance(): number {
+  try {
+    const r = Number(localStorage.getItem(RD_KEY));
+    if (r >= RENDER_DISTANCE.min && r <= RENDER_DISTANCE.max) return r;
+  } catch (e) { /* storage unavailable */ }
+  return RENDER_DISTANCE.def;
+}
 
 function boot(): void {
   let renderer: THREE.WebGLRenderer;
@@ -25,11 +34,15 @@ function boot(): void {
     showError('WEBGL UNAVAILABLE', 'This browser could not start WebGL. Try enabling hardware acceleration.');
     return;
   }
+  if (!renderer.capabilities.isWebGL2) {
+    showError('WEBGL 2 NEEDED', 'This browser only has WebGL 1. Try a newer browser or enable hardware acceleration.');
+    return;
+  }
 
   const seed = urlSeed() ?? randomSeed();
   world.seed = seed;
   const [sx, sz] = findSpawn(seed);
-  const { canvases, textures, materials } = createTextures(renderer);
+  const { canvases, textures, chunkMaterial } = createTextures(renderer);
 
   /* ============================ RENDERER ============================ */
   let pr = Math.min(window.devicePixelRatio || 1, 2);
@@ -40,16 +53,35 @@ function boot(): void {
   const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 320);
   camera.rotation.order = 'YXZ';
 
-  const mesher = createChunkMesher(scene, materials);
-  world.onChange = (x, _y, z) => mesher.markDirty(x, z);
+  const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
+  // edited chunks that stream out are kept in memory, so edits survive walking away and back
+  const kept = new Map<number, Uint8Array>();
+  const streamer = createStreamer(scene, chunkMaterial, pool, {
+    load(cx, cz) {
+      const d = kept.get(cx + cz * NCX);
+      if (!d) return null;
+      kept.delete(cx + cz * NCX);
+      return Promise.resolve(d);
+    },
+    unload(c) { if (c.edited) kept.set(c.cx + c.cz * NCX, c.data); },
+  });
+  world.onChange = (x, _y, z) => streamer.markDirty(x, z);
   const env = createEnvironment(scene, renderer, seed, sx, sz);
-  env.setFog(24, (LOAD_RADIUS + 0.5) * 16 - 8);   // hide where the generated area ends
   const fx = createEffects(scene, textures);
+
+  // view distance: how far chunks are streamed, and where the fog ends
+  const setRenderDistance = (r: number) => { streamer.setRenderDistance(r); env.setFog(r * CS * 0.35, r * CS); };
+  const rd = savedRenderDistance();
+  setRenderDistance(rd);
+  initMenu(rd, RENDER_DISTANCE.min, RENDER_DISTANCE.max, (r) => {
+    setRenderDistance(r);
+    try { localStorage.setItem(RD_KEY, String(r)); } catch (e) { /* storage unavailable */ }
+  });
 
   const interaction = createInteraction(fx);
   initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
 
-  let playing = false;
+  let playing = false, ready = false;
   initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act });
 
   /* ============================ RESIZE ============================ */
@@ -66,43 +98,25 @@ function boot(): void {
   window.addEventListener('orientationchange', () => setTimeout(resize, 150));
   resize();
 
-  /* ============================ WORLD LOADING ============================ */
-  // Generate the chunks around the spawn point in workers, nearest first, then mesh them a few per
-  // frame behind the title card. Play is enabled once everything is built.
-  const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
-  const scx = sx >> CB, scz = sz >> CB, queue: [number, number][] = [];
-  for (let cz = scz - LOAD_RADIUS; cz <= scz + LOAD_RADIUS; cz++) for (let cx = scx - LOAD_RADIUS; cx <= scx + LOAD_RADIUS; cx++)
-    if (cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ) queue.push([cx, cz]);
-  queue.sort((a, b) => Math.hypot(a[0] - scx, a[1] - scz) - Math.hypot(b[0] - scx, b[1] - scz));
-  const total = queue.length;
-  let generated = 0, ready = false;
-  const pump = () => {
-    while (pool.free() > 0 && queue.length) {
-      const [cx, cz] = queue.shift()!;
-      pool.run({ type: 'gen', id: 0, seed, cx, cz }, [], (res) => {
-        world.setChunk(res.cx, res.cz, res.data);
-        if (++generated === total) world.forEachChunk((c) => mesher.addChunk(c.cx, c.cz));
-        pump();
-      });
-    }
-  };
-  pump();
   // the title fly-around circles the spawn point, high enough to clear the hills on its path
   let orbitY = columnHeight(seed, sx, sz) + 12;
   for (let a = 0; a < 64; a++) {
     const x = Math.round(sx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(sz + Math.cos(a / 64 * Math.PI * 2) * 30);
     orbitY = Math.max(orbitY, columnHeight(seed, x, z) + 6);
   }
+  els.play.textContent = 'GENERATING ISLANDS…';
 
   /* ============================ LOOP ============================ */
-  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0;
+  const look = new THREE.Vector3();
+  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0;
   function frame(now: number): void {
     requestAnimationFrame(frame);
     const raw = Math.max(0, (now - last) / 1000);
     last = now;
     const dt = Math.min(raw, 0.08);
     if (playing) {
-      update(dt, readControls());
+      // physics waits until the chunks under the player are loaded (unloaded chunks are solid)
+      if (streamer.areaLoaded(P[0], P[2])) update(dt, readControls());
       camera.position.set(P[0], P[1] + EYE, P[2]);
       camera.rotation.set(player.pitch, player.yaw, 0);
     } else { // slow fly-around behind the title card
@@ -110,15 +124,14 @@ function boot(): void {
       camera.position.set(sx + Math.sin(orbit) * 30, orbitY, sz + Math.cos(orbit) * 30);
       camera.lookAt(sx, orbitY - 14, sz);
     }
-    mesher.flush(playing ? 2 : 6);
-    if (!ready) {
-      const built = generated < total ? 0 : total - mesher.pending();
-      els.play.textContent = `GENERATING ISLANDS… ${Math.floor(((generated + built) / (2 * total)) * 100)}%`;
-      if (built === total) {
-        ready = true;
-        spawn(sx, sz);
-        initStartScreen(() => { playing = true; });
-      }
+    camera.getWorldDirection(look);
+    const t0 = performance.now();
+    streamer.update(playing ? P[0] : sx + 0.5, playing ? P[2] : sz + 0.5, look.x, look.z);
+    streamMs = Math.max(streamMs * 0.98, performance.now() - t0);
+    if (!ready && streamer.isReady(sx + 0.5, sz + 0.5, READY_RADIUS)) {
+      ready = true;
+      spawn(sx, sz);
+      initStartScreen(() => { playing = true; });
     }
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
@@ -142,6 +155,8 @@ function boot(): void {
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
     count: () => world.count(),
+    stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
+    setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
   };
 }
 

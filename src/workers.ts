@@ -1,8 +1,16 @@
 /* ============================ WORKER POOL ============================ */
-// A few Web Workers running worker.ts. Typed arrays travel as transferables (moved, not copied).
+// A few Web Workers running worker.ts (chunk generation and meshing). Typed arrays travel as
+// transferables (moved, not copied).
 
-export type WorkerRequest = { type: 'gen'; id: number; seed: number; cx: number; cz: number };
-export type WorkerResponse = { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array };
+import type { MeshData } from './mesher';
+
+export type WorkerRequest =
+  | { type: 'gen'; id: number; seed: number; cx: number; cz: number }
+  /** `pad` is the chunk plus a one-block border (see paddedCopy); it comes back with the result for reuse */
+  | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array };
+export type WorkerResponse =
+  | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array }
+  | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array };
 
 /** Jobs in flight per worker: enough to keep a worker busy while its last result travels back. */
 const MAX_INFLIGHT = 2;

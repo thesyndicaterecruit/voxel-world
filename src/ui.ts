@@ -17,6 +17,7 @@ export const els = {
   knob: $('knob'),
   fs: $('fs'),
   hotbar: $('hotbar'),
+  rd: $('rd'),
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -63,6 +64,25 @@ export function selectSlot(i: number): void {
   hud.sel = i;
   slots.forEach((el, k) => el.classList.toggle('sel', k === i));
   onSelect(i);
+}
+
+/* ============================ MENU ============================ */
+let renderDistance = 6, onRenderDistance: (r: number) => void = () => {};
+let rdMin = 3, rdMax = 10;
+
+/** Wire the menu's view-distance stepper. `apply` is told about every change. */
+export function initMenu(r: number, min: number, max: number, apply: (r: number) => void): void {
+  renderDistance = r; rdMin = min; rdMax = max; onRenderDistance = apply;
+  els.rd.textContent = String(r);
+}
+export const menuOpen = () => document.body.classList.contains('menu');
+export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); }
+export function stepRenderDistance(delta: number): void {
+  const r = Math.max(rdMin, Math.min(rdMax, renderDistance + delta));
+  if (r === renderDistance) return;
+  renderDistance = r;
+  els.rd.textContent = String(r);
+  onRenderDistance(r);
 }
 
 /* ============================ FULLSCREEN ============================ */
