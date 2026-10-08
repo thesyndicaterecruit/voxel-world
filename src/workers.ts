@@ -6,8 +6,11 @@ import type { MeshData } from './mesher';
 
 export type WorkerRequest =
   | { type: 'gen'; id: number; seed: number; cx: number; cz: number }
-  /** `pad` is the chunk plus a one-block border (see paddedCopy); it comes back with the result for reuse */
-  | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array };
+  /**
+   * `pad` is the chunk plus a one-block border (see paddedCopy); it comes back with the result for
+   * reuse. `state` is a copy of the chunk's per-block state, if it has any.
+   */
+  | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array; state: Uint8Array | null; opaqueLeaves: boolean };
 export type WorkerResponse =
   | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array }
   | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array };

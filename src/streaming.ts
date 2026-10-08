@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CB, CS, NCX, NCZ, inWorld } from './config';
 import { world, type Chunk } from './world';
-import { PAD_VOL, type MeshData } from './mesher';
+import { FP, PAD_VOL, type MeshData } from './mesher';
 import { paddedCopy, chunkGeometry } from './meshing';
 import type { WorkerPool } from './workers';
 
@@ -15,13 +15,18 @@ import type { WorkerPool } from './workers';
 //   ≤ R·CS + 48     keep region: still loaded (hysteresis); anything further is unloaded, saved
 //                   first if it was edited
 // Generation and meshing run in workers. The main thread only copies a padded chunk per mesh job,
-// uploads at most UPLOADS_PER_FRAME new meshes a frame, and lets edits jump the queue.
+// adds at most UPLOADS_PER_FRAME chunks' meshes a frame, and lets edits jump the queue.
+//
+// A chunk has up to three meshes, one per render pass (only those that aren't empty): opaque,
+// cutout (alpha-tested, writes depth) and translucent (blended, drawn after everything else, chunks
+// back to front — see sortTranslucent).
 
 export const RENDER_DISTANCE = { def: 6, min: 3, max: 10 };
 const LOAD_MARGIN = 24, KEEP_MARGIN = 48;
 const UPLOADS_PER_FRAME = 2;
 /** Most normal jobs started per frame (bounds the main-thread copying) */
 const DISPATCH_PER_FRAME = 8;
+const PASSES = 3, TRANSLUCENT = 2;
 
 const NONE = 0, LOADING = 1, LOADED = 2;
 interface Slot {
@@ -30,13 +35,14 @@ interface Slot {
   epoch: number;
   /** Bumped whenever the mesh inputs change: an edit in this chunk or on a neighbour's border */
   version: number;
-  /** Version of the mesh being shown (-1: none yet) */
+  /** Version of the meshes being shown (-1: none yet) */
   meshed: number;
   /** Latest version sent to a worker (-1: none in flight) */
   sent: number;
   /** An edit is waiting for its re-mesh */
   urgent: boolean;
-  mesh: THREE.Mesh | null;
+  /** One mesh per render pass, null where the pass is empty */
+  meshes: (THREE.Mesh | null)[];
   /** Nearest distance from the streaming centre in blocks, refreshed every frame */
   dist: number;
   score: number;
@@ -53,23 +59,28 @@ export interface ChunkSource {
 export interface Streamer {
   /** Once per frame: stream around (x, z), preferring chunks in view direction (fx, fz). */
   update(x: number, z: number, fx: number, fz: number): void;
+  /** Once per frame, before rendering: order the chunks' translucent meshes back to front from the camera. */
+  sortTranslucent(camera: THREE.Vector3): void;
   /** A block changed at (x, z): re-mesh the chunks it touches ahead of everything else. */
   markDirty(x: number, z: number): void;
   setRenderDistance(r: number): void;
+  /** Mesh leaves as opaque cubes ("Fancy leaves" off); re-meshes every loaded chunk when it changes. */
+  setOpaqueLeaves(on: boolean): void;
   /** Are all chunks within `radius` blocks of (x, z) loaded and meshed? */
   isReady(x: number, z: number, radius: number): boolean;
   /** Are the chunks under and right around (x, z) loaded? (physics only runs when they are) */
   areaLoaded(x: number, z: number): boolean;
-  /** Debugging: one chunk's streaming state (0 none, 1 loading, 2 loaded), mesh versions and triangles */
-  debugChunk(cx: number, cz: number): { state: number; version: number; meshed: number; tris: number };
-  /** Counts for debugging: loaded chunks, meshes, visible meshes, finished meshes waiting, edits waiting */
-  stats(): { loaded: number; meshed: number; visible: number; queued: number; edits: number };
+  /** Debugging: one chunk's streaming state (0 none, 1 loading, 2 loaded), mesh versions and triangles per pass */
+  debugChunk(cx: number, cz: number): { state: number; version: number; meshed: number; tris: number[] };
+  /** Counts for debugging: loaded chunks, chunks with meshes, visible ones, meshes per pass, results waiting, edits waiting */
+  stats(): { loaded: number; meshed: number; visible: number; passes: number[]; queued: number; edits: number };
 }
 
-export function createStreamer(scene: THREE.Scene, material: THREE.Material, pool: WorkerPool, source: ChunkSource = {}): Streamer {
+/** `materials` are the chunk materials per render pass: opaque, cutout, translucent. */
+export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], pool: WorkerPool, source: ChunkSource = {}): Streamer {
   const slots: Slot[] = Array.from({ length: NCX * NCZ }, () =>
-    ({ state: NONE, epoch: 0, version: 0, meshed: -1, sent: -1, urgent: false, mesh: null, dist: Infinity, score: 0 }));
-  let R = RENDER_DISTANCE.def;
+    ({ state: NONE, epoch: 0, version: 0, meshed: -1, sent: -1, urgent: false, meshes: [null, null, null], dist: Infinity, score: 0 }));
+  let R = RENDER_DISTANCE.def, opaqueLeaves = true;
   const ready: Ready[] = [], urgentQ: number[] = [], pads: Uint8Array[] = [];
   let fresh: THREE.Mesh[] = [];                 // meshes added last frame (frustum culling off once)
   let urgentScheduled = false;
@@ -81,6 +92,7 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
     }
     return true;
   };
+  const hasMesh = (s: Slot) => s.meshes[0] !== null || s.meshes[1] !== null || s.meshes[2] !== null;
 
   function dispatchLoad(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = ++s.epoch;
@@ -98,15 +110,17 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
 
   function dispatchMesh(ci: number, urgent: boolean): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = s.epoch, version = s.version;
-    const pad = pads.pop() || new Uint8Array(PAD_VOL);
+    const pad = pads.pop() || new Uint8Array(PAD_VOL), c = world.chunk(cx, cz);
     paddedCopy(world, cx, cz, pad);
+    const state = c && c.state ? c.state.slice() : null;
     s.sent = version;
-    pool.run({ type: 'mesh', id: 0, seed: world.seed, cx, cz, pad }, [pad.buffer], (res) => {
-      if (res.type !== 'mesh') return;
-      pads.push(res.pad);
-      if (s.sent === version) s.sent = -1;
-      if (s.epoch === epoch) ready.push({ ci, epoch, version, urgent, data: res.mesh });
-    });
+    pool.run({ type: 'mesh', id: 0, seed: world.seed, cx, cz, pad, state, opaqueLeaves },
+      state ? [pad.buffer, state.buffer] : [pad.buffer], (res) => {
+        if (res.type !== 'mesh') return;
+        pads.push(res.pad);
+        if (s.sent === version) s.sent = -1;
+        if (s.epoch === epoch) ready.push({ ci, epoch, version, urgent, data: res.mesh });
+      });
   }
 
   // edits: coalesce the setBlock calls of one action, then send them straight to the workers
@@ -123,31 +137,38 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
     if (s.epoch !== r.epoch || s.state !== LOADED || r.version <= s.meshed) return;   // stale
     s.meshed = r.version;
     if (r.version === s.version) s.urgent = false;
-    if (!r.data.index.length) { if (s.mesh) disposeMesh(s); return; }
-    const geo = chunkGeometry(r.data);
-    if (s.mesh) { s.mesh.geometry.dispose(); s.mesh.geometry = geo; return; }
-    const m = new THREE.Mesh(geo, material), cx = r.ci % NCX, cz = (r.ci / NCX) | 0;
-    m.position.set(cx * CS, 0, cz * CS);
-    m.matrixAutoUpdate = false;
-    m.updateMatrix();
-    m.frustumCulled = false;                 // draw (= upload) it this frame even if out of view
-    fresh.push(m);
-    scene.add(m);
-    s.mesh = m;
+    const cx = r.ci % NCX, cz = (r.ci / NCX) | 0;
+    for (let p = 0; p < PASSES; p++) {
+      const data = r.data[p], m = s.meshes[p];
+      if (!data) { if (m) disposeMesh(s, p); continue; }
+      const geo = chunkGeometry(data);
+      if (m) { m.geometry.dispose(); m.geometry = geo; continue; }
+      const n = new THREE.Mesh(geo, materials[p]);
+      n.position.set(cx * CS, 0, cz * CS);
+      n.scale.setScalar(1 / FP);
+      n.matrixAutoUpdate = false;
+      n.updateMatrix();
+      n.frustumCulled = false;                 // draw (= upload) it this frame even if out of view
+      fresh.push(n);
+      scene.add(n);
+      s.meshes[p] = n;
+    }
   }
 
-  function disposeMesh(s: Slot): void {
-    if (!s.mesh) return;
-    scene.remove(s.mesh);
-    s.mesh.geometry.dispose();
-    s.mesh = null;
+  function disposeMesh(s: Slot, p: number): void {
+    const m = s.meshes[p];
+    if (!m) return;
+    scene.remove(m);
+    m.geometry.dispose();
+    s.meshes[p] = null;
   }
+  const disposeAll = (s: Slot) => { for (let p = 0; p < PASSES; p++) disposeMesh(s, p); };
 
   function unload(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, c = world.chunk(cx, cz);
     if (c && source.unload) source.unload(c);
     world.removeChunk(cx, cz);
-    disposeMesh(s);
+    disposeAll(s);
     s.state = NONE; s.epoch++; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
   }
 
@@ -155,13 +176,14 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
     update(px, pz, fx, fz) {
       for (const m of fresh) m.frustumCulled = true;
       fresh = [];
-      // finished meshes: every edit re-mesh now, new chunks within the upload budget, nearest first
+      // finished meshes: every edit re-mesh now, others (new chunks, re-meshes) within the upload
+      // budget, nearest first
       if (ready.length) {
         ready.sort((a, b) => (a.urgent !== b.urgent ? (a.urgent ? -1 : 1) : slots[a.ci].score - slots[b.ci].score));
         let uploads = 0;
         for (let i = 0; i < ready.length; i++) {
           const r = ready[i], s = slots[r.ci];
-          if (!r.urgent && !s.mesh && s.epoch === r.epoch && r.version > s.meshed && r.data.index.length) {
+          if (!r.urgent && s.epoch === r.epoch && r.version > s.meshed) {
             if (uploads >= UPLOADS_PER_FRAME) continue;
             uploads++;
           }
@@ -178,9 +200,9 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
         const dx = Math.max(x0 - px, 0, px - x0 - CS), dz = Math.max(z0 - pz, 0, pz - z0 - CS);
         const d = s.dist = Math.sqrt(dx * dx + dz * dz);
         if (s.state !== NONE && d > keepD) { unload(ci); continue; }
-        if (s.mesh) {
-          if (d > loadD) { disposeMesh(s); s.meshed = -1; }
-          else s.mesh.visible = d <= meshD;
+        if (hasMesh(s)) {
+          if (d > loadD) { disposeAll(s); s.meshed = -1; }
+          else for (const m of s.meshes) if (m) m.visible = d <= meshD;
         }
         // priority: nearest first, chunks in front of the camera before those behind
         const cx = x0 + CS / 2 - px, cz = z0 + CS / 2 - pz, cl = Math.sqrt(cx * cx + cz * cz);
@@ -194,6 +216,16 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
         const ci = cands[i];
         if (slots[ci].state === NONE) dispatchLoad(ci);
         else dispatchMesh(ci, false);
+      }
+    },
+
+    sortTranslucent(cam) {
+      // three draws transparent objects by renderOrder first: farther chunks get lower numbers
+      for (let ci = 0; ci < slots.length; ci++) {
+        const m = slots[ci].meshes[TRANSLUCENT];
+        if (!m) continue;
+        const dx = (ci % NCX) * CS + CS / 2 - cam.x, dz = ((ci / NCX) | 0) * CS + CS / 2 - cam.z;
+        m.renderOrder = -Math.sqrt(dx * dx + dz * dz);
       }
     },
 
@@ -211,6 +243,12 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
     },
 
     setRenderDistance(r) { R = Math.max(RENDER_DISTANCE.min, Math.min(RENDER_DISTANCE.max, r)); },
+
+    setOpaqueLeaves(on) {
+      if (on === opaqueLeaves) return;
+      opaqueLeaves = on;
+      for (const s of slots) if (s.state === LOADED) s.version++;   // re-mesh as normal jobs, nearest first
+    },
 
     isReady(x, z, radius) {
       for (let ci = 0; ci < slots.length; ci++) {
@@ -230,18 +268,24 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
     },
 
     debugChunk(cx, cz) {
-      const s = slots[cx + cz * NCX], idx = s.mesh && s.mesh.geometry.index;
-      return { state: s.state, version: s.version, meshed: s.meshed, tris: idx ? idx.count / 3 : 0 };
+      const s = slots[cx + cz * NCX];
+      return { state: s.state, version: s.version, meshed: s.meshed,
+        tris: s.meshes.map((m) => (m && m.geometry.index ? m.geometry.index.count / 3 : 0)) };
     },
 
     stats() {
       let loaded = 0, meshed = 0, visible = 0, edits = 0;
+      const passes = [0, 0, 0];
       for (const s of slots) {
         if (s.state === LOADED) loaded++;
-        if (s.mesh) { meshed++; if (s.mesh.visible) visible++; }
+        if (hasMesh(s)) {
+          meshed++;
+          if (s.meshes.some((m) => m && m.visible)) visible++;
+          s.meshes.forEach((m, p) => { if (m) passes[p]++; });
+        }
         if (s.urgent) edits++;
       }
-      return { loaded, meshed, visible, queued: ready.length, edits };
+      return { loaded, meshed, visible, passes, queued: ready.length, edits };
     },
   };
 }

@@ -15,8 +15,9 @@ ctx.onmessage = (e) => {
     const data = generateChunk(m.seed, m.cx, m.cz);
     ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data }, [data.buffer]);
   } else {
-    const mesh = meshChunk(m.pad, m.cx * CS, m.cz * CS, m.seed);
-    ctx.postMessage({ type: 'mesh', id: m.id, cx: m.cx, cz: m.cz, mesh, pad: m.pad },
-      [mesh.pos.buffer, mesh.col.buffer, mesh.uv.buffer, mesh.layer.buffer, mesh.index.buffer, m.pad.buffer]);
+    const mesh = meshChunk(m.pad, m.state, m.cx * CS, m.cz * CS, m.seed, m.opaqueLeaves);
+    const transfer: Transferable[] = [m.pad.buffer];
+    for (const p of mesh) if (p) transfer.push(p.pos.buffer, p.col.buffer, p.uv.buffer, p.layer.buffer, p.index.buffer);
+    ctx.postMessage({ type: 'mesh', id: m.id, cx: m.cx, cz: m.cz, mesh, pad: m.pad }, transfer);
   }
 };

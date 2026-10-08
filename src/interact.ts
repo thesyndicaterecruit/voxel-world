@@ -1,5 +1,5 @@
 import { H } from './config';
-import { AIR, BEDROCK, GRASS, DIRT, HOTBAR } from './blocks';
+import { AIR, BEDROCK, GRASS, DIRT, HOTBAR, REPLACEABLE } from './blocks';
 import { world } from './world';
 import { P, V, aim, collides, overlapsPlayer } from './player';
 import { hud, toast } from './ui';
@@ -27,7 +27,7 @@ export function createInteraction(fx: Effects): Interaction {
       buzz(14);
     } else {
       const x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
-      if (!world.isLoaded(x, z) || y < 0 || y >= H || world.getBlock(x, y, z) !== AIR) return;
+      if (!world.isLoaded(x, z) || y < 0 || y >= H || !REPLACEABLE[world.getBlock(x, y, z)]) return;
       if (overlapsPlayer(x, y, z)) {
         // block would only poke up into your feet (e.g. mid-jump): hop you on top → easy pillaring
         if (y + 1 - P[1] > 0.6 || collides(P[0], y + 1, P[2])) { toast("You're standing there!"); return; }
@@ -48,7 +48,7 @@ export function createInteraction(fx: Effects): Interaction {
     fx.outline.position.set(h.x, h.y, h.z);
     if (hud.mode === 'place') {
       const x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
-      if (world.isLoaded(x, z) && y >= 0 && y < H && world.getBlock(x, y, z) === AIR &&
+      if (world.isLoaded(x, z) && y >= 0 && y < H && REPLACEABLE[world.getBlock(x, y, z)] &&
           (!overlapsPlayer(x, y, z) || (y + 1 - P[1] <= 0.6 && !collides(P[0], y + 1, P[2])))) {
         fx.ghost.visible = true;
         fx.ghost.position.set(x + 0.5, y + 0.5, z + 0.5);

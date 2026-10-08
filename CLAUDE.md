@@ -3,7 +3,7 @@
 A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and Vite.
 The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of 16×16
 columns (full height). Chunks stream in and out around the player; generation and meshing run in
-Web Workers, and each chunk draws in one call. You walk around with an on-screen joystick, look by
+Web Workers, and each chunk draws in at most three calls (opaque, cutout, translucent). You walk around with an on-screen joystick, look by
 dragging, and break/place 8 block types. Worlds are save files in IndexedDB: edited chunks plus the
 player state, picked from a list on the start card. Mid-range Android phones in Chrome are the
 target. All textures are painted procedurally at startup — there are no image assets and no runtime
@@ -36,7 +36,9 @@ src/
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
                      faceHidden() culling rule, HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
-  textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, tile texture array, chunk material
+  textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, RGBA tile texture array,
+                     chunk materials per render pass
+  mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
   gen.ts             Pure world generation: columnHeight, layering, trees, generateChunk(seed, cx, cz), findSpawn
   worker.ts          Web Worker entry: runs generateChunk and meshChunk off the main thread
@@ -47,7 +49,8 @@ src/
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
-  mesher.ts          Pure chunk mesher: padded chunk data → typed arrays (face culling, baked face light, AO, tile layer)
+  mesher.ts          Pure chunk mesher: padded chunk data → typed arrays per render pass (face culling, baked
+                     face light, AO, tile layer; cube and liquid models)
   meshing.ts         paddedCopy (chunk + 1-block border), mesher output → BufferGeometry; boxesGeometry
   environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
   effects.ts         Target outline, placement ghost, block-break particles
@@ -82,10 +85,12 @@ borders) ahead of everything else.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
   texture changes.
-- **Water (for now):** there are no water blocks. Water is a single translucent surface at `WATER_Y`
-  (just under `SEA_LEVEL`) covering the whole world — it follows the camera — and the view turns
-  blue (fog, clear colour, `body.under` CSS tint) when the camera is below it. The player walks on
-  the seabed as if it were dry. Proper water blocks (and swimming) come in a later milestone.
+- **Water (for now):** the sea is a single translucent surface at `WATER_Y` (just under
+  `SEA_LEVEL`) covering the whole world — it follows the camera — and the view turns blue (fog,
+  clear colour, `body.under` CSS tint) when the camera is below it. The player walks on the seabed
+  as if it were dry. A `WATER` block exists in the registry (translucent, liquid model, level in its
+  block state) but the world doesn't generate it and it isn't in the hotbar yet (place it with
+  `__voxel.setBlock`); real water and swimming come in a later milestone.
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`Streamer`, `WorkerPool`,
   `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
@@ -120,13 +125,25 @@ borders) ahead of everything else.
   within `R·16 + 24` (so a meshed chunk always has its 8 neighbours), unloaded beyond `R·16 + 48`.
   Fog ends exactly at `R·16`, and is *radial* (`fog.ts`), so chunks fade in instead of popping.
   Every fogged material needs `radialFog()` (or `radialFogVertex` in its own `onBeforeCompile`).
-- **Budgets:** at most 2 new chunk meshes are added per frame (a new mesh skips frustum culling for
-  its first frame, so its GPU upload happens then), and at most 8 normal worker jobs start per
-  frame. Edit re-meshes skip both limits. Loads go nearest-first, favouring chunks in view.
-- **One draw call per chunk:** every tile is a layer of `tileArray` (a `DataTexture2DArray`, r128's
-  name for `DataArrayTexture`), the tile is a per-vertex `layer` attribute, and `chunkMaterial` is a
-  `MeshBasicMaterial` patched in `onBeforeCompile` to sample the array. Vertex data is Uint8
-  (positions relative to the chunk, normalized colours). Dispose geometries when meshes go away.
+- **Budgets:** at most 2 chunks' new or re-built meshes are added per frame (a new mesh skips
+  frustum culling for its first frame, so its GPU upload happens then), and at most 8 normal worker
+  jobs start per frame. Edit re-meshes skip both limits. Loads go nearest-first, favouring chunks
+  in view.
+- **Render passes:** each chunk has up to three meshes, created only when non-empty — opaque,
+  cutout (alpha-tested at 0.5, writes depth: leaves, glass, torches) and translucent (alpha-blended,
+  no depth writes: water; drawn after everything else, and `streamer.sortTranslucent` orders the
+  chunks back to front each frame through `renderOrder`). A block's faces go into its registry
+  `renderPass` (leaves into the opaque one when meshed as opaque cubes).
+- **One draw call per pass:** every tile is a layer of `tileArray` (an RGBA `DataTexture2DArray`,
+  r128's name for `DataArrayTexture`), the tile is a per-vertex `layer` attribute, and the three
+  `chunkMaterials` are `MeshBasicMaterial`s patched in `onBeforeCompile` to sample the array (the
+  opaque one ignores alpha). Vertex positions are `Uint16` fixed point in 1/32 block relative to the
+  chunk (`FP` in `mesher.ts`; meshes are scaled by 1/32), uvs are `Uint8` texels (0–32), colours are
+  normalized `Uint8`. Dispose geometries when meshes go away.
+- **Cutout tiles** (tiles of cutout blocks with see-through texels) get colour bleeding into their
+  clear texels and coverage-preserving mip levels (`mipmaps.ts`), uploaded over GL's generated
+  mips in the texture's `onUpdate`, so leaves and glass frames don't fade out in the distance.
+  Other tiles keep GL's mipmaps. New tiles go at the end of `TILE_PAINTERS`.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar
   slot, break/place mode); store `chunks` holds only *edited* chunks under `${worldId}:${cx},${cz}`
@@ -155,7 +172,8 @@ borders) ahead of everything else.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
   `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
   (non-air blocks in loaded chunks), `stream()` (loaded/meshed/visible counts, draw calls),
-  `chunk(cx, cz)` (one chunk's streaming state), `setRenderDistance(r)`, `worldId` and `save()`.
+  `chunk(cx, cz)` (one chunk's streaming state, triangles per pass), `setRenderDistance(r)`,
+  `setFancyLeaves(on)`, `getState`, `worldId` and `save()`.
   Keep it working. Headless tests can use it; `?seed=123` in the URL gives a fixed world.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.

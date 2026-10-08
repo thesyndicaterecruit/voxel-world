@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CS, H, CI } from './config';
 import type { World } from './world';
-import { FACES, PI, type MeshData } from './mesher';
+import { FACES, PI, type PassMesh } from './mesher';
 
 /**
  * Copy chunk (cx, cz) plus a one-block border from its 8 neighbours into `out` (PI layout).
@@ -23,8 +23,11 @@ export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array): v
   }
 }
 
-/** Turn mesher output into a geometry (positions are relative to the chunk origin). */
-export function chunkGeometry(m: MeshData): THREE.BufferGeometry {
+/**
+ * Turn one pass of mesher output into a geometry. Positions are relative to the chunk origin in 1/FP
+ * block, so the mesh is scaled by 1/FP; the material divides the texel uvs by FP.
+ */
+export function chunkGeometry(m: PassMesh): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(m.pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(m.col, 3, true));

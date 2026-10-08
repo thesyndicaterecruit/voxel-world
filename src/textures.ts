@@ -1,13 +1,17 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
+import { B } from './blocks';
+import { FP } from './mesher';
+import { coverageMips, bleedColors } from './mipmaps';
 
 /* ================= PROCEDURAL PIXEL-ART TEXTURES (32×32) ================= */
 const TS = 32;
 const trand = mulberry(20240607);              // fixed seed: same textures every time
 
 type RGB = [number, number, number];
-type Put = (x: number, y: number, c: RGB, k?: number) => void;
+/** Set a texel: colour c × brightness k, alpha a (0 = clear, for cutout and translucent tiles) */
+type Put = (x: number, y: number, c: RGB, k?: number, a?: number) => void;
 type Each = (f: (x: number, y: number) => void) => void;
 type Painter = (put: Put, each: Each) => void;
 
@@ -32,10 +36,10 @@ function tile(paint: Painter): HTMLCanvasElement {
   const cv = document.createElement('canvas');
   cv.width = cv.height = TS;
   const g = cv.getContext('2d')!, img = g.createImageData(TS, TS), d = img.data;
-  const put: Put = (x, y, c, k = 1) => {
+  const put: Put = (x, y, c, k = 1, a = 255) => {
     x = ((x % TS) + TS) % TS; y = ((y % TS) + TS) % TS;
     const i = (y * TS + x) * 4;
-    d[i] = c[0] * k; d[i + 1] = c[1] * k; d[i + 2] = c[2] * k; d[i + 3] = 255;
+    d[i] = c[0] * k; d[i + 1] = c[1] * k; d[i + 2] = c[2] * k; d[i + 3] = a;
   };
   const each: Each = (f) => { for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) f(x, y); };
   paint(put, each);
@@ -141,23 +145,55 @@ const brick: Painter = (put, each) => {
 const bedrock: Painter = (put, each) => {
   each((x, y) => put(x, y, pick(P_BED, 0.6 * tn(x, y, 4, 4, 16) + 0.4 * trand())));
 };
+const P_WATER = pal(0x2c69ad, 0x3274bb, 0x3b80c6, 0x448bcf, 0x5299d8);
+const water: Painter = (put, each) => {
+  // see-through blue with soft horizontal swells and a few light glints
+  each((x, y) => put(x, y, pick(P_WATER, 0.6 * tn(x, y, 16, 4, 21) + 0.4 * tn(x, y, 8, 8, 22)), 1, 165));
+  for (let i = 0; i < 7; i++) {
+    const x = rx(), y = rx(), n = 3 + Math.floor(trand() * 5);
+    for (let j = 0; j < n; j++) put(x + j, y, hx(0x9fd0f2), 1, 190);
+  }
+};
 
-// Order must match the T_* tile ids in blocks.ts. Painting order also matters:
-// all tiles share `trand`, so reordering would change every texture.
-const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock];
+// Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
+// `trand`, so inserting or reordering would change every texture after that point.
+const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
   canvases: HTMLCanvasElement[];
   /** One texture per tile (particles, placement ghost) */
   textures: THREE.CanvasTexture[];
-  /** Every tile as one layer of a texture array, layer = tile id */
+  /** Every tile as one layer of a texture array (RGBA), layer = tile id */
   tileArray: THREE.DataTexture2DArray;
-  /** Material for chunk meshes: samples tileArray with the per-vertex `layer`, so a chunk is one draw call */
-  chunkMaterial: THREE.MeshBasicMaterial;
+  /**
+   * Chunk materials per render pass — opaque, cutout, translucent. Each samples tileArray with the
+   * per-vertex `layer`, so every pass of a chunk is one draw call.
+   */
+  chunkMaterials: THREE.MeshBasicMaterial[];
 }
 
-/** Paint every tile and wrap it in textures + the chunk material. Call exactly once. */
+/**
+ * Chunk material for render pass `pass`: 0 opaque (alpha ignored), 1 cutout (alpha-tested at 0.5,
+ * writes depth), 2 translucent (alpha-blended, no depth writes, drawn after the rest).
+ */
+function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE.MeshBasicMaterial {
+  const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: pass === 2, depthWrite: pass !== 2 });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.tiles = { value: tileArray };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float layer;\nvarying vec3 vTile;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / FP}, layer );`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;')
+      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : 'diffuseColor *= texture( tiles, vTile );');
+    radialFogVertex(sh);
+  };
+  m.customProgramCacheKey = () => 'tiles' + pass;
+  return m;
+}
+
+/** Paint every tile and wrap it in textures + the chunk materials. Call exactly once. */
 export function createTextures(renderer: THREE.WebGLRenderer): Textures {
   const canvases = TILE_PAINTERS.map(tile);
   const aniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
@@ -171,28 +207,38 @@ export function createTextures(renderer: THREE.WebGLRenderer): Textures {
 
   // The same pixels as a texture array (WebGL2; three r128 calls it DataTexture2DArray). Rows are
   // flipped so that v = 1 is the top of the canvas, as with the flipY canvas textures.
-  const row = TS * 4, data = new Uint8Array(row * TS * canvases.length);
+  const row = TS * 4, layer = row * TS, data = new Uint8Array(layer * canvases.length);
   canvases.forEach((cv, l) => {
     const px = cv.getContext('2d')!.getImageData(0, 0, TS, TS).data;
     for (let y = 0; y < TS; y++) data.set(px.subarray(y * row, (y + 1) * row), (l * TS + TS - 1 - y) * row);
   });
+  // Tiles of cutout blocks that have see-through texels get colour bleeding (no dark fringes) and
+  // coverage-preserving mip levels (they don't fade away in the distance). GL generates the mips of
+  // every tile; onUpdate then overwrites these tiles' levels.
+  const cutout = new Map<number, Uint8Array[]>();
+  for (const b of B) {
+    if (!b || b.renderPass !== 'cutout') continue;
+    for (const t of b.tex) {
+      const px = data.subarray(t * layer, (t + 1) * layer);
+      if (cutout.has(t) || !px.some((v, i) => (i & 3) === 3 && v < 255)) continue;
+      bleedColors(px, TS);
+      cutout.set(t, coverageMips(px, TS));
+    }
+  }
   const tileArray = new THREE.DataTexture2DArray(data, TS, TS, canvases.length);
   tileArray.magFilter = THREE.NearestFilter;
   tileArray.minFilter = THREE.LinearMipmapLinearFilter;
   tileArray.generateMipmaps = true;
   tileArray.anisotropy = aniso;
+  tileArray.onUpdate = () => {
+    // three has just uploaded level 0 and generated the mips, with the array still bound
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    for (const [t, mips] of cutout) mips.forEach((m, i) => {
+      const s = TS >> (i + 1);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, i + 1, 0, 0, t, s, s, 1, gl.RGBA, gl.UNSIGNED_BYTE, m);
+    });
+  };
   tileArray.needsUpdate = true;
 
-  const chunkMaterial = new THREE.MeshBasicMaterial({ vertexColors: true });
-  chunkMaterial.onBeforeCompile = (sh) => {
-    sh.uniforms.tiles = { value: tileArray };
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float layer;\nvarying vec3 vTile;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvTile = vec3( uv, layer );');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;')
-      .replace('#include <map_fragment>', 'diffuseColor *= texture( tiles, vTile );');
-    radialFogVertex(sh);
-  };
-  return { canvases, textures, tileArray, chunkMaterial };
+  return { canvases, textures, tileArray, chunkMaterials: [0, 1, 2].map((p) => chunkMaterial(tileArray, p)) };
 }

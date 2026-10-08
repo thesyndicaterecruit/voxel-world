@@ -1,5 +1,5 @@
-import { CS, H } from './config';
-import { AIR, B, ROT, OCCLUDES, faceHidden } from './blocks';
+import { CS, H, CI } from './config';
+import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, faceHidden } from './blocks';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO) ======================= */
@@ -51,36 +51,78 @@ export const FACES: Face[] = ([
 
 const AO = [0.5, 0.68, 0.85, 1];
 
-export interface MeshData {
-  /** Vertex position relative to the chunk origin (x, y, z) */
-  pos: Uint8Array;
+/** Vertex positions and texture coords are fixed point: 1/FP of a block, and texels (1/FP of a tile). */
+export const FP = 32;
+
+/** One render pass of a chunk mesh. */
+export interface PassMesh {
+  /** Vertex position relative to the chunk origin, in 1/FP block (x, y, z) */
+  pos: Uint16Array;
   /** Baked face light × AO × block jitter, 0..255 (r = g = b) */
   col: Uint8Array;
-  /** Texture coords, 0 or 1 */
+  /** Texture coords in texels, 0..FP (u, v; v = FP is the top of the tile) */
   uv: Uint8Array;
   /** Texture tile (layer of the tile array) per vertex */
   layer: Uint8Array;
   index: Uint16Array | Uint32Array;
 }
+/** A chunk's meshes by render pass — 0 opaque, 1 cutout, 2 translucent — null where a pass is empty. */
+export type MeshData = (PassMesh | null)[];
+
+/** Growable vertex/index buffers for one pass. */
+function builder() {
+  let cap = 1024, n = 0, ni = 0;
+  let pos = new Uint16Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
+  let lay = new Uint8Array(cap), idx = new Uint32Array(cap * 1.5);
+  return {
+    /** Add a vertex; returns its index. */
+    vert(x: number, y: number, z: number, k: number, u: number, v: number, l: number): number {
+      if (n === cap) {
+        cap *= 2;
+        const p2 = new Uint16Array(cap * 3), c2 = new Uint8Array(cap * 3), u2 = new Uint8Array(cap * 2);
+        const l2 = new Uint8Array(cap), i2 = new Uint32Array(cap * 1.5);
+        p2.set(pos); c2.set(col); u2.set(uv); l2.set(lay); i2.set(idx);
+        pos = p2; col = c2; uv = u2; lay = l2; idx = i2;
+      }
+      pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z;
+      col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = k;
+      uv[n * 2] = u; uv[n * 2 + 1] = v;
+      lay[n] = l;
+      return n++;
+    },
+    /** Two triangles over vertices a b c d (CCW); `flip` uses the other diagonal (b–d). */
+    quad(a: number, b: number, c: number, d: number, flip: boolean): void {
+      if (flip) { idx[ni++] = b; idx[ni++] = c; idx[ni++] = d; idx[ni++] = b; idx[ni++] = d; idx[ni++] = a; }
+      else { idx[ni++] = a; idx[ni++] = b; idx[ni++] = c; idx[ni++] = a; idx[ni++] = c; idx[ni++] = d; }
+    },
+    finish(): PassMesh | null {
+      if (!ni) return null;
+      const index = n > 65535 ? idx.slice(0, ni) : Uint16Array.from(idx.subarray(0, ni));
+      return { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), layer: lay.slice(0, n), index };
+    },
+  };
+}
+
+/** Top of a liquid block, in 1/FP: full when the same liquid is above, else lower for higher levels. */
+const liquidTop = (level: number, sameAbove: boolean) => (sameAbove ? FP : 28 - 3 * (level & 7));
 
 /**
  * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
- * outside the world or in missing chunks are air). (x0, z0) is the chunk's world origin: the
- * per-block brightness and tile rotation hash world coordinates with the world seed, so the result
- * does not depend on which chunk is meshed first. Every face goes in one index list: the tile is a
- * vertex attribute, so a chunk draws in a single call. `opaqueLeaves`: leaves are meshed as opaque
- * cubes (see faceHidden).
+ * outside the world or in missing chunks are air); `state` is the chunk's own per-block state (CI
+ * layout), if it has any. (x0, z0) is the chunk's world origin: the per-block brightness and tile
+ * rotation hash world coordinates with the world seed, so the result does not depend on which
+ * chunk is meshed first. Each block's faces go into its render pass, one mesh per pass: the tile is
+ * a vertex attribute, so every pass of a chunk draws in a single call. `opaqueLeaves`: leaves are
+ * meshed as opaque cubes, in the opaque pass (see faceHidden).
  */
-export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number, opaqueLeaves = true): MeshData {
-  let cap = 8192, n = 0, ni = 0;                  // vertex capacity, vertex count, index count
-  let pos = new Uint8Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
-  let lay = new Uint8Array(cap), idx = new Uint32Array(cap * 1.5);
+export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number, z0: number, seed: number, opaqueLeaves = true): MeshData {
+  const passes = [builder(), builder(), builder()];
   const occ = (px: number, y: number, pz: number) => (y >= 0 && y < H ? OCCLUDES[pad[PI(px, y, pz)]] : 0);
   const aoAt = (px: number, y: number, pz: number, o: number[]) => {
     const s1 = occ(px + o[0], y + o[1], pz + o[2]), s2 = occ(px + o[3], y + o[4], pz + o[5]);
     return s1 && s2 ? AO[0] : AO[3 - s1 - s2 - occ(px + o[6], y + o[7], pz + o[8])];
   };
-  const L = [0, 0, 0, 0];
+  const L = [0, 0, 0, 0], vi = [0, 0, 0, 0];
   // skip the empty layers above the highest block
   let top = H - 1;
   for (; top >= 0; top--) {
@@ -92,8 +134,27 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number,
   for (let y = 0; y <= top; y++) for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
     const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
     if (id === AIR) continue;
-    const x = x0 + lx, z = z0 + lz;
-    const b = B[id], j = 1 - b.jit * hash3(seed, x, y, z);
+    const x = x0 + lx, z = z0 + lz, b = B[id], model = MODEL[id];
+    const out = passes[opaqueLeaves && id === LEAVES ? 0 : PASS[id]];
+
+    if (model === 2) {                             // liquid: no AO, lowered top unless more liquid is above
+      const above = y + 1 < H ? pad[PI(px, y + 1, pz)] : AIR;
+      const t = liquidTop(state ? state[CI(lx, y, lz)] : 0, above === id);
+      for (let f = 0; f < 6; f++) {
+        const F = FACES[f], ny = y + F.n[1];
+        if (ny < 0 || (ny < H && faceHidden(id, pad[PI(px + F.n[0], ny, pz + F.n[2])], opaqueLeaves))) continue;
+        const k = Math.round(F.s * 255), tl = b.tex[F.k];
+        for (let i = 0; i < 4; i++) {
+          const v = F.v[i], q = F.uv[i];
+          vi[i] = out.vert((lx + v[0]) * FP, y * FP + (v[1] ? t : 0), (lz + v[2]) * FP, k,
+            q[0] * FP, F.n[1] ? q[1] * FP : (v[1] ? t : 0), tl);
+        }
+        out.quad(vi[0], vi[1], vi[2], vi[3], false);
+      }
+      continue;
+    }
+
+    const j = 1 - b.jit * hash3(seed, x, y, z);
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], ny = y + F.n[1];
       if (ny < 0 || (ny < H && faceHidden(id, pad[PI(px + F.n[0], ny, pz + F.n[2])], opaqueLeaves))) continue; // hidden face
@@ -103,31 +164,14 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number,
       const tl = b.tex[F.k];
       const rot = ROT.has(tl) ? Math.floor(hash3(seed, x * 3 + f, y, z - f) * 4) : 0;
       const sh = F.s * j;
-      if (n + 4 > cap) {                           // grow the buffers
-        cap *= 2;
-        const p2 = new Uint8Array(cap * 3), c2 = new Uint8Array(cap * 3), u2 = new Uint8Array(cap * 2);
-        const l2a = new Uint8Array(cap), i2 = new Uint32Array(cap * 1.5);
-        p2.set(pos); c2.set(col); u2.set(uv); l2a.set(lay); i2.set(idx);
-        pos = p2; col = c2; uv = u2; lay = l2a; idx = i2;
-      }
-      const base = n;
-      for (let i = 0; i < 4; i++, n++) {
-        const v = F.v[i], k = Math.round(sh * L[i] * 255), q = F.uv[(i + rot) & 3];
-        pos[n * 3] = lx + v[0]; pos[n * 3 + 1] = y + v[1]; pos[n * 3 + 2] = lz + v[2];
-        col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = k;   // baked light + AO tints the texture
-        uv[n * 2] = q[0]; uv[n * 2 + 1] = q[1];
-        lay[n] = tl;
+      for (let i = 0; i < 4; i++) {
+        const v = F.v[i], q = F.uv[(i + rot) & 3];
+        // baked light + AO tints the texture
+        vi[i] = out.vert((lx + v[0]) * FP, (y + v[1]) * FP, (lz + v[2]) * FP, Math.round(sh * L[i] * 255), q[0] * FP, q[1] * FP, tl);
       }
       // flip the quad diagonal so AO interpolates smoothly
-      if (l0 + l2 > l1 + l3) {
-        idx[ni++] = base + 1; idx[ni++] = base + 2; idx[ni++] = base + 3;
-        idx[ni++] = base + 1; idx[ni++] = base + 3; idx[ni++] = base;
-      } else {
-        idx[ni++] = base; idx[ni++] = base + 1; idx[ni++] = base + 2;
-        idx[ni++] = base; idx[ni++] = base + 2; idx[ni++] = base + 3;
-      }
+      out.quad(vi[0], vi[1], vi[2], vi[3], l0 + l2 > l1 + l3);
     }
   }
-  const index = n > 65535 ? idx.slice(0, ni) : Uint16Array.from(idx.subarray(0, ni));
-  return { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), layer: lay.slice(0, n), index };
+  return passes.map((p) => p.finish());
 }

@@ -75,7 +75,7 @@ async function boot(): Promise<void> {
     create: () => void createWorld(nextName(list), randomSeed()).then((w) => reopen(w.id)),
   });
 
-  const { canvases, textures, chunkMaterial } = createTextures(renderer);
+  const { canvases, textures, chunkMaterials } = createTextures(renderer);
 
   /* ============================ RENDERER ============================ */
   let pr = Math.min(window.devicePixelRatio || 1, 2);
@@ -91,7 +91,7 @@ async function boot(): Promise<void> {
     () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode } : null));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
-  const streamer = createStreamer(scene, chunkMaterial, pool, save);
+  const streamer = createStreamer(scene, chunkMaterials, pool, save);
   world.onChange = (x, _y, z) => { streamer.markDirty(x, z); save.touch(x >> CB, z >> CB); };
   const env = createEnvironment(scene, renderer, seed, home.x, home.z);
   const fx = createEffects(scene, textures);
@@ -182,6 +182,7 @@ async function boot(): Promise<void> {
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     env.update(dt, camera);
+    streamer.sortTranslucent(camera.position);
     renderer.render(scene, camera);
 
     // adaptive resolution: drop pixel ratio on slow phones
@@ -203,6 +204,7 @@ async function boot(): Promise<void> {
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
+    setFancyLeaves: (on: boolean) => streamer.setOpaqueLeaves(!on),
     worldId: record.id, save: () => save.save(),
   };
 }
