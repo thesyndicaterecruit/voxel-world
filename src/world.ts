@@ -1,15 +1,7 @@
-import { CB, CS, H, NCX, NCZ, W, D, SEA_LEVEL } from './config';
-import { AIR, GRASS, DIRT, STONE, SAND, LOG, LEAVES, BEDROCK } from './blocks';
-import { fbm, rand, sstep } from './noise';
+import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
+import { AIR } from './blocks';
 
 /* ============================ CHUNKS ============================ */
-/** Blocks in one chunk: CS × CS columns, full height. */
-export const CHUNK_VOL = CS * CS * H;
-/** Index of local block (lx, y, lz) in chunk data: x fastest, then z, then y. */
-export const CI = (lx: number, y: number, lz: number) => lx + CS * (lz + CS * y);
-/** Is column (x, z) inside the world? */
-export const inWorld = (x: number, z: number) => x >= 0 && x < W && z >= 0 && z < D;
-
 export interface Chunk {
   readonly cx: number;
   readonly cz: number;
@@ -24,6 +16,8 @@ export interface Chunk {
  */
 export class World {
   private readonly chunks: (Chunk | undefined)[] = new Array(NCX * NCZ).fill(undefined);
+  /** World seed: terrain generation and per-block texture variation derive from it. */
+  seed = 0;
   /** Told about every block change made through setBlock (the mesher marks chunks dirty). */
   onChange: ((x: number, y: number, z: number) => void) | null = null;
 
@@ -78,73 +72,6 @@ export class World {
 }
 
 export const world = new World();
-
-/* ======================= ISLAND (stand-in generator) ======================= */
-// The original 32×32 island, generated exactly as before and placed in the four chunks at the
-// centre of the world, lifted so its beaches sit at SEA_LEVEL. Everything else stays unloaded,
-// so the island keeps its invisible walls.
-const IW = 32, ID = 32, IH = 40;
-export const ISLAND_X = W / 2 - IW / 2, ISLAND_Z = D / 2 - ID / 2, ISLAND_LIFT = SEA_LEVEL - 7;
-
-/** Fill the island chunks. Consumes `rand`, so call it before anything else that does. */
-export function generateWorld(): void {
-  const vox = new Uint8Array(IW * IH * ID);
-  const I = (x: number, y: number, z: number) => x + IW * (z + ID * y);
-  const inXZ = (x: number, z: number) => x >= 0 && x < IW && z >= 0 && z < ID;
-  const topY = (x: number, z: number) => { for (let y = IH - 1; y >= 0; y--) if (vox[I(x, y, z)] !== AIR) return y; return -1; };
-
-  // island heightmap: fbm noise with a radial falloff so the edges become beach
-  for (let z = 0; z < ID; z++) for (let x = 0; x < IW; x++) {
-    const nx = (x + 0.5) / IW - 0.5, nz = (z + 0.5) / ID - 0.5;
-    const d = Math.sqrt(nx * nx + nz * nz) * 2;
-    const mask = 1 - sstep(Math.min(1, Math.max(0, (d - 0.5) / 0.46)));
-    const h = Math.min(IH - 12, 7 + Math.floor(mask * (2 + fbm(x * 0.07, z * 0.07) * 14)));
-    for (let y = 0; y < h; y++) {
-      let b;
-      if (y === 0) b = BEDROCK;
-      else if (h <= 8) b = y >= h - 3 ? SAND : STONE;
-      else if (y === h - 1) b = h >= 19 ? STONE : GRASS;
-      else if (y >= h - 4) b = DIRT;
-      else b = STONE;
-      vox[I(x, y, z)] = b;
-    }
-  }
-  // a few oak-style trees (kept away from spawn)
-  const trees: [number, number][] = [];
-  for (let tries = 0; tries < 300 && trees.length < 7; tries++) {
-    const x = 3 + Math.floor(rand() * (IW - 6)), z = 3 + Math.floor(rand() * (ID - 6));
-    const g = topY(x, z), h = g + 1;
-    if (vox[I(x, g, z)] !== GRASS || h > 17) continue;
-    if (Math.hypot(x - IW / 2, z - ID / 2) < 4.5) continue;
-    if (trees.some((t) => Math.abs(t[0] - x) < 5 && Math.abs(t[1] - z) < 5)) continue;
-    trees.push([x, z]);
-    const th = 4 + Math.floor(rand() * 2);
-    vox[I(x, g, z)] = DIRT;
-    for (let y = h; y < h + th; y++) vox[I(x, y, z)] = LOG;
-    for (let dy = th - 2; dy <= th + 1; dy++) {
-      const r = dy <= th - 1 ? 2 : 1;
-      for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
-        const corner = Math.abs(dx) === r && Math.abs(dz) === r;
-        if (corner && (r === 2 ? rand() < 0.5 : dy === th + 1)) continue;
-        const X = x + dx, Y = h + dy, Z = z + dz;
-        if (inXZ(X, Z) && Y < IH && vox[I(X, Y, Z)] === AIR) vox[I(X, Y, Z)] = LEAVES;
-      }
-    }
-  }
-
-  // copy into chunks: bedrock moves down to y=0 and the lift underneath is stone
-  for (let cz = ISLAND_Z >> CB; cz < (ISLAND_Z + ID) >> CB; cz++) for (let cx = ISLAND_X >> CB; cx < (ISLAND_X + IW) >> CB; cx++) {
-    const data = new Uint8Array(CHUNK_VOL);
-    for (let y = 0; y < H; y++) for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
-      const x = cx * CS + lx - ISLAND_X, z = cz * CS + lz - ISLAND_Z, iy = y - ISLAND_LIFT;
-      let b = iy > 0 && iy < IH ? vox[I(x, iy, z)] : AIR;
-      if (y === 0) b = BEDROCK;
-      else if (iy <= 0) b = STONE;
-      data[CI(lx, y, lz)] = b;
-    }
-    world.setChunk(cx, cz, data);
-  }
-}
 
 /* ===================== RAYCAST (voxel DDA) ===================== */
 export interface Hit { x: number; y: number; z: number; nx: number; ny: number; nz: number }

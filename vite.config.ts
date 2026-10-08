@@ -5,4 +5,5 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   build: { target: 'es2020', chunkSizeWarningLimit: 700 }, // three r128 is ~500 kB on its own
+  worker: { format: 'es' },
 });

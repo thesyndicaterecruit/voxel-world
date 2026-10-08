@@ -2,6 +2,12 @@
 export const CB = 4, CS = 1 << CB, H = 64;
 // World size in chunks and in blocks: 32×32 chunks = 512×512 blocks
 export const NCX = 32, NCZ = 32, W = NCX * CS, D = NCZ * CS;
+/** Blocks in one chunk */
+export const CHUNK_VOL = CS * CS * H;
+/** Index of local block (lx, y, lz) in chunk data: x fastest, then z, then y. */
+export const CI = (lx: number, y: number, lz: number) => lx + CS * (lz + CS * y);
+/** Is column (x, z) inside the world? */
+export const inWorld = (x: number, z: number) => x >= 0 && x < W && z >= 0 && z < D;
 // Blocks below y = SEA_LEVEL are under water. The water surface sits just below the top of a
 // sea-level beach (y = SEA_LEVEL) so the two never z-fight.
 export const SEA_LEVEL = 20;

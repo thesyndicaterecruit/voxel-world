@@ -1,19 +1,31 @@
 import * as THREE from 'three';
 import { WATER_Y, HORIZON, ZENITH } from './config';
-import { rand } from './noise';
+import { mulberry } from './noise';
 import { boxesGeometry } from './meshing';
-import { ISLAND_X, ISLAND_Z, ISLAND_LIFT } from './world';
 
-// the island's footprint: ocean and clouds are laid out around it
-const X0 = ISLAND_X, Z0 = ISLAND_Z, X1 = ISLAND_X + 32, Z1 = ISLAND_Z + 32;
+/* ======================= SKY, SUN, WATER, CLOUDS ======================= */
+const WATER = 0x3b86cc;
+// Under water: short blue fog, blue background, and a CSS tint over the view (body.under)
+const UNDER = 0x1f5f94, UNDER_NEAR = -4, UNDER_FAR = 20;
+// Clouds live in a box around the camera and wrap around it as it moves
+const CLOUD_BOX = 320;
 
-/* ======================= SKY, SUN, OCEAN, CLOUDS ======================= */
 export interface Environment {
-  /** Drift the clouds and keep sky + sun centred on the camera. */
+  /** Drift the clouds, keep sky, sun and water centred on the camera, switch the underwater look. */
   update(dt: number, camera: THREE.Camera): void;
+  /** Fog for normal (above-water) viewing: terrain fades from `near` to fully hidden at `far`. */
+  setFog(near: number, far: number): void;
 }
 
-export function createEnvironment(scene: THREE.Scene): Environment {
+/**
+ * `seed` lays out the clouds (same seed, same sky); (x, z) is where they start out, around the
+ * spawn point.
+ */
+export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRenderer, seed: number, x: number, z: number): Environment {
+  const fog = new THREE.Fog(HORIZON, 34, 110);
+  scene.fog = fog;
+  let fogNear = fog.near, fogFar = fog.far, under = false;
+
   const skyGeo = new THREE.SphereGeometry(250, 32, 16);
   {
     const p = skyGeo.attributes.position, cols: number[] = [];
@@ -30,39 +42,59 @@ export function createEnvironment(scene: THREE.Scene): Environment {
   const SUN_DIR = new THREE.Vector3(0.55, 0.62, -0.56).normalize();
   const sun = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshBasicMaterial({ color: 0xfff6c8, fog: false }));
   scene.add(sun);
-  {
-    // ocean: four big quads around the island at the water surface
-    const OC = 300, pos: number[] = [], ind: number[] = [];
-    for (const [x0, z0, x1, z1] of [[X0 - OC, Z0 - OC, X1 + OC, Z0], [X0 - OC, Z1, X1 + OC, Z1 + OC], [X0 - OC, Z0, X0, Z1], [X1, Z0, X1 + OC, Z1]]) {
-      const b = pos.length / 3;
-      pos.push(x0, WATER_Y, z1, x1, WATER_Y, z1, x1, WATER_Y, z0, x0, WATER_Y, z0);
-      ind.push(b, b + 1, b + 2, b, b + 2, b + 3);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setIndex(ind);
-    scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0x3b86cc })));
-  }
+
+  // one water surface over the whole world (it follows the camera, so it never ends); seen from
+  // both sides, and slightly see-through so shallow seabeds show
+  const waterGeo = new THREE.PlaneGeometry(1600, 1600).rotateX(-Math.PI / 2);
+  const water = new THREE.Mesh(waterGeo, new THREE.MeshBasicMaterial({ color: WATER, side: THREE.DoubleSide, transparent: true, opacity: 0.82 }));
+  water.position.y = WATER_Y;
+  scene.add(water);
+
+  const rand = mulberry(seed ^ 0x5bd1e995);
   const cloudMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false });
   const clouds: THREE.Mesh[] = [];
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < 14; i++) {
     const boxes: number[][] = [], n = 2 + Math.floor(rand() * 3);
     for (let k = 0; k < n; k++) {
       const w = 4 + rand() * 7, d = 3 + rand() * 5, ox = (rand() - 0.5) * 8, oz = (rand() - 0.5) * 6;
       boxes.push([ox, 0, oz, ox + w, 1.2, oz + d]);
     }
     const c = new THREE.Mesh(boxesGeometry(boxes), cloudMat);
-    c.position.set(X0 - 80 + rand() * 190, ISLAND_LIFT + 44 + rand() * 7, Z0 - 70 + rand() * 170);
+    c.position.set(x + (rand() - 0.5) * CLOUD_BOX, 64 + rand() * 8, z + (rand() - 0.5) * CLOUD_BOX);
     scene.add(c);
     clouds.push(c);
   }
+  const wrap = (v: number, around: number) => v - Math.round((v - around) / CLOUD_BOX) * CLOUD_BOX;
+  const tint = document.body.classList;
 
   return {
     update(dt, camera) {
-      for (const c of clouds) { c.position.x += dt * 0.9; if (c.position.x > X1 + 100) c.position.x -= 220; }
-      sky.position.copy(camera.position);
-      sun.position.copy(camera.position).addScaledVector(SUN_DIR, 210);
-      sun.lookAt(camera.position);
+      const cam = camera.position;
+      for (const c of clouds) {
+        c.position.x = wrap(c.position.x + dt * 0.9, cam.x);
+        c.position.z = wrap(c.position.z, cam.z);
+      }
+      sky.position.copy(cam);
+      sun.position.copy(cam).addScaledVector(SUN_DIR, 210);
+      sun.lookAt(cam);
+      water.position.x = cam.x;
+      water.position.z = cam.z;
+
+      const u = cam.y < WATER_Y;
+      if (u !== under) {
+        under = u;
+        fog.color.setHex(u ? UNDER : HORIZON);
+        fog.near = u ? UNDER_NEAR : fogNear;
+        fog.far = u ? UNDER_FAR : fogFar;
+        renderer.setClearColor(u ? UNDER : HORIZON);
+        sky.visible = sun.visible = !u;
+        for (const c of clouds) c.visible = !u;
+        tint.toggle('under', u);
+      }
+    },
+    setFog(near, far) {
+      fogNear = near; fogFar = far;
+      if (!under) { fog.near = near; fog.far = far; }
     },
   };
 }

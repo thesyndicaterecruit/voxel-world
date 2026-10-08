@@ -65,10 +65,11 @@ export interface MeshData {
 
 /**
  * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
- * outside the world or in missing chunks are air). (x0, z0) is the chunk's world origin, used for the
- * per-block hashes so the result does not depend on which chunk is meshed first.
+ * outside the world or in missing chunks are air). (x0, z0) is the chunk's world origin: the
+ * per-block brightness and tile rotation hash world coordinates with the world seed, so the result
+ * does not depend on which chunk is meshed first.
  */
-export function meshChunk(pad: Uint8Array, x0: number, z0: number): MeshData {
+export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number): MeshData {
   let cap = 4096, n = 0;                           // vertex capacity / count
   let pos = new Uint8Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
   const lists: number[][] = [];
@@ -84,7 +85,7 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number): MeshData {
     const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
     if (id === AIR) continue;
     const x = x0 + lx, z = z0 + lz;
-    const b = B[id], j = 1 - b.jit * hash3(x, y, z);
+    const b = B[id], j = 1 - b.jit * hash3(seed, x, y, z);
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], ny = y + F.n[1];
       if (ny < 0 || (ny < H && pad[PI(px + F.n[0], ny, pz + F.n[2])] !== AIR)) continue; // hidden face
@@ -92,7 +93,7 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number): MeshData {
       const l0 = L[0] = aoAt(px, y, pz, o[0]), l1 = L[1] = aoAt(px, y, pz, o[1]);
       const l2 = L[2] = aoAt(px, y, pz, o[2]), l3 = L[3] = aoAt(px, y, pz, o[3]);
       const tl = b.t[F.k];
-      const rot = ROT.has(tl) ? Math.floor(hash3(x * 3 + f, y, z - f) * 4) : 0;
+      const rot = ROT.has(tl) ? Math.floor(hash3(seed, x * 3 + f, y, z - f) * 4) : 0;
       const sh = F.s * j;
       if (n + 4 > cap) {                           // grow the vertex buffers
         cap *= 2;

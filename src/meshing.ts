@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CS, H, NCX } from './config';
-import { CI, world, type World } from './world';
+import { CS, H, NCX, CI } from './config';
+import { world, type World } from './world';
 import { FACES, PAD_VOL, PI, meshChunk, type MeshData } from './mesher';
 
 /**
@@ -38,19 +38,24 @@ export function chunkGeometry(m: MeshData): THREE.BufferGeometry {
 export interface ChunkMesher {
   /** Mark the chunks touched by a change at (x, z) — including neighbours, for AO — for rebuilding. */
   markDirty(x: number, z: number): void;
-  /** Rebuild every dirty chunk. Called once per frame. */
-  flush(): void;
+  /** A chunk was loaded: build its mesh when the per-frame budget allows. */
+  addChunk(cx: number, cz: number): void;
+  /** Rebuild every dirty chunk, and build up to `budget` newly added ones. Called once per frame. */
+  flush(budget: number): void;
+  /** Added chunks still waiting for their first mesh. */
+  pending(): number;
 }
 
 /** Builds one mesh per loaded chunk (adding them to `scene`) and returns the rebuild API. */
 export function createChunkMesher(scene: THREE.Scene, materials: THREE.Material[]): ChunkMesher {
-  const meshes = new Map<number, THREE.Mesh>(), dirty = new Set<number>(), pad = new Uint8Array(PAD_VOL);
+  const meshes = new Map<number, THREE.Mesh>(), dirty = new Set<number>(), added = new Set<number>();
+  const pad = new Uint8Array(PAD_VOL);
 
   function buildChunk(ci: number): void {
     const cx = ci % NCX, cz = Math.floor(ci / NCX);
     if (!world.chunk(cx, cz)) return;
     paddedCopy(world, cx, cz, pad);
-    const geo = chunkGeometry(meshChunk(pad, cx * CS, cz * CS));
+    const geo = chunkGeometry(meshChunk(pad, cx * CS, cz * CS, world.seed));
     let m = meshes.get(ci);
     if (!m) {
       m = new THREE.Mesh(geo, materials);
@@ -61,18 +66,25 @@ export function createChunkMesher(scene: THREE.Scene, materials: THREE.Material[
       scene.add(m);
     } else { m.geometry.dispose(); m.geometry = geo; }
   }
-  world.forEachChunk((c) => buildChunk(c.cx + c.cz * NCX));
 
   return {
     markDirty(x, z) {
       for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
         const X = x + dx, Z = z + dz;
-        if (world.isLoaded(X, Z)) dirty.add(Math.floor(X / CS) + Math.floor(Z / CS) * NCX);
+        const ci = Math.floor(X / CS) + Math.floor(Z / CS) * NCX;
+        if (world.isLoaded(X, Z) && meshes.has(ci)) dirty.add(ci);
       }
     },
-    flush() {
+    addChunk(cx, cz) { added.add(cx + cz * NCX); },
+    flush(budget) {
       if (dirty.size) { dirty.forEach(buildChunk); dirty.clear(); }
+      for (const ci of added) {
+        if (budget-- <= 0) break;
+        added.delete(ci);
+        buildChunk(ci);
+      }
     },
+    pending: () => added.size,
   };
 }
 

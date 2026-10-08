@@ -1,10 +1,11 @@
 # Voxel Island
 
 A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and Vite.
-The world is 512×512×64 blocks, stored as 32×32 chunks of 16×16 columns (full height). For now only
-the four centre chunks are loaded, holding the original 32×32 island generated from a seed; you walk
-around with an on-screen joystick, look by dragging, and break/place 8 block types. All textures are painted procedurally at startup — there
-are no image assets and no runtime network requests.
+The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of 16×16
+columns (full height). Chunks are generated in Web Workers; for now a 9×9-chunk area around the
+spawn point is generated at startup. You walk around with an on-screen joystick, look by dragging,
+and break/place 8 block types. All textures are painted procedurally at startup — there are no image
+assets and no runtime network requests.
 
 Every push is built and deployed to GitHub Pages by `.github/workflows/deploy.yml`:
 https://thesyndicaterecruit.github.io/voxel-world/
@@ -30,12 +31,15 @@ src/
   main.ts            Boot: renderer, scene, camera, wiring of all modules, resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sea level, player & physics constants, sky colours
   blocks.ts          Block ids, texture tile ids, block definitions (B), HOTBAR, rotatable tiles
-  noise.ts           SEED (from ?seed=), hash2/hash3, mulberry PRNG, shared world `rand`, value noise, fbm
+  noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, materials
-  world.ts           Chunk storage + World class (getBlock/setBlock/isSolid/topY in world coords), island generator, raycast
+  gen.ts             Pure world generation: columnHeight, layering, trees, generateChunk(seed, cx, cz), findSpawn
+  worker.ts          Web Worker entry: runs generateChunk off the main thread
+  workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
+  world.ts           Chunk storage + World class (getBlock/setBlock/isSolid/topY in world coords, seed), raycast
   mesher.ts          Pure chunk mesher: padded chunk data → typed arrays (face culling, baked face light, AO)
   meshing.ts         paddedCopy, mesher output → BufferGeometry, per-chunk meshes + dirty rebuilds; boxesGeometry
-  environment.ts     Sky dome, sun, ocean, drifting clouds
+  environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
   effects.ts         Target outline, placement ghost, block-break particles
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
   interact.ts        Break/place logic (act) and target highlighting (updateTarget)
@@ -54,13 +58,20 @@ Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update
   original single-file game loaded from a CDN. Newer releases change colour management and lighting
   defaults (r152+), which would visibly change every colour. Upgrading is a deliberate roadmap item,
   not a drive-by bump.
-- **Determinism matters.** With the same `?seed=` the world, trees and clouds must come out identical.
-  `rand` in `noise.ts` is shared and consumed in a fixed order: `generateWorld()` (trees) first, then
-  `createEnvironment()` (clouds). Texture painters share `trand` (fixed seed), so `TILE_PAINTERS`
-  order in `textures.ts` must match the `T_*` ids in `blocks.ts`. Don't reorder these calls, and don't
-  add `rand()`/`trand()` calls in the middle without accepting that every world/texture changes.
-- **Creation order in `boot()`** (textures → world → chunks → environment → effects) is intentional.
-  Keep it unless you have a reason.
+- **Generation is a pure function of (seed, chunkX, chunkZ).** Every block in `gen.ts` comes from
+  hashes/noise of the seed and *world* coordinates — no `Math.random`, no shared PRNG state, no
+  trig (engines may round it differently) — so a chunk is identical whichever order chunks are
+  generated in, on any thread. Trees use one candidate per 6×6 cell; a chunk stamps every tree whose
+  canopy reaches into it, including trees rooted in neighbouring chunks. Any change to `gen.ts`
+  changes the terrain of every world for that seed.
+- **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
+  Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
+  the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
+  texture changes.
+- **Water (for now):** there are no water blocks. Water is a single translucent surface at `WATER_Y`
+  (just under `SEA_LEVEL`) covering the whole world — it follows the camera — and the view turns
+  blue (fog, clear colour, `body.under` CSS tint) when the camera is below it. The player walks on
+  the seabed as if it were dry. Proper water blocks (and swimming) come in a later milestone.
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`ChunkMesher`, `Environment`,
   `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
@@ -84,8 +95,10 @@ Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update
 - **TypeScript strict** (`noUnusedLocals`/`Parameters` on). `npm run build` must pass, since CI runs it.
   Match the existing terse style: short local names in hot loops, a one-line comment where intent
   isn't obvious, section banners (`/* ==== NAME ==== */`) for big blocks.
-- **Debugging:** `window.__voxel` exposes `P, V, get, setBlock, act, collides, step, SEED`, `yaw`,
-  `pitch`, `mode`, `onGround`, `pixelRatio`, `count()`. Keep it working. Headless tests can use it.
+- **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
+  `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
+  (non-air blocks in loaded chunks). Keep it working. Headless tests can use it. `?seed=123` in the
+  URL fixes the seed.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
 
@@ -98,7 +111,7 @@ Ideas, roughly in priority order. Nothing here is committed to.
 2. **Automated checks:** a Playwright smoke test driving `window.__voxel` (fixed `?seed=`), run in CI
    before deploying.
 3. **PWA:** web app manifest + service worker for home-screen install and offline play.
-4. **Water:** translucent water blocks below `SEA` inside the island, with swimming physics.
+4. **Water:** real water blocks below `SEA_LEVEL` (replacing the single surface), with swimming physics.
 5. **Bigger worlds:** larger or streamed chunks, greedy meshing, meshing in a Web Worker.
 6. **Day/night cycle:** animated sky colours, sun movement, fog colour tied to time of day.
 7. **More content:** more block types (glass, water, flowers, ores), a block-picker inventory beyond 8 slots.

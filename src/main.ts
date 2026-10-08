@@ -1,16 +1,21 @@
 import * as THREE from 'three';
-import { EYE, HORIZON } from './config';
+import { CB, NCX, NCZ, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
-import { SEED } from './noise';
+import { urlSeed, randomSeed } from './noise';
 import { createTextures } from './textures';
-import { world, generateWorld, ISLAND_X, ISLAND_Z, ISLAND_LIFT } from './world';
+import { world } from './world';
+import { columnHeight, findSpawn } from './gen';
+import { createWorkerPool } from './workers';
 import { createChunkMesher } from './meshing';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
 import { P, V, player, spawn, update, collides } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { hud, initHotbar, initStartScreen, showError } from './ui';
+import { els, hud, initHotbar, initStartScreen, showError } from './ui';
+
+/** Chunks generated around the spawn point (square radius, in chunks). */
+const LOAD_RADIUS = 4;
 
 function boot(): void {
   let renderer: THREE.WebGLRenderer;
@@ -21,10 +26,10 @@ function boot(): void {
     return;
   }
 
-  // Creation order below (textures → world → chunks → sky/clouds → effects) is deliberate:
-  // the world PRNG is shared by trees and clouds, and material ids follow creation order.
+  const seed = urlSeed() ?? randomSeed();
+  world.seed = seed;
+  const [sx, sz] = findSpawn(seed);
   const { canvases, textures, materials } = createTextures(renderer);
-  generateWorld();
 
   /* ============================ RENDERER ============================ */
   let pr = Math.min(window.devicePixelRatio || 1, 2);
@@ -32,17 +37,15 @@ function boot(): void {
   renderer.setClearColor(HORIZON);
   document.body.insertBefore(renderer.domElement, document.body.firstChild);
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(HORIZON, 34, 110);
   const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 320);
   camera.rotation.order = 'YXZ';
 
   const mesher = createChunkMesher(scene, materials);
   world.onChange = (x, _y, z) => mesher.markDirty(x, z);
-  const env = createEnvironment(scene);
+  const env = createEnvironment(scene, renderer, seed, sx, sz);
+  env.setFog(24, (LOAD_RADIUS + 0.5) * 16 - 8);   // hide where the generated area ends
   const fx = createEffects(scene, textures);
 
-  const CX = ISLAND_X + 16, CZ = ISLAND_Z + 16;   // island centre
-  spawn(CX, CZ);
   const interaction = createInteraction(fx);
   initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
 
@@ -63,8 +66,33 @@ function boot(): void {
   window.addEventListener('orientationchange', () => setTimeout(resize, 150));
   resize();
 
-  /* ============================ START ============================ */
-  initStartScreen(() => { playing = true; });
+  /* ============================ WORLD LOADING ============================ */
+  // Generate the chunks around the spawn point in workers, nearest first, then mesh them a few per
+  // frame behind the title card. Play is enabled once everything is built.
+  const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
+  const scx = sx >> CB, scz = sz >> CB, queue: [number, number][] = [];
+  for (let cz = scz - LOAD_RADIUS; cz <= scz + LOAD_RADIUS; cz++) for (let cx = scx - LOAD_RADIUS; cx <= scx + LOAD_RADIUS; cx++)
+    if (cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ) queue.push([cx, cz]);
+  queue.sort((a, b) => Math.hypot(a[0] - scx, a[1] - scz) - Math.hypot(b[0] - scx, b[1] - scz));
+  const total = queue.length;
+  let generated = 0, ready = false;
+  const pump = () => {
+    while (pool.free() > 0 && queue.length) {
+      const [cx, cz] = queue.shift()!;
+      pool.run({ type: 'gen', id: 0, seed, cx, cz }, [], (res) => {
+        world.setChunk(res.cx, res.cz, res.data);
+        if (++generated === total) world.forEachChunk((c) => mesher.addChunk(c.cx, c.cz));
+        pump();
+      });
+    }
+  };
+  pump();
+  // the title fly-around circles the spawn point, high enough to clear the hills on its path
+  let orbitY = columnHeight(seed, sx, sz) + 12;
+  for (let a = 0; a < 64; a++) {
+    const x = Math.round(sx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(sz + Math.cos(a / 64 * Math.PI * 2) * 30);
+    orbitY = Math.max(orbitY, columnHeight(seed, x, z) + 6);
+  }
 
   /* ============================ LOOP ============================ */
   let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0;
@@ -79,10 +107,19 @@ function boot(): void {
       camera.rotation.set(player.pitch, player.yaw, 0);
     } else { // slow fly-around behind the title card
       orbit += dt * 0.12;
-      camera.position.set(CX + Math.sin(orbit) * 30, ISLAND_LIFT + 24, CZ + Math.cos(orbit) * 30);
-      camera.lookAt(CX, ISLAND_LIFT + 9, CZ);
+      camera.position.set(sx + Math.sin(orbit) * 30, orbitY, sz + Math.cos(orbit) * 30);
+      camera.lookAt(sx, orbitY - 14, sz);
     }
-    mesher.flush();
+    mesher.flush(playing ? 2 : 6);
+    if (!ready) {
+      const built = generated < total ? 0 : total - mesher.pending();
+      els.play.textContent = `GENERATING ISLANDS… ${Math.floor(((generated + built) / (2 * total)) * 100)}%`;
+      if (built === total) {
+        ready = true;
+        spawn(sx, sz);
+        initStartScreen(() => { playing = true; });
+      }
+    }
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     env.update(dt, camera);
@@ -101,9 +138,9 @@ function boot(): void {
   // small debug handle (handy for testing from the console)
   (window as unknown as { __voxel: unknown }).__voxel = {
     P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world),
-    act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED,
+    act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
-    get onGround() { return player.onGround; }, get pixelRatio() { return pr; },
+    get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
     count: () => world.count(),
   };
 }
