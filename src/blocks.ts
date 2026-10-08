@@ -90,6 +90,10 @@ export const PASS = table((b) => ['opaque', 'cutout', 'translucent'].indexOf(b.r
 export const MODEL = table((b) => ['cube', 'torch', 'liquid'].indexOf(b.model));
 export const OPAQUE = table((b) => b.opaque);
 export const CULL_SAME = table((b) => b.cullSame);
+/** How much light a block takes away (15: opaque, light stops there) — see light.ts */
+export const FILTER = table((b) => b.lightFilter);
+/** Light a block gives off, 0–15 */
+export const EMIT = table((b) => b.lightEmission);
 /** Darkens the corners next to it (ambient occlusion): cubes that dim light — opaque blocks and leaves */
 export const OCCLUDES = table((b) => b.id !== AIR && b.model === 'cube' && b.lightFilter > 0);
 /** Can be aimed at (to break or build against): everything but air and liquids */

@@ -45,14 +45,16 @@ src/
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, RGBA tile texture array,
                      chunk materials per render pass
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
+  light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relight() after an edit
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
   gen.ts             Pure world generation: columnHeight, layering, trees, generateChunk(seed, cx, cz), findSpawn
-  worker.ts          Web Worker entry: runs generateChunk and meshChunk off the main thread
+  worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshChunk off the main thread
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
-  streaming.ts       Chunk streaming: load/mesh/unload regions, job priorities, upload budget, edit re-meshes
-  world.ts           Chunk storage (block ids + lazy per-block state) + World class (getBlock/getState/setBlock/
-                     isSolid/topY in world coords, seed), raycast
+  streaming.ts       Chunk streaming: load/light/mesh/unload regions, job priorities, upload budget, edits (relight +
+                     re-mesh)
+  world.ts           Chunk storage (block ids, lazy per-block state, light) + World class (getBlock/getState/getLight/
+                     setBlock/isSolid/topY in world coords, seed), raycast
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
@@ -67,8 +69,9 @@ src/
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
                      save & exit), fullscreen, start screen + world list, error display
   style.css          All styles
-tests/               Unit tests of the pure modules (Vitest): registry + face culling, mesher, torch geometry,
-                     save format + migration, RLE, mipmaps, generation determinism
+tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
+                     chunk borders, incremental = fresh), mesher, torch geometry, save format + migration, RLE,
+                     mipmaps, generation determinism
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, pixel captures); see-through blocks, torches, hotbar, Fancy leaves, old saves
 vitest.config.ts, playwright.config.ts
@@ -79,8 +82,9 @@ vitest.config.ts, playwright.config.ts
 Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update()` (only once the chunks
 under the player are loaded) → camera → `streamer.update()` (apply finished meshes, unload, start
 worker jobs) → `updateTarget` → particles → environment → render. Edits go `world.setBlock` →
-`world.onChange` → `streamer.markDirty`, which re-meshes the touched chunks (and neighbours, for
-borders) ahead of everything else.
+`world.onChange` → `streamer.blockChanged`, which relights around the block on the spot and
+re-meshes the touched chunks (neighbours too, for borders) and every chunk whose light changed,
+ahead of everything else.
 
 ## Conventions
 
@@ -142,6 +146,21 @@ borders) ahead of everything else.
   the block ids) for things like torch facing and water level. It is `null` until some block gets a
   non-zero state — generated terrain never has any — and `world.setBlock(x, y, z, id, state)` sets
   both.
+- **Light** (`light.ts`): two channels per block, 0–15, packed in `chunk.light` (one byte per block,
+  same layout as the ids): skylight in the high nibble, block light in the low one. Never saved:
+  worked out from the blocks. Rules: a block's `lightFilter` is what light loses entering it (15:
+  none gets in). Skylight enters the top layer at 15 and, straight down, loses only each block's
+  filter (open air stays 15 to the ground, leaves take 1, water 2); any other way it loses
+  max(1, filter) per block. Block light starts at the emitter's `lightEmission` (torch 14) and loses
+  max(1, filter) per block every way. Light reaches at most 15 blocks, so a chunk is lit exactly
+  from its 3×3 neighbourhood: `lightChunk` in a worker, once it and its 8 neighbours are loaded.
+  After that, `streamer.blockChanged` calls `relight()` on the main thread (the two-queue flood fill:
+  remove what depended on the old block, then spread back from the edge; it works on a copied box
+  16 blocks around the block, ≈0.5 ms) and re-meshes the chunks whose light changed. If anything
+  within reach isn't lit yet it falls back to lighting those chunks again in workers; lighting jobs
+  carry a version and results from before an edit are thrown away. Meshing needs the chunk and its
+  8 neighbours lit. `tests/light.test.ts` checks that incremental updates always equal a fresh
+  computation; in the game `__voxel.verifyLight(cx, cz)` does the same for one chunk.
 - **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
   chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
   player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
@@ -149,19 +168,21 @@ borders) ahead of everything else.
 - **Coordinates:** world (x, y, z) lives in chunk (x >> CB, z >> CB) at `data[CI(x & 15, y, z & 15)]`
   — x fastest, then z, then y. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is
   the feet position; the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
-- **Workers only run pure code.** `gen.ts`, `mesher.ts`, `torch.ts`, `noise.ts`, `blocks.ts`,
-  `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`. `meshChunk` only sees a
-  padded copy of the chunk (one block of each neighbour, see `paddedCopy`). Per-block hashes use
-  world coordinates.
+- **Workers only run pure code.** `gen.ts`, `light.ts`, `mesher.ts`, `torch.ts`, `noise.ts`,
+  `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`. `meshChunk`
+  only sees a padded copy of the chunk (one block of each neighbour, see `paddedCopy`). Per-block
+  hashes use world coordinates.
 - **Streaming regions** (`streaming.ts`), measured from the player to each chunk's nearest point:
-  meshed within `R·16` blocks (R = view distance, 3–10, default 6, saved in localStorage), loaded
-  within `R·16 + 24` (so a meshed chunk always has its 8 neighbours), unloaded beyond `R·16 + 48`.
-  Fog ends exactly at `R·16`, and is *radial* (`fog.ts`), so chunks fade in instead of popping.
-  Every fogged material needs `radialFog()` (or `radialFogVertex` in its own `onBeforeCompile`).
-- **Budgets:** at most 2 chunks' new or re-built meshes are added per frame (a new mesh skips
-  frustum culling for its first frame, so its GPU upload happens then), and at most 8 normal worker
-  jobs start per frame. Edit re-meshes skip both limits. Loads go nearest-first, favouring chunks
-  in view.
+  meshed within `R·16` blocks (R = view distance, 3–10, default 6, saved in localStorage), lit
+  within `R·16 + 24` (so a meshed chunk always has its 8 neighbours lit), loaded within `R·16 + 48`
+  (so a lit chunk has its neighbours' blocks), unloaded beyond `R·16 + 72`. Until the world is first
+  ready to play it streams as if R were 2, so the start area comes first. Fog ends exactly at
+  `R·16`, and is *radial* (`fog.ts`), so chunks fade in instead of popping. Every fogged material
+  needs `radialFog()` (or `radialFogVertex` in its own `onBeforeCompile`).
+- **Budgets:** at most 2 chunks' new or re-built meshes are added per frame while playing (8
+  behind the title card; a new mesh skips frustum culling for its first frame, so its GPU upload
+  happens then), and at most 8 normal worker jobs (load, light, mesh) start per frame. Edit
+  re-meshes skip both limits. Jobs go nearest-first, favouring chunks in view.
 - **Render passes:** each chunk has up to three meshes, created only when non-empty — opaque,
   cutout (alpha-tested at 0.5, writes depth: leaves, glass, torches) and translucent (alpha-blended,
   no depth writes: water; drawn after everything else, and `streamer.sortTranslucent` orders the
@@ -206,13 +227,13 @@ borders) ahead of everything else.
   isn't obvious, section banners (`/* ==== NAME ==== */`) for big blocks.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
   `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
-  (non-air blocks in loaded chunks), `stream()` (loaded/meshed/visible counts, draw calls),
-  `chunk(cx, cz)` (one chunk's streaming state, triangles per pass), `setRenderDistance(r)`,
-  `setFancyLeaves(on)` (same as the menu toggle), `getState`, `look(yaw, pitch)`, `target()` (the
-  block under the crosshair, with the face hit and its id), `tiles` (the tile canvases), `worldId`
-  and `save()`.
-  Keep it working: the browser tests drive the game through it; `?seed=123` in the URL gives a
-  fixed world.
+  (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible counts, draw calls, worker
+  time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
+  or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
+  (cells that differ from a fresh lighting), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as
+  the menu toggle), `getState`, `look(yaw, pitch)`, `target()` (the block under the crosshair, with
+  the face hit and its id), `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the
+  browser tests drive the game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames

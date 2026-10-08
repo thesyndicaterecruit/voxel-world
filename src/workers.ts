@@ -1,11 +1,16 @@
 /* ============================ WORKER POOL ============================ */
-// A few Web Workers running worker.ts (chunk generation and meshing). Typed arrays travel as
-// transferables (moved, not copied).
+// A few Web Workers running worker.ts (chunk generation, lighting and meshing). Typed arrays travel
+// as transferables (moved, not copied).
 
 import type { MeshData } from './mesher';
 
 export type WorkerRequest =
   | { type: 'gen'; id: number; seed: number; cx: number; cz: number }
+  /**
+   * Light chunk (cx, cz) from `blocks`: its own and its 8 neighbours' block data (see lightChunk),
+   * bit k of `present` set where neighbour k exists. `blocks` comes back for reuse.
+   */
+  | { type: 'light'; id: number; cx: number; cz: number; blocks: Uint8Array; present: number }
   /**
    * `pad` is the chunk plus a one-block border (see paddedCopy); it comes back with the result for
    * reuse. `state` is a copy of the chunk's per-block state, if it has any.
@@ -13,6 +18,8 @@ export type WorkerRequest =
   | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array; state: Uint8Array | null; opaqueLeaves: boolean };
 export type WorkerResponse =
   | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array }
+  /** `ms`: how long the lighting took in the worker */
+  | { type: 'light'; id: number; cx: number; cz: number; light: Uint8Array; blocks: Uint8Array; ms: number }
   | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array };
 
 /** Jobs in flight per worker: enough to keep a worker busy while its last result travels back. */

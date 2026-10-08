@@ -1,30 +1,37 @@
 import * as THREE from 'three';
-import { CB, CS, NCX, NCZ, inWorld } from './config';
+import { CB, CS, NCX, NCZ, CHUNK_VOL, inWorld } from './config';
 import { world, type Chunk } from './world';
 import { LEAVES } from './blocks';
 import { FP, PAD_VOL, type MeshData } from './mesher';
 import { paddedCopy, chunkGeometry } from './meshing';
+import { relight, lightChunk, keyX, keyZ } from './light';
 import type { WorkerPool } from './workers';
 
 /* ============================ CHUNK STREAMING ============================ */
-// Keeps the chunks around the player loaded and meshed. Distances are measured from the streaming
-// centre to the nearest point of each chunk, in blocks:
+// Keeps the chunks around the player loaded, lit and meshed. Distances are measured from the
+// streaming centre to the nearest point of each chunk, in blocks:
 //   ≤ R·CS          mesh region: meshed and drawn (fog hides everything beyond R·CS)
-//   ≤ R·CS + 24     load region: loaded, so every meshed chunk has its 8 neighbours for face
-//                   culling and AO at its borders (a diagonal neighbour is ≤ 16√2 further away);
-//                   meshes that drift out of it are disposed
-//   ≤ R·CS + 48     keep region: still loaded (hysteresis); anything further is unloaded, saved
+//   ≤ R·CS + 24     light region: lit, so every meshed chunk has its 8 neighbours lit (light at its
+//                   borders, a diagonal neighbour being ≤ 16√2 further away); meshes that drift out
+//                   of it are disposed
+//   ≤ R·CS + 48     load region: loaded, so every lit chunk has its 8 neighbours' blocks (light
+//                   comes from up to 15 blocks away)
+//   ≤ R·CS + 72     keep region: still loaded (hysteresis); anything further is unloaded, saved
 //                   first if it was edited
-// Generation and meshing run in workers. The main thread only copies a padded chunk per mesh job,
-// adds at most UPLOADS_PER_FRAME chunks' meshes a frame, and lets edits jump the queue.
+// Generation, lighting and meshing run in workers. The main thread copies a chunk's neighbourhood
+// per job, adds at most UPLOADS_PER_FRAME chunks' meshes a frame (more behind the title card, where
+// a slow frame doesn't matter), and lets edits jump the queue. While the world is first loading,
+// it streams as if the view distance were FIRST_R, so what's needed to start comes first.
+// An edit is relit right away on the main thread (relight in light.ts), and the chunks whose light
+// changed are re-meshed with it.
 //
 // A chunk has up to three meshes, one per render pass (only those that aren't empty): opaque,
 // cutout (alpha-tested, writes depth) and translucent (blended, drawn after everything else, chunks
 // back to front — see sortTranslucent).
 
 export const RENDER_DISTANCE = { def: 6, min: 3, max: 10 };
-const LOAD_MARGIN = 24, KEEP_MARGIN = 48;
-const UPLOADS_PER_FRAME = 2;
+const LIGHT_MARGIN = 24, LOAD_MARGIN = 48, KEEP_MARGIN = 72;
+const UPLOADS_PER_FRAME = 2, UPLOADS_TITLE = 8, FIRST_R = 2;
 /** Most normal jobs started per frame (bounds the main-thread copying) */
 const DISPATCH_PER_FRAME = 8;
 const PASSES = 3, TRANSLUCENT = 2;
@@ -34,7 +41,7 @@ interface Slot {
   state: number;
   /** Bumped on every (un)load, so late worker results for an old load are ignored */
   epoch: number;
-  /** Bumped whenever the mesh inputs change: an edit in this chunk or on a neighbour's border */
+  /** Bumped whenever the mesh inputs change: an edit in this chunk or on a neighbour's border, light */
   version: number;
   /** Version of the meshes being shown (-1: none yet) */
   meshed: number;
@@ -42,6 +49,12 @@ interface Slot {
   sent: number;
   /** An edit is waiting for its re-mesh */
   urgent: boolean;
+  /** Bumped whenever a block within reach of this chunk's light changes: lighting jobs for older ones are stale */
+  lightVer: number;
+  /** Light version a lighting job is working on (-1: none) */
+  lightSent: number;
+  /** Being lit again after an edit (its light was dropped): hurry, and re-mesh it and its neighbours after */
+  relit: boolean;
   /** One mesh per render pass, null where the pass is empty */
   meshes: (THREE.Mesh | null)[];
   /** Nearest distance from the streaming centre in blocks, refreshed every frame */
@@ -58,12 +71,20 @@ export interface ChunkSource {
 }
 
 export interface Streamer {
-  /** Once per frame: stream around (x, z), preferring chunks in view direction (fx, fz). */
-  update(x: number, z: number, fx: number, fz: number): void;
+  /**
+   * Once per frame: stream around (x, z), preferring chunks in view direction (fx, fz). `mode`:
+   * 'first' while the world first loads (only what's needed to start), 'title' while nobody is
+   * playing yet (frames may take longer: more meshes are added per frame), 'play'.
+   */
+  update(x: number, z: number, fx: number, fz: number, mode?: 'first' | 'title' | 'play'): void;
   /** Once per frame, before rendering: order the chunks' translucent meshes back to front from the camera. */
   sortTranslucent(camera: THREE.Vector3): void;
-  /** A block changed at (x, z): re-mesh the chunks it touches ahead of everything else. */
-  markDirty(x: number, z: number): void;
+  /**
+   * The block at (x, y, z) was `old` and has just changed (world.onChange): relight around it and
+   * re-mesh what it touches — its chunk and neighbours on a border, and every chunk whose light
+   * changed — ahead of everything else.
+   */
+  blockChanged(x: number, y: number, z: number, old: number): void;
   setRenderDistance(r: number): void;
   /** Mesh leaves as opaque cubes ("Fancy leaves" off); re-meshes the chunks it changes. */
   setOpaqueLeaves(on: boolean): void;
@@ -71,29 +92,46 @@ export interface Streamer {
   isReady(x: number, z: number, radius: number): boolean;
   /** Are the chunks under and right around (x, z) loaded? (physics only runs when they are) */
   areaLoaded(x: number, z: number): boolean;
-  /** Debugging: one chunk's streaming state (0 none, 1 loading, 2 loaded), mesh versions and triangles per pass */
-  debugChunk(cx: number, cz: number): { state: number; version: number; meshed: number; tris: number[] };
-  /** Counts for debugging: loaded chunks, chunks with meshes, visible ones, meshes per pass, results waiting, edits waiting */
-  stats(): { loaded: number; meshed: number; visible: number; passes: number[]; queued: number; edits: number };
+  /**
+   * Debugging: how many cells of chunk (cx, cz)'s light differ from lighting it from scratch now
+   * (-1: not lit, or a neighbour isn't loaded). 0 means the incremental updates got it right.
+   */
+  verifyLight(cx: number, cz: number): number;
+  /** Debugging: one chunk's streaming state (0 none, 1 loading, 2 loaded), lit, mesh versions and triangles per pass */
+  debugChunk(cx: number, cz: number): { state: number; lit: boolean; version: number; meshed: number; tris: number[] };
+  /**
+   * Counts for debugging: loaded / lit chunks, chunks with meshes, visible ones, meshes per pass,
+   * results waiting, edits waiting; average worker time per lighting job, and how long the last
+   * edit's relight took on the main thread (ms) and how many cells it changed
+   */
+  stats(): { loaded: number; lit: number; meshed: number; visible: number; passes: number[]; queued: number; edits: number;
+    lightMs: number; relightMs: number; relit: number };
 }
 
 /** `materials` are the chunk materials per render pass: opaque, cutout, translucent. */
 export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], pool: WorkerPool, source: ChunkSource = {}): Streamer {
-  const slots: Slot[] = Array.from({ length: NCX * NCZ }, () =>
-    ({ state: NONE, epoch: 0, version: 0, meshed: -1, sent: -1, urgent: false, meshes: [null, null, null], dist: Infinity, score: 0 }));
+  const slots: Slot[] = Array.from({ length: NCX * NCZ }, () => ({
+    state: NONE, epoch: 0, version: 0, meshed: -1, sent: -1, urgent: false, lightVer: 0, lightSent: -1, relit: false,
+    meshes: [null, null, null], dist: Infinity, score: 0,
+  }));
   let R = RENDER_DISTANCE.def, opaqueLeaves = true;
-  const ready: Ready[] = [], urgentQ: number[] = [], pads: Uint8Array[] = [];
+  const ready: Ready[] = [], urgentQ: number[] = [], pads: Uint8Array[] = [], blocks9: Uint8Array[] = [];
   let fresh: THREE.Mesh[] = [];                 // meshes added last frame (frustum culling off once)
   let urgentScheduled = false;
+  let lightMs = 0, lightJobs = 0, relightMs = 0, relitCells = 0;
 
-  const neighboursLoaded = (cx: number, cz: number) => {
+  /** Is every existing chunk in the 3×3 around (cx, cz) loaded / lit? */
+  const around = (cx: number, cz: number, ok: (c: Chunk | undefined, s: Slot) => boolean) => {
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
       const x = cx + dx, z = cz + dz;
-      if (x >= 0 && x < NCX && z >= 0 && z < NCZ && slots[x + z * NCX].state !== LOADED) return false;
+      if (x >= 0 && x < NCX && z >= 0 && z < NCZ && !ok(world.chunk(x, z), slots[x + z * NCX])) return false;
     }
     return true;
   };
+  const neighboursLoaded = (cx: number, cz: number) => around(cx, cz, (_c, s) => s.state === LOADED);
+  const neighboursLit = (cx: number, cz: number) => around(cx, cz, (c) => !!c && !!c.light);
   const hasMesh = (s: Slot) => s.meshes[0] !== null || s.meshes[1] !== null || s.meshes[2] !== null;
+  const meshable = (ci: number) => slots[ci].state === LOADED && neighboursLit(ci % NCX, (ci / NCX) | 0);
 
   function dispatchLoad(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = ++s.epoch;
@@ -102,11 +140,42 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       if (s.epoch !== epoch || s.state !== LOADING) return;   // unloaded meanwhile
       world.setChunk(cx, cz, data, state, edited);
       s.state = LOADED; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
+      s.lightVer = 0; s.lightSent = -1; s.relit = false;
     };
     const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, cx, cz }, [], (res) => { if (res.type === 'gen') done(res.data, null, false); });
     const saved = source.load ? source.load(cx, cz) : null;
     if (saved) saved.then((c) => done(c.data, c.state, true), gen);
     else gen();
+  }
+
+  /** Light a chunk in a worker, from the blocks of it and its 8 neighbours (all loaded). */
+  function dispatchLight(ci: number): void {
+    const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = s.epoch, ver = s.lightVer;
+    const buf = blocks9.pop() || new Uint8Array(9 * CHUNK_VOL);
+    let present = 0;
+    for (let k = 0; k < 9; k++) {
+      const c = world.chunk(cx + (k % 3) - 1, cz + ((k / 3) | 0) - 1);
+      if (c) { buf.set(c.data, k * CHUNK_VOL); present |= 1 << k; }
+    }
+    s.lightSent = ver;
+    pool.run({ type: 'light', id: 0, cx, cz, blocks: buf, present }, [buf.buffer], (res) => {
+      if (res.type !== 'light') return;
+      blocks9.push(res.blocks);
+      lightMs += res.ms; lightJobs++;
+      if (s.epoch !== epoch) return;                       // unloaded meanwhile
+      if (s.lightSent === ver) s.lightSent = -1;
+      const c = world.chunk(cx, cz);
+      if (ver !== s.lightVer || s.state !== LOADED || !c) return;   // blocks changed since: light again
+      c.light = res.light;
+      // a chunk lit again after an edit: re-mesh it, and its neighbours (they read its border light)
+      if (s.relit) {
+        s.relit = false;
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const x = cx + dx, z = cz + dz;
+          if (x >= 0 && x < NCX && z >= 0 && z < NCZ && hasMesh(slots[x + z * NCX])) touch(x + z * NCX);
+        }
+      }
+    });
   }
 
   function dispatchMesh(ci: number, urgent: boolean): void {
@@ -124,12 +193,23 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       });
   }
 
-  // edits: coalesce the setBlock calls of one action, then send them straight to the workers
+  /** Re-mesh a chunk ahead of everything else (an edit touched it). */
+  function touch(ci: number): void {
+    const s = slots[ci];
+    if (s.state !== LOADED || urgentQ.includes(ci)) return;
+    s.version++;
+    s.urgent = true;
+    urgentQ.push(ci);
+    if (!urgentScheduled) { urgentScheduled = true; queueMicrotask(pumpUrgent); }
+  }
+
+  // edits: coalesce the setBlock calls of one action, then send them straight to the workers;
+  // chunks that can't be meshed yet (being lit again) go as soon as they can (update)
   function pumpUrgent(): void {
     urgentScheduled = false;
     while (urgentQ.length) {
       const ci = urgentQ.shift()!, s = slots[ci];
-      if (s.state === LOADED && s.urgent && s.sent !== s.version) dispatchMesh(ci, true);
+      if (s.state === LOADED && s.urgent && s.sent !== s.version && meshable(ci)) dispatchMesh(ci, true);
     }
   }
 
@@ -171,10 +251,11 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
     world.removeChunk(cx, cz);
     disposeAll(s);
     s.state = NONE; s.epoch++; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
+    s.lightVer = 0; s.lightSent = -1; s.relit = false;
   }
 
   return {
-    update(px, pz, fx, fz) {
+    update(px, pz, fx, fz, mode = 'play') {
       for (const m of fresh) m.frustumCulled = true;
       fresh = [];
       // finished meshes: every edit re-mesh now, others (new chunks, re-meshes) within the upload
@@ -185,7 +266,7 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         for (let i = 0; i < ready.length; i++) {
           const r = ready[i], s = slots[r.ci];
           if (!r.urgent && s.epoch === r.epoch && r.version > s.meshed) {
-            if (uploads >= UPLOADS_PER_FRAME) continue;
+            if (uploads >= (mode === 'play' ? UPLOADS_PER_FRAME : UPLOADS_TITLE)) continue;
             uploads++;
           }
           applyMesh(r);
@@ -193,7 +274,9 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         }
       }
 
-      const meshD = R * CS, loadD = meshD + LOAD_MARGIN, keepD = meshD + KEEP_MARGIN;
+      const meshD = R * CS, lightD = meshD + LIGHT_MARGIN, keepD = meshD + KEEP_MARGIN;
+      // where new work goes: nearer while the world first loads
+      const jobR = mode === 'first' ? Math.min(R, FIRST_R) * CS : meshD;
       const fl = Math.sqrt(fx * fx + fz * fz), ux = fl > 1e-3 ? fx / fl : 0, uz = fl > 1e-3 ? fz / fl : 0;
       const cands: number[] = [];
       for (let ci = 0; ci < slots.length; ci++) {
@@ -202,20 +285,30 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         const d = s.dist = Math.sqrt(dx * dx + dz * dz);
         if (s.state !== NONE && d > keepD) { unload(ci); continue; }
         if (hasMesh(s)) {
-          if (d > loadD) { disposeAll(s); s.meshed = -1; }
+          if (d > lightD) { disposeAll(s); s.meshed = -1; }
           else for (const m of s.meshes) if (m) m.visible = d <= meshD;
         }
         // priority: nearest first, chunks in front of the camera before those behind
         const cx = x0 + CS / 2 - px, cz = z0 + CS / 2 - pz, cl = Math.sqrt(cx * cx + cz * cz);
         s.score = d < CS ? d * 0.5 : d * (1 - 0.45 * (cl > 1e-3 ? (cx * ux + cz * uz) / cl : 0));
-        if (s.state === NONE ? d <= loadD
-          : s.state === LOADED && d <= meshD && s.meshed < s.version && s.sent < s.version && !s.urgent && neighboursLoaded(ci % NCX, (ci / NCX) | 0)) cands.push(ci);
+        if (s.state === NONE) { if (d <= jobR + LOAD_MARGIN) cands.push(ci); continue; }
+        if (s.state !== LOADED) continue;
+        const ccx = ci % NCX, ccz = (ci / NCX) | 0;
+        if (!world.chunk(ccx, ccz)!.light) {
+          // being lit again after an edit goes first; otherwise lit in turn, within the light region
+          if (s.lightSent !== s.lightVer && (s.relit || d <= jobR + LIGHT_MARGIN) && neighboursLoaded(ccx, ccz)) {
+            if (s.relit) dispatchLight(ci); else cands.push(ci);
+          }
+        } else if (s.meshed < s.version && s.sent < s.version && (s.urgent || d <= jobR) && neighboursLit(ccx, ccz)) {
+          if (s.urgent) dispatchMesh(ci, true); else cands.push(ci);
+        }
       }
       // brand-new chunks start at version 0 with meshed = -1, so they count as needing a mesh
       cands.sort((a, b) => slots[a].score - slots[b].score);
       for (let i = 0, n = 0; i < cands.length && n < DISPATCH_PER_FRAME && pool.free() > 0; i++, n++) {
-        const ci = cands[i];
-        if (slots[ci].state === NONE) dispatchLoad(ci);
+        const ci = cands[i], s = slots[ci];
+        if (s.state === NONE) dispatchLoad(ci);
+        else if (!world.chunk(ci % NCX, (ci / NCX) | 0)!.light) dispatchLight(ci);
         else dispatchMesh(ci, false);
       }
     },
@@ -230,17 +323,41 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       }
     },
 
-    markDirty(x, z) {
+    blockChanged(x, y, z, old) {
+      const cx = x >> CB, cz = z >> CB;
+      // lighting jobs started before this used the old block: their results will be redone
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const X = cx + dx, Z = cz + dz;
+        if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) slots[X + Z * NCX].lightVer++;
+      }
+      const t0 = performance.now();
+      if (neighboursLit(cx, cz)) {
+        // everything the change can light or darken (≤ 15 blocks) is lit: relight right here, then
+        // re-mesh every chunk that has a changed cell in it or next to its border
+        const changed = relight(world, x, y, z, old, world.getBlock(x, y, z)), meshD = R * CS;
+        const marks = new Set<number>();
+        for (const k of changed) {
+          const kx = keyX(k), kz = keyZ(k);
+          for (let Z = (kz - 1) >> CB; Z <= (kz + 1) >> CB; Z++) for (let X = (kx - 1) >> CB; X <= (kx + 1) >> CB; X++) {
+            if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) marks.add(X + Z * NCX);
+          }
+        }
+        for (const ci of marks) if (hasMesh(slots[ci]) || slots[ci].dist <= meshD) touch(ci);
+        relitCells = changed.length;
+      } else {
+        // some of it isn't lit yet (just loaded): light the lit chunks around it again from scratch
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const c = world.chunk(cx + dx, cz + dz);
+          if (c && c.light) { c.light = null; slots[c.cx + c.cz * NCX].relit = true; }
+        }
+        relitCells = -1;
+      }
+      relightMs = performance.now() - t0;
+      // the block itself: its chunk, and the chunks it borders
       for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
         const X = x + dx, Z = z + dz;
-        if (!inWorld(X, Z)) continue;
-        const ci = (X >> CB) + (Z >> CB) * NCX, s = slots[ci];
-        if (s.state !== LOADED || urgentQ.includes(ci)) continue;
-        s.version++;
-        s.urgent = true;
-        urgentQ.push(ci);
+        if (inWorld(X, Z)) touch((X >> CB) + (Z >> CB) * NCX);
       }
-      if (!urgentScheduled) { urgentScheduled = true; queueMicrotask(pumpUrgent); }
     },
 
     setRenderDistance(r) { R = Math.max(RENDER_DISTANCE.min, Math.min(RENDER_DISTANCE.max, r)); },
@@ -275,14 +392,29 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       return true;
     },
 
+    verifyLight(cx, cz) {
+      const c = world.chunk(cx, cz);
+      if (!c || !c.light || !neighboursLoaded(cx, cz)) return -1;
+      const buf = new Uint8Array(9 * CHUNK_VOL);
+      let present = 0;
+      for (let k = 0; k < 9; k++) {
+        const n = world.chunk(cx + (k % 3) - 1, cz + ((k / 3) | 0) - 1);
+        if (n) { buf.set(n.data, k * CHUNK_VOL); present |= 1 << k; }
+      }
+      const fresh = lightChunk(buf, present);
+      let bad = 0;
+      for (let i = 0; i < CHUNK_VOL; i++) if (fresh[i] !== c.light[i]) bad++;
+      return bad;
+    },
+
     debugChunk(cx, cz) {
-      const s = slots[cx + cz * NCX];
-      return { state: s.state, version: s.version, meshed: s.meshed,
+      const s = slots[cx + cz * NCX], c = world.chunk(cx, cz);
+      return { state: s.state, lit: !!c && !!c.light, version: s.version, meshed: s.meshed,
         tris: s.meshes.map((m) => (m && m.geometry.index ? m.geometry.index.count / 3 : 0)) };
     },
 
     stats() {
-      let loaded = 0, meshed = 0, visible = 0, edits = 0;
+      let loaded = 0, lit = 0, meshed = 0, visible = 0, edits = 0;
       const passes = [0, 0, 0];
       for (const s of slots) {
         if (s.state === LOADED) loaded++;
@@ -293,7 +425,9 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         }
         if (s.urgent) edits++;
       }
-      return { loaded, meshed, visible, passes, queued: ready.length, edits };
+      world.forEachChunk((c) => { if (c.light) lit++; });
+      return { loaded, lit, meshed, visible, passes, queued: ready.length, edits,
+        lightMs: lightJobs ? +(lightMs / lightJobs).toFixed(2) : 0, relightMs: +relightMs.toFixed(2), relit: relitCells };
     },
   };
 }

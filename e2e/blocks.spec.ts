@@ -94,11 +94,16 @@ test('torches stand on blocks and lean out of their sides, and pop off when thei
   await tapToAct(page);
   expect(await block(page, [sx - 3, sy + 1, sz])).toEqual([0, 0]);
   await expect(page.locator('#toast')).toHaveText(/top of blocks or on walls/);
-  const count = await page.evaluate(() => window.__voxel.count());
+  const nearTorch = () => page.evaluate(([x, y, z]) => {
+    const out: number[] = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) out.push(window.__voxel.get(x + dx, y + dy, z + dz));
+    return out;
+  }, [X, Y + 1, Z]);
+  const before = await nearTorch();
   await stand(page, sx + 0.5, sy, sz + 1.5);
   expect((await aimAt(page, [X + 0.5, Y + 1.4, Z + 0.5]))?.[6]).toBe(TORCH);
   await tapToAct(page);
-  expect(await page.evaluate(() => window.__voxel.count())).toBe(count);
+  expect(await nearTorch()).toEqual(before);
   // a torch is a small target: a ray just past its stick reaches what's behind
   expect((await aimAt(page, [X + 0.1, Y + 1.5, Z + 0.1]))?.[6]).not.toBe(TORCH);
 

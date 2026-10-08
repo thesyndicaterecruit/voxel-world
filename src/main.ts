@@ -92,7 +92,7 @@ async function boot(): Promise<void> {
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
   const streamer = createStreamer(scene, chunkMaterials, pool, save);
-  world.onChange = (x, _y, z) => { streamer.markDirty(x, z); save.touch(x >> CB, z >> CB); };
+  world.onChange = (x, y, z, old) => { streamer.blockChanged(x, y, z, old); save.touch(x >> CB, z >> CB); };
   const env = createEnvironment(scene, renderer, seed, home.x, home.z);
   const fx = createEffects(scene, textures);
 
@@ -174,7 +174,7 @@ async function boot(): Promise<void> {
     }
     camera.getWorldDirection(look);
     const t0 = performance.now();
-    streamer.update(playing ? P[0] : home.x, playing ? P[2] : home.z, look.x, look.z);
+    streamer.update(playing ? P[0] : home.x, playing ? P[2] : home.z, look.x, look.z, !ready ? 'first' : playing ? 'play' : 'title');
     streamMs = Math.max(streamMs * 0.98, performance.now() - t0);
     if (!ready && streamer.isReady(home.x, home.z, READY_RADIUS)) {
       ready = true;
@@ -206,12 +206,14 @@ async function boot(): Promise<void> {
   // small debug handle (handy for testing from the console)
   (window as unknown as { __voxel: unknown }).__voxel = {
     P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world), getState: world.getState.bind(world),
+    light: (x: number, y: number, z: number) => { const v = world.getLight(x, y, z); return [v >> 4, v & 15]; },
     act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
+    verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
     look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
     target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },

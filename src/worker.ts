@@ -1,6 +1,7 @@
-// Web Worker: chunk generation and meshing off the main thread. Pure functions only — no three.js, no DOM.
+// Web Worker: chunk generation, lighting and meshing off the main thread. Pure functions only — no three.js, no DOM.
 import { generateChunk } from './gen';
 import { meshChunk } from './mesher';
+import { lightChunk } from './light';
 import { CS } from './config';
 import type { WorkerRequest, WorkerResponse } from './workers';
 
@@ -14,6 +15,9 @@ ctx.onmessage = (e) => {
   if (m.type === 'gen') {
     const data = generateChunk(m.seed, m.cx, m.cz);
     ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data }, [data.buffer]);
+  } else if (m.type === 'light') {
+    const t0 = performance.now(), light = lightChunk(m.blocks, m.present), ms = performance.now() - t0;
+    ctx.postMessage({ type: 'light', id: m.id, cx: m.cx, cz: m.cz, light, blocks: m.blocks, ms }, [light.buffer, m.blocks.buffer]);
   } else {
     const mesh = meshChunk(m.pad, m.state, m.cx * CS, m.cz * CS, m.seed, m.opaqueLeaves);
     const transfer: Transferable[] = [m.pad.buffer];

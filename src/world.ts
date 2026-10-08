@@ -15,6 +15,11 @@ export interface Chunk {
   state: Uint8Array | null;
   /** Differs from what the seed generates (edited by the player, now or in an earlier session) */
   edited: boolean;
+  /**
+   * Light, 1 byte per block in the same layout: skylight << 4 | block light (see light.ts). null
+   * until the chunk is lit (that needs its 8 neighbours loaded), and while it is being lit again.
+   */
+  light: Uint8Array | null;
 }
 
 /* ============================ WORLD ============================ */
@@ -27,15 +32,15 @@ export class World {
   private readonly chunks: (Chunk | undefined)[] = new Array(NCX * NCZ).fill(undefined);
   /** World seed: terrain generation and per-block texture variation derive from it. */
   seed = 0;
-  /** Told about every block change made through setBlock (the mesher marks chunks dirty). */
-  onChange: ((x: number, y: number, z: number) => void) | null = null;
+  /** Told about every block change made through setBlock, with the block that was there before. */
+  onChange: ((x: number, y: number, z: number, old: number) => void) | null = null;
 
   chunk(cx: number, cz: number): Chunk | undefined {
     return cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ ? this.chunks[cx + cz * NCX] : undefined;
   }
   /** Install chunk data and state (used directly, not copied). */
   setChunk(cx: number, cz: number, data: Uint8Array, state: Uint8Array | null = null, edited = false): Chunk {
-    const c: Chunk = { cx, cz, data, state, edited };
+    const c: Chunk = { cx, cz, data, state, edited, light: null };
     this.chunks[cx + cz * NCX] = c;
     return c;
   }
@@ -57,6 +62,12 @@ export class World {
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     return c && c.state ? c.state[CI(x & (CS - 1), y, z & (CS - 1))] : 0;
   }
+  /** Packed light at a block (skylight << 4 | block light); 0 where nothing is lit. */
+  getLight(x: number, y: number, z: number): number {
+    if (y < 0 || y >= H || !inWorld(x, z)) return y >= H ? 0xf0 : 0;
+    const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
+    return c && c.light ? c.light[CI(x & (CS - 1), y, z & (CS - 1))] : 0;
+  }
   /**
    * Change one block and its state. Returns false (and changes nothing) outside the world or in an
    * unloaded chunk.
@@ -65,12 +76,12 @@ export class World {
     if (y < 0 || y >= H || !inWorld(x, z)) return false;
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     if (!c) return false;
-    const i = CI(x & (CS - 1), y, z & (CS - 1));
+    const i = CI(x & (CS - 1), y, z & (CS - 1)), old = c.data[i];
     c.data[i] = id;
     if (state && !c.state) c.state = new Uint8Array(CHUNK_VOL);
     if (c.state) c.state[i] = state;
     c.edited = true;
-    if (this.onChange) this.onChange(x, y, z);
+    if (this.onChange) this.onChange(x, y, z, old);
     return true;
   }
   /** Collision: world edges are invisible walls, y<0 is solid floor, unloaded chunks are solid. */
