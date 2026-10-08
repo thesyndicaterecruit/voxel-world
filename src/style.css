@@ -26,14 +26,22 @@ body.playing #ui{display:block}
 #mode.place{background:rgba(40,150,72,.7)}
 #fs{top:calc(10px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
 #menuBtn{top:calc(10px + env(safe-area-inset-top));right:calc(62px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
+/* hotbar: centred between the corner buttons; scrolls sideways (swipe, see input.ts) when it doesn't fit */
 #hotbar{position:fixed;left:50%;top:calc(8px + env(safe-area-inset-top));transform:translateX(-50%);display:flex;gap:5px;padding:5px;
-  border-radius:13px;background:rgba(0,0,0,.3);pointer-events:auto;touch-action:none}
-.slot{width:36px;height:36px;border-radius:8px;border:2px solid rgba(255,255,255,.25);transition:transform .1s;
+  border-radius:13px;background:rgba(0,0,0,.3);pointer-events:auto;touch-action:none;overflow:hidden;
+  max-width:calc(100vw - 236px - env(safe-area-inset-left) - env(safe-area-inset-right))}
+#hotbar.fade-l,#hotbar.fade-r{--l:#000;--r:#000;
+  -webkit-mask-image:linear-gradient(90deg,var(--l) 0,#000 16px,#000 calc(100% - 16px),var(--r) 100%);
+  mask-image:linear-gradient(90deg,var(--l) 0,#000 16px,#000 calc(100% - 16px),var(--r) 100%)}
+#hotbar.fade-l{--l:transparent}
+#hotbar.fade-r{--r:transparent}
+.slot{flex:none;width:36px;height:36px;border-radius:8px;border:2px solid rgba(255,255,255,.25);transition:transform .1s;
   background-size:cover;image-rendering:pixelated;image-rendering:crisp-edges;
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2)}
 .slot.sel{border-color:#fff;transform:scale(1.14);
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2),0 0 0 2px rgba(0,0,0,.4)}
-@media (max-width:600px){#hotbar{top:calc(60px + env(safe-area-inset-top))}}
+@media (max-width:600px){#hotbar{top:calc(60px + env(safe-area-inset-top));
+  max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}}
 #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px}
 #cross:before,#cross:after{content:"";position:absolute;background:#fff;border-radius:1px;box-shadow:0 0 2px rgba(0,0,0,.7)}
 #cross:before{left:10px;top:0;width:2px;height:22px}
@@ -62,6 +70,9 @@ h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
 .sbtn,.mbtn{display:flex;align-items:center;justify-content:center;border-radius:10px;background:rgba(255,255,255,.14);
   font-weight:800;color:#fff;cursor:pointer;transition:transform .08s}
 .sbtn{width:44px;height:44px;font-size:24px}
+.sbtn.tog{width:auto;min-width:64px;padding:0 12px;font-size:14px;letter-spacing:.1em;background:#4fae3f}
+.sbtn.tog.off{background:rgba(255,255,255,.14)}
+.setting+.hint+.setting{margin-top:12px}
 .sbtn.down,.mbtn.down{transform:scale(.92);background:rgba(255,255,255,.28)}
 .hint{margin:8px 0 0;font-size:11.5px;color:#8ea6bd;text-align:left}
 .mbtn{height:48px;margin-top:16px;background:#4fae3f;letter-spacing:.12em;font-size:16px;box-shadow:inset 0 -4px 0 rgba(0,0,0,.25)}

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
 import { B } from './blocks';
-import { FP } from './mesher';
+import { TEX } from './mesher';
 import { coverageMips, bleedColors } from './mipmaps';
 
 /* ================= PROCEDURAL PIXEL-ART TEXTURES (32×32) ================= */
@@ -155,9 +155,59 @@ const water: Painter = (put, each) => {
   }
 };
 
+const glass: Painter = (put, each) => {
+  each((x, y) => put(x, y, hx(0xd6eaf3), 1, 0));                     // clear centre
+  // a light frame two texels wide: pale outer edge, bright inner edge, a little shading bottom-right
+  each((x, y) => {
+    const e = Math.min(x, y, TS - 1 - x, TS - 1 - y);
+    if (e > 1) return;
+    const c = e === 0 ? 0xb9d0db : x === TS - 2 || y === TS - 2 ? 0xd3e5ee : 0xf0f8fc;
+    put(x, y, hx(c), 0.97 + 0.05 * trand());
+  });
+  // diagonal glare streaks: a long double one, a short single one, and a glint low on the right
+  const streak = (x: number, y: number, n: number, w: number) => {
+    for (let i = 0; i < n; i++) for (let j = 0; j < w; j++) put(x + i + j, y - i, hx(0xf7fcff));
+  };
+  streak(5, 14, 9, 2);
+  streak(5, 19, 5, 1);
+  streak(21, 26, 4, 1);
+};
+const leavesCut: Painter = (put, each) => {
+  // leaf clusters with see-through gaps between them, and a darker rim around each cluster
+  const n = (x: number, y: number) => 0.62 * tn(x, y, 4, 4, 31) + 0.38 * tn(x, y, 8, 8, 32);
+  each((x, y) => {
+    const v = n(x, y);
+    if (v < 0.4) put(x, y, P_LEAF[1], 1, 0);
+    else if (v < 0.46) put(x, y, pick(P_LEAF, 0.18 * trand()));
+    else put(x, y, pick(P_LEAF, 0.25 + 0.45 * tn(x, y, 4, 4, 33) + 0.3 * trand()));
+  });
+  for (let i = 0; i < 30; i++) {                // glossy leaf tips, only on leaves
+    const x = rx(), y = rx();
+    if (n(x, y) >= 0.5) put(x, y, P_LEAF[5], 1.12);
+  }
+};
+const torch: Painter = (put, each) => {
+  // a side view, uv = texel position: the stick (x 14–17, y 0–19, y up from the tile's bottom)
+  // with a glowing tip, and the flame above it (x 11–20, y 18–29); clear elsewhere
+  const at = (x: number, y: number, c: number, k = 1) => put(x, TS - 1 - y, hx(c), k);
+  each((x, y) => put(x, y, hx(0x6a4826), 1, 0));
+  const wood = [0x5a3d1e, 0x7b5631, 0x8d653a, 0x6b4927];
+  for (let y = 0; y < 16; y++) for (let x = 14; x < 18; x++) at(x, y, wood[x - 14], 0.9 + 0.18 * trand());
+  for (let y = 16; y < 20; y++) for (let x = 14; x < 18; x++) at(x, y, y >= 18 ? 0xfff0a8 : 0xffb43c);
+  for (let y = 18; y < 30; y++) {
+    const t = (y - 18) / 11, w = 4.2 * Math.sqrt(Math.sin(Math.PI * (0.12 + 0.88 * t))) * (1 - 0.45 * t);   // teardrop
+    for (let x = 11; x < 21; x++) {
+      const d = Math.abs(x + 0.5 - 16) / Math.max(w, 0.01);
+      if (d > 1) continue;
+      at(x, y, d < 0.4 && t < 0.75 ? 0xfffbe2 : d < 0.75 ? 0xffd43c : 0xff8b1e);
+    }
+  }
+};
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
-const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water];
+const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
+  glass, leavesCut, torch];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
@@ -183,7 +233,7 @@ function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE
     sh.uniforms.tiles = { value: tileArray };
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float layer;\nvarying vec3 vTile;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / FP}, layer );`);
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, layer );`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;')
       .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : 'diffuseColor *= texture( tiles, vTile );');

@@ -1,5 +1,6 @@
 import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
-import { AIR, SOLID, TARGETABLE } from './blocks';
+import { AIR, SOLID, TARGETABLE, MODEL } from './blocks';
+import { torchBox } from './torch';
 
 /* ============================ CHUNKS ============================ */
 export interface Chunk {
@@ -99,9 +100,29 @@ export interface Hit { x: number; y: number; z: number; nx: number; ny: number; 
 const hit: Hit = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 };
 
 /**
+ * Where a ray (origin relative to a cell, direction d) enters box b = [x0, y0, z0, x1, y1, z1]:
+ * distance along the ray and the face normal, or null if it misses (or only beyond `max`).
+ */
+function rayBox(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, b: number[], max: number) {
+  let t0 = -Infinity, t1 = Infinity, axis = 0;
+  const o = [ox, oy, oz], d = [dx, dy, dz];
+  for (let a = 0; a < 3; a++) {
+    if (Math.abs(d[a]) < 1e-9) { if (o[a] < b[a] || o[a] > b[a + 3]) return null; continue; }
+    let n = (b[a] - o[a]) / d[a], f = (b[a + 3] - o[a]) / d[a];
+    if (n > f) { const tmp = n; n = f; f = tmp; }
+    if (n > t0) { t0 = n; axis = a; }
+    t1 = Math.min(t1, f);
+  }
+  if (t0 > t1 || t1 < 0 || t0 > max) return null;
+  const nrm = [0, 0, 0];
+  nrm[axis] = d[axis] > 0 ? -1 : 1;
+  return nrm;
+}
+
+/**
  * First block that can be aimed at (not air, not liquid) along the ray, plus the face normal it was
- * entered through. Works across chunk borders; unloaded chunks read as air. The result object is
- * reused.
+ * entered through. Torches only count where the ray meets their (small) hit box. Works across chunk
+ * borders; unloaded chunks read as air. The result object is reused.
  */
 export function raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): Hit | null {
   let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
@@ -112,9 +133,17 @@ export function raycast(ox: number, oy: number, oz: number, dx: number, dy: numb
   let tz = dz ? (dz > 0 ? z + 1 - oz : oz - z) * ddz : Infinity;
   let nx = 0, ny = 0, nz = 0, t = 0;
   while (t <= max) {
-    if (TARGETABLE[world.getBlock(x, y, z)]) {
-      hit.x = x; hit.y = y; hit.z = z; hit.nx = nx; hit.ny = ny; hit.nz = nz;
-      return hit;
+    const id = world.getBlock(x, y, z);
+    if (TARGETABLE[id]) {
+      if (MODEL[id] !== 1) {
+        hit.x = x; hit.y = y; hit.z = z; hit.nx = nx; hit.ny = ny; hit.nz = nz;
+        return hit;
+      }
+      const n = rayBox(ox - x, oy - y, oz - z, dx, dy, dz, torchBox(world.getState(x, y, z)), max);
+      if (n) {
+        hit.x = x; hit.y = y; hit.z = z; hit.nx = n[0]; hit.ny = n[1]; hit.nz = n[2];
+        return hit;
+      }
     }
     if (tx < ty && tx < tz) { x += sx; t = tx; tx += ddx; nx = -sx; ny = 0; nz = 0; }
     else if (ty < tz) { y += sy; t = ty; ty += ddy; nx = 0; ny = -sy; nz = 0; }

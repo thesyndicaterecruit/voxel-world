@@ -1,6 +1,6 @@
 import { B, HOTBAR } from './blocks';
 import { player, bufferJump, type Controls } from './player';
-import { els, hud, setMode, selectSlot, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance } from './ui';
+import { els, hud, setMode, selectSlot, slotAt, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance, toggleFancyLeaves } from './ui';
 
 /* ======================= TOUCH CONTROLS ======================= */
 // Left half = floating joystick, right half = drag-to-look (+ tap to act), buttons handled by data-act.
@@ -8,6 +8,9 @@ const JR = 62, JMAX = 48;
 const joy = { id: null as PointerId | null, ox: 0, oy: 0, x: 0, y: 0, run: false };
 const look = { id: null as PointerId | null, sx: 0, sy: 0, lx: 0, ly: 0, t: 0, far: 0, yaw: 0, pitch: 0 };
 const held = new Map<PointerId, HTMLElement>(); // pointer id -> pressed button element
+/** A finger (or the mouse) on the hotbar: a tap picks a slot, a sideways swipe scrolls it */
+let bar: { id: PointerId; x: number; left: number; moved: boolean; slot: number } | null = null;
+const SWIPE = 8;                                   // px of travel before a touch counts as a swipe
 /** Keyboard state by KeyboardEvent.code */
 const keys: Record<string, boolean> = {};
 let jumpHeld = false;
@@ -41,15 +44,21 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
   const { joy: joyEl, knob } = els;
 
   function down(id: PointerId, x: number, y: number, target: EventTarget | null, ts: number): void {
-    const el = target && (target as Element).closest ? (target as Element).closest<HTMLElement>('[data-act]') : null;
+    const t = target && (target as Element).closest ? (target as Element) : null;
+    if (t && t.closest('#hotbar')) {
+      if (bar) return;                             // one finger at a time on the hotbar
+      bar = { id, x, left: els.hotbar.scrollLeft, moved: false, slot: slotAt(x) };
+      return;
+    }
+    const el = t ? t.closest<HTMLElement>('[data-act]') : null;
     if (el) {
       held.set(id, el);
       el.classList.add('down');
       const a = el.dataset.act;
       if (a === 'jump') { jumpHeld = true; bufferJump(); }
       else if (a === 'mode') { setMode(hud.mode === 'break' ? 'place' : 'break'); toast(hud.mode === 'break' ? 'Break mode' : 'Place mode: ' + B[HOTBAR[hud.sel]].name, 900); }
-      else if (a === 'slot') { selectSlot(+el.dataset.i!); setMode('place'); toast(B[HOTBAR[hud.sel]].name, 900); }
       else if (a === 'menu') showMenu(true);
+      else if (a === 'leaves') toggleFancyLeaves();
       else if (a === 'resume') showMenu(false);
       else if (a === 'rd-' || a === 'rd+') stepRenderDistance(a === 'rd+' ? 1 : -1);
       else if (a === 'quit') quit();
@@ -70,6 +79,12 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
     }
   }
   function move(id: PointerId, x: number, y: number): void {
+    if (bar && id === bar.id) {
+      const dx = x - bar.x;
+      if (!bar.moved && Math.abs(dx) > SWIPE) bar.moved = true;
+      if (bar.moved) els.hotbar.scrollLeft = bar.left - dx;
+      return;
+    }
     if (id === joy.id) {
       const dx = x - joy.ox, dy = y - joy.oy, d = Math.hypot(dx, dy), c = d > JMAX ? JMAX / d : 1;
       knob.style.transform = `translate(${dx * c}px,${dy * c}px)`;
@@ -87,6 +102,11 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
     }
   }
   function up(id: PointerId, cancel: boolean, ts?: number): void {
+    if (bar && id === bar.id) {
+      if (!bar.moved && !cancel && bar.slot >= 0) { selectSlot(bar.slot); setMode('place'); toast(B[HOTBAR[hud.sel]].name, 900); }
+      bar = null;
+      return;
+    }
     const el = held.get(id);
     if (el) {
       held.delete(id);
@@ -109,6 +129,7 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
     }
   }
   function releaseAll(): void {
+    bar = null;
     for (const k in keys) keys[k] = false;
     [...held.keys()].forEach((id) => up(id, true));
     if (joy.id !== null) up(joy.id, true);
@@ -174,12 +195,17 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
     if (!isPlaying()) return;
     if (e.code === 'Escape' || e.code === 'KeyM') showMenu(!menuOpen());
     if (menuOpen()) return;
-    if (/^Digit[1-8]$/.test(e.code)) { selectSlot(+e.code.slice(5) - 1); setMode('place'); }
+    if (/^Digit[0-9]$/.test(e.code)) {           // 1–9, then 0 for the tenth slot
+      const i = (+e.code.slice(5) + 9) % 10;
+      if (i < HOTBAR.length) { selectSlot(i); setMode('place'); }
+    }
     if (e.code === 'KeyQ' || e.code === 'KeyE') setMode(hud.mode === 'break' ? 'place' : 'break');
     if (e.code === 'KeyF' || e.code === 'Enter') act();
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+  // mouse wheel / trackpad over the hotbar scrolls it
+  els.hotbar.addEventListener('wheel', (e) => { els.hotbar.scrollLeft += e.deltaX + e.deltaY; e.preventDefault(); }, { passive: false });
   window.addEventListener('blur', releaseAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 }

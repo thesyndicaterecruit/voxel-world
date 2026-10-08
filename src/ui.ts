@@ -20,6 +20,7 @@ export const els = {
   rd: $('rd'),
   worlds: $('worlds'),
   newWorld: $('newWorld') as HTMLButtonElement,
+  leavesBtn: $('leavesBtn'),
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -53,18 +54,43 @@ export function initHotbar(tileCanvas: HTMLCanvasElement[], select: (i: number) 
   slots = HOTBAR.map((id, i) => {
     const el = document.createElement('div');
     el.className = 'slot';
-    el.dataset.act = 'slot';
     el.dataset.i = String(i);
-    el.style.backgroundImage = `url(${tileCanvas[B[id].tex[0]].toDataURL()})`; // same pixel art as the block
+    el.title = B[id].name;
+    el.style.backgroundImage = `url(${tileCanvas[B[id].icon].toDataURL()})`; // same pixel art as the block
     els.hotbar.appendChild(el);
     return el;
   });
+  // when not every slot fits, fade the end(s) with more slots past them, as a hint that it scrolls
+  const bar = els.hotbar, fade = () => {
+    const more = bar.scrollWidth - bar.clientWidth;
+    bar.classList.toggle('fade-l', more > 1 && bar.scrollLeft > 1);
+    bar.classList.toggle('fade-r', more > 1 && bar.scrollLeft < more - 1);
+  };
+  bar.addEventListener('scroll', fade);
+  window.addEventListener('resize', fade);
+  new ResizeObserver(fade).observe(bar);
   selectSlot(0);
+}
+
+/** The slot nearest to screen x, so a tap in the gap between two slots still picks one. */
+export function slotAt(x: number): number {
+  let best = -1, bd = Infinity;
+  slots.forEach((el, i) => {
+    const r = el.getBoundingClientRect(), d = Math.abs(x - (r.left + r.right) / 2);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
 }
 
 export function selectSlot(i: number): void {
   hud.sel = i;
   slots.forEach((el, k) => el.classList.toggle('sel', k === i));
+  // keep the selected slot in view when the hotbar scrolls
+  const el = slots[i], bar = els.hotbar, pad = 6;
+  if (el && bar.scrollWidth > bar.clientWidth) {
+    if (el.offsetLeft - pad < bar.scrollLeft) bar.scrollLeft = el.offsetLeft - pad;
+    else if (el.offsetLeft + el.offsetWidth + pad > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = el.offsetLeft + el.offsetWidth + pad - bar.clientWidth;
+  }
   onSelect(i);
 }
 
@@ -77,6 +103,21 @@ export function initMenu(r: number, min: number, max: number, apply: (r: number)
   renderDistance = r; rdMin = min; rdMax = max; onRenderDistance = apply;
   els.rd.textContent = String(r);
 }
+let fancyLeaves = true, onFancyLeaves: (on: boolean) => void = () => {};
+/** Wire the menu's Fancy leaves toggle. `apply` is told about every change. */
+export function initLeavesToggle(on: boolean, apply: (on: boolean) => void): void {
+  onFancyLeaves = apply;
+  setFancyLeaves(on, false);
+}
+/** Turn Fancy leaves on or off (updating the menu button); `notify` passes it on to `apply`. */
+export function setFancyLeaves(on: boolean, notify = true): void {
+  fancyLeaves = on;
+  els.leavesBtn.textContent = on ? 'ON' : 'OFF';
+  els.leavesBtn.classList.toggle('off', !on);
+  els.leavesBtn.setAttribute('aria-pressed', String(on));
+  if (notify) onFancyLeaves(on);
+}
+export const toggleFancyLeaves = () => setFancyLeaves(!fancyLeaves);
 export const menuOpen = () => document.body.classList.contains('menu');
 export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); }
 export function stepRenderDistance(delta: number): void {

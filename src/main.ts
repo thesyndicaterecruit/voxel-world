@@ -9,15 +9,15 @@ import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
-import { P, V, player, spawn, update, collides } from './player';
+import { P, V, player, spawn, update, collides, aim } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initMenu, initStartScreen, selectSlot, setMode, setNote, showError, showWorlds, toast } from './ui';
+import { els, hud, initHotbar, initMenu, initLeavesToggle, initStartScreen, selectSlot, setFancyLeaves, setMode, setNote, showError, showWorlds, toast } from './ui';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
 /** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
-const RD_KEY = 'voxel-island.renderDistance';
+const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves';
 
 function savedRenderDistance(): number {
   try {
@@ -103,6 +103,14 @@ async function boot(): Promise<void> {
   initMenu(rd, RENDER_DISTANCE.min, RENDER_DISTANCE.max, (r) => {
     setRenderDistance(r);
     try { localStorage.setItem(RD_KEY, String(r)); } catch (e) { /* storage unavailable */ }
+  });
+  // Fancy leaves (default on): see-through cutout leaves; off meshes them as plain opaque cubes
+  let fancy = true;
+  try { fancy = localStorage.getItem(LEAVES_KEY) !== '0'; } catch (e) { /* storage unavailable */ }
+  streamer.setOpaqueLeaves(!fancy);
+  initLeavesToggle(fancy, (on) => {
+    streamer.setOpaqueLeaves(!on);
+    try { localStorage.setItem(LEAVES_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
   const interaction = createInteraction(fx);
@@ -204,7 +212,9 @@ async function boot(): Promise<void> {
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
-    setFancyLeaves: (on: boolean) => streamer.setOpaqueLeaves(!on),
+    setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
+    look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
+    target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },
     worldId: record.id, save: () => save.save(),
   };
 }

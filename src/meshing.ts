@@ -25,7 +25,7 @@ export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array): v
 
 /**
  * Turn one pass of mesher output into a geometry. Positions are relative to the chunk origin in 1/FP
- * block, so the mesh is scaled by 1/FP; the material divides the texel uvs by FP.
+ * block, so the mesh is scaled by 1/FP; the material divides the texel uvs by TEX.
  */
 export function chunkGeometry(m: PassMesh): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();

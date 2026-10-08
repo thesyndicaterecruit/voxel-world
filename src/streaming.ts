@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CB, CS, NCX, NCZ, inWorld } from './config';
 import { world, type Chunk } from './world';
+import { LEAVES } from './blocks';
 import { FP, PAD_VOL, type MeshData } from './mesher';
 import { paddedCopy, chunkGeometry } from './meshing';
 import type { WorkerPool } from './workers';
@@ -64,7 +65,7 @@ export interface Streamer {
   /** A block changed at (x, z): re-mesh the chunks it touches ahead of everything else. */
   markDirty(x: number, z: number): void;
   setRenderDistance(r: number): void;
-  /** Mesh leaves as opaque cubes ("Fancy leaves" off); re-meshes every loaded chunk when it changes. */
+  /** Mesh leaves as opaque cubes ("Fancy leaves" off); re-meshes the chunks it changes. */
   setOpaqueLeaves(on: boolean): void;
   /** Are all chunks within `radius` blocks of (x, z) loaded and meshed? */
   isReady(x: number, z: number, radius: number): boolean;
@@ -247,7 +248,14 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
     setOpaqueLeaves(on) {
       if (on === opaqueLeaves) return;
       opaqueLeaves = on;
-      for (const s of slots) if (s.state === LOADED) s.version++;   // re-mesh as normal jobs, nearest first
+      // re-mesh (as normal jobs, nearest first) the chunks with leaves, and their neighbours: a face
+      // on the border is hidden by an opaque leaves block next door
+      const leafy = slots.map((s, ci) => s.state === LOADED && !!world.chunk(ci % NCX, (ci / NCX) | 0)?.data.includes(LEAVES));
+      slots.forEach((s, ci) => {
+        const cx = ci % NCX, cz = (ci / NCX) | 0;
+        if (s.state === LOADED && (leafy[ci] || (cx > 0 && leafy[ci - 1]) || (cx < NCX - 1 && leafy[ci + 1]) ||
+          (cz > 0 && leafy[ci - NCX]) || (cz < NCZ - 1 && leafy[ci + NCX]))) s.version++;
+      });
     },
 
     isReady(x, z, radius) {

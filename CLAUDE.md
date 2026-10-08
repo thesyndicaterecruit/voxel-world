@@ -1,13 +1,14 @@
 # Voxel Island
 
-A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and Vite.
-The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of 16×16
-columns (full height). Chunks stream in and out around the player; generation and meshing run in
-Web Workers, and each chunk draws in at most three calls (opaque, cutout, translucent). You walk around with an on-screen joystick, look by
-dragging, and break/place 8 block types. Worlds are save files in IndexedDB: edited chunks plus the
-player state, picked from a list on the start card. Mid-range Android phones in Chrome are the
-target. All textures are painted procedurally at startup — there are no image assets and no runtime
-network requests. WebGL 2 is required (texture arrays).
+A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and
+Vite. The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of
+16×16 columns (full height). Chunks stream in and out around the player; generation and meshing run
+in Web Workers, and each chunk draws in at most three calls (opaque, cutout, translucent). You walk
+around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
+torches among them. Worlds are save files in IndexedDB: edited chunks plus the player state, picked
+from a list on the start card. Mid-range Android phones in Chrome are the target. All textures are
+painted procedurally at startup — there are no image assets and no runtime network requests. WebGL 2
+is required (texture arrays).
 
 Every push is built and deployed to GitHub Pages by `.github/workflows/deploy.yml`:
 https://thesyndicaterecruit.github.io/voxel-world/
@@ -23,7 +24,8 @@ npm run typecheck
 ```
 
 There is no test suite yet. Verify changes by running the game (desktop: WASD/arrows, Shift sprint,
-Space jump, mouse drag on the right half to look, click/F to act, Q/E switch mode, 1–8 pick block).
+Space jump, mouse drag on the right half to look, click/F to act, Q/E switch mode, 1–9 and 0 pick a
+hotbar slot, mouse wheel over the hotbar scrolls it).
 
 ## Structure
 
@@ -38,6 +40,7 @@ src/
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, RGBA tile texture array,
                      chunk materials per render pass
+  torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
   gen.ts             Pure world generation: columnHeight, layering, trees, generateChunk(seed, cx, cz), findSpawn
@@ -50,15 +53,15 @@ src/
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
   mesher.ts          Pure chunk mesher: padded chunk data → typed arrays per render pass (face culling, baked
-                     face light, AO, tile layer; cube and liquid models)
+                     face light, AO, tile layer; cube, torch and liquid models)
   meshing.ts         paddedCopy (chunk + 1-block border), mesher output → BufferGeometry; boxesGeometry
   environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
-  effects.ts         Target outline, placement ghost, block-break particles
+  effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
-  interact.ts        Break/place logic (act) and target highlighting (updateTarget)
-  input.ts           Touch joystick / look / buttons, mouse + keyboard fallback, gesture blocking
-  ui.ts              HUD DOM: toast, mode button, hotbar, menu (view distance, save & exit), fullscreen,
-                     start screen + world list, error display
+  interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
+  input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
+  ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
+                     save & exit), fullscreen, start screen + world list, error display
   style.css          All styles
 .github/workflows/deploy.yml   Build + deploy to GitHub Pages on every push
 ```
@@ -97,15 +100,34 @@ borders) ahead of everything else.
   (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
   place, so never reassign them.
 - **Block registry** (`blocks.ts`): every block type has an id (stored in chunks and saves, so ids
-  never change; new blocks get new ids), a name, a tile per face kind, `solid` (collides),
-  `opaque` (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' |
-  'translucent'), `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves,
-  2 water, 15 opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared
-  face: glass, water) and `jit` (brightness variation). Hot loops use the `Uint8Array` tables
+  never change; new blocks get new ids), a name, a tile per face kind, `solid` (collides), `opaque`
+  (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' | 'translucent'),
+  `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves, 2 water, 15
+  opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared face:
+  glass, water), `jit` (brightness variation), `icon` (hotbar tile), `particle` (tile of the bits
+  that fly off when it breaks) and optional `fastTex` (tiles when meshed as an opaque cube: leaves
+  with Fancy leaves off). `lightEmission` is groundwork that nothing reads until lighting lands;
+  `lightFilter` already decides which cubes darken AO corners. Hot loops use the `Uint8Array` tables
   (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
-  `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes.
-  AO corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves).
+  `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes. AO
+  corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves).
+- **Torches** (`torch.ts`): block state 0 = standing on the block below, 1–4 = on a wall, leaning
+  out of it, with the supporting block at −x, +x, −z, +z (`TORCH_SUPPORT`). The state comes from the
+  face you build against (`torchStateFor`; never an underside), and the support must be a solid
+  cube. Torches aren't solid, nothing builds against them, and the raycast only hits them inside
+  their small `torchBox` (rays past the stick reach the block behind). Breaking a block pops the
+  torches it holds (`popTorches` in `interact.ts`); that is the only way a support disappears today,
+  so anything new that removes blocks must do the same. The model is built in texels (1/32 block,
+  uv = position in the torch tile), tilted 22.5° and turned per state in `TORCH_MODELS`; the mesher
+  copies it into the cutout pass (flame and tip full-bright), and the placement ghost uses it too.
+- **Fancy leaves** (menu toggle, default on, saved in localStorage): on, leaves use the see-through
+  `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as
+  opaque cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
+  Switching re-meshes the chunks with leaves and their neighbours as normal jobs.
+- **Hotbar:** 10 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
+  that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
+  scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
 - **Per-block state:** each chunk can carry a second `Uint8Array` (`chunk.state`, same layout as
   the block ids) for things like torch facing and water level. It is `null` until some block gets a
   non-zero state — generated terrain never has any — and `world.setBlock(x, y, z, id, state)` sets
@@ -117,9 +139,10 @@ borders) ahead of everything else.
 - **Coordinates:** world (x, y, z) lives in chunk (x >> CB, z >> CB) at `data[CI(x & 15, y, z & 15)]`
   — x fastest, then z, then y. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is
   the feet position; the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
-- **Workers only run pure code.** `gen.ts`, `mesher.ts`, `noise.ts`, `blocks.ts`, `config.ts` are
-  imported by `worker.ts`: no three.js, no DOM, no `world`. `meshChunk` only sees a padded copy of
-  the chunk (one block of each neighbour, see `paddedCopy`). Per-block hashes use world coordinates.
+- **Workers only run pure code.** `gen.ts`, `mesher.ts`, `torch.ts`, `noise.ts`, `blocks.ts`,
+  `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`. `meshChunk` only sees a
+  padded copy of the chunk (one block of each neighbour, see `paddedCopy`). Per-block hashes use
+  world coordinates.
 - **Streaming regions** (`streaming.ts`), measured from the player to each chunk's nearest point:
   meshed within `R·16` blocks (R = view distance, 3–10, default 6, saved in localStorage), loaded
   within `R·16 + 24` (so a meshed chunk always has its 8 neighbours), unloaded beyond `R·16 + 48`.
@@ -137,9 +160,10 @@ borders) ahead of everything else.
 - **One draw call per pass:** every tile is a layer of `tileArray` (an RGBA `DataTexture2DArray`,
   r128's name for `DataArrayTexture`), the tile is a per-vertex `layer` attribute, and the three
   `chunkMaterials` are `MeshBasicMaterial`s patched in `onBeforeCompile` to sample the array (the
-  opaque one ignores alpha). Vertex positions are `Uint16` fixed point in 1/32 block relative to the
-  chunk (`FP` in `mesher.ts`; meshes are scaled by 1/32), uvs are `Uint8` texels (0–32), colours are
-  normalized `Uint8`. Dispose geometries when meshes go away.
+  opaque one ignores alpha). Vertex positions are `Uint16` fixed point in 1/64 block relative to the
+  chunk (`FP` in `mesher.ts`, fine enough for the tilted torch; meshes are scaled by 1/FP), uvs are
+  `Uint8` texels (0–`TEX` = 32; the materials divide by 32), colours are normalized `Uint8`. Dispose
+  geometries when meshes go away.
 - **Cutout tiles** (tiles of cutout blocks with see-through texels) get colour bleeding into their
   clear texels and coverage-preserving mip levels (`mipmaps.ts`), uploaded over GL's generated
   mips in the texture's `onUpdate`, so leaves and glass frames don't fade out in the distance.
@@ -173,7 +197,9 @@ borders) ahead of everything else.
   `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
   (non-air blocks in loaded chunks), `stream()` (loaded/meshed/visible counts, draw calls),
   `chunk(cx, cz)` (one chunk's streaming state, triangles per pass), `setRenderDistance(r)`,
-  `setFancyLeaves(on)`, `getState`, `worldId` and `save()`.
+  `setFancyLeaves(on)` (same as the menu toggle), `getState`, `look(yaw, pitch)`, `target()` (the
+  block under the crosshair, with the face hit and its id), `tiles` (the tile canvases), `worldId`
+  and `save()`.
   Keep it working. Headless tests can use it; `?seed=123` in the URL gives a fixed world.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
@@ -192,7 +218,8 @@ Ideas, roughly in priority order. Nothing here is committed to.
 5. **Faster meshing:** greedy meshing (fewer vertices), smarter job cancellation when the player
    moves fast.
 6. **Day/night cycle:** animated sky colours, sun movement, fog colour tied to time of day.
-7. **More content:** more block types (glass, water, flowers, ores), a block-picker inventory beyond 8 slots.
+7. **More content:** more block types (water, flowers, ores), a block-picker inventory instead of an
+   ever longer hotbar.
 8. **Audio:** break/place/footstep sounds generated with Web Audio (keeps the no-assets approach).
 9. **Settings:** look sensitivity, invert-Y, FOV, render-quality toggle.
 10. **Three.js upgrade:** move to a current release and retune colours (`outputColorSpace`, texture

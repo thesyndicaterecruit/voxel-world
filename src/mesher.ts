@@ -1,5 +1,6 @@
 import { CS, H, CI } from './config';
 import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, faceHidden } from './blocks';
+import { TORCH_MODELS } from './torch';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO) ======================= */
@@ -51,8 +52,10 @@ export const FACES: Face[] = ([
 
 const AO = [0.5, 0.68, 0.85, 1];
 
-/** Vertex positions and texture coords are fixed point: 1/FP of a block, and texels (1/FP of a tile). */
-export const FP = 32;
+/** Vertex positions are fixed point, 1/FP of a block (fine enough for the tilted torch). */
+export const FP = 64;
+/** Texels per tile edge: texture coords are whole texels, 0..TEX. */
+export const TEX = 32;
 
 /** One render pass of a chunk mesh. */
 export interface PassMesh {
@@ -60,7 +63,7 @@ export interface PassMesh {
   pos: Uint16Array;
   /** Baked face light × AO × block jitter, 0..255 (r = g = b) */
   col: Uint8Array;
-  /** Texture coords in texels, 0..FP (u, v; v = FP is the top of the tile) */
+  /** Texture coords in texels, 0..TEX (u, v; v = TEX is the top of the tile) */
   uv: Uint8Array;
   /** Texture tile (layer of the tile array) per vertex */
   layer: Uint8Array;
@@ -103,8 +106,10 @@ function builder() {
   };
 }
 
-/** Top of a liquid block, in 1/FP: full when the same liquid is above, else lower for higher levels. */
-const liquidTop = (level: number, sameAbove: boolean) => (sameAbove ? FP : 28 - 3 * (level & 7));
+/** Top of a liquid block, in texels: full when the same liquid is above, else lower for higher levels. */
+const liquidTop = (level: number, sameAbove: boolean) => (sameAbove ? TEX : 28 - 3 * (level & 7));
+/** Texels to fixed-point position units */
+const TP = FP / TEX;
 
 /**
  * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
@@ -135,7 +140,21 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
     const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
     if (id === AIR) continue;
     const x = x0 + lx, z = z0 + lz, b = B[id], model = MODEL[id];
-    const out = passes[opaqueLeaves && id === LEAVES ? 0 : PASS[id]];
+    const fast = opaqueLeaves && id === LEAVES, out = passes[fast ? 0 : PASS[id]], tex = fast && b.fastTex ? b.fastTex : b.tex;
+
+    if (model === 1) {                             // torch: its stick-and-flame model, tilted per facing
+      const st = state ? state[CI(lx, y, lz)] : 0, quads = TORCH_MODELS[st <= 4 ? st : 0];
+      for (const q of quads) {
+        const k = q.glow ? 255 : Math.round(q.shade * 255);
+        for (let i = 0; i < 4; i++) {
+          const p = q.p[i];
+          vi[i] = out.vert(Math.round((lx * TEX + p[0]) * TP), Math.round((y * TEX + p[1]) * TP), Math.round((lz * TEX + p[2]) * TP),
+            k, q.uv[i][0], q.uv[i][1], tex[0]);
+        }
+        out.quad(vi[0], vi[1], vi[2], vi[3], false);
+      }
+      continue;
+    }
 
     if (model === 2) {                             // liquid: no AO, lowered top unless more liquid is above
       const above = y + 1 < H ? pad[PI(px, y + 1, pz)] : AIR;
@@ -143,11 +162,11 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
       for (let f = 0; f < 6; f++) {
         const F = FACES[f], ny = y + F.n[1];
         if (ny < 0 || (ny < H && faceHidden(id, pad[PI(px + F.n[0], ny, pz + F.n[2])], opaqueLeaves))) continue;
-        const k = Math.round(F.s * 255), tl = b.tex[F.k];
+        const k = Math.round(F.s * 255), tl = tex[F.k];
         for (let i = 0; i < 4; i++) {
           const v = F.v[i], q = F.uv[i];
-          vi[i] = out.vert((lx + v[0]) * FP, y * FP + (v[1] ? t : 0), (lz + v[2]) * FP, k,
-            q[0] * FP, F.n[1] ? q[1] * FP : (v[1] ? t : 0), tl);
+          vi[i] = out.vert((lx + v[0]) * FP, y * FP + (v[1] ? t * TP : 0), (lz + v[2]) * FP, k,
+            q[0] * TEX, F.n[1] ? q[1] * TEX : (v[1] ? t : 0), tl);
         }
         out.quad(vi[0], vi[1], vi[2], vi[3], false);
       }
@@ -161,13 +180,13 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
       const o = F.ao;
       const l0 = L[0] = aoAt(px, y, pz, o[0]), l1 = L[1] = aoAt(px, y, pz, o[1]);
       const l2 = L[2] = aoAt(px, y, pz, o[2]), l3 = L[3] = aoAt(px, y, pz, o[3]);
-      const tl = b.tex[F.k];
+      const tl = tex[F.k];
       const rot = ROT.has(tl) ? Math.floor(hash3(seed, x * 3 + f, y, z - f) * 4) : 0;
       const sh = F.s * j;
       for (let i = 0; i < 4; i++) {
         const v = F.v[i], q = F.uv[(i + rot) & 3];
         // baked light + AO tints the texture
-        vi[i] = out.vert((lx + v[0]) * FP, (y + v[1]) * FP, (lz + v[2]) * FP, Math.round(sh * L[i] * 255), q[0] * FP, q[1] * FP, tl);
+        vi[i] = out.vert((lx + v[0]) * FP, (y + v[1]) * FP, (lz + v[2]) * FP, Math.round(sh * L[i] * 255), q[0] * TEX, q[1] * TEX, tl);
       }
       // flip the quad diagonal so AO interpolates smoothly
       out.quad(vi[0], vi[1], vi[2], vi[3], l0 + l2 > l1 + l3);
