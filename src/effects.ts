@@ -5,6 +5,7 @@ import { TEX } from './mesher';
 import { TORCH_MODELS, type TorchQuad } from './torch';
 import { world } from './world';
 import { radialFog } from './fog';
+import { lightColor } from './shading';
 
 /* ===================== TARGET OUTLINE, GHOST, PARTICLES ===================== */
 export interface Effects {
@@ -15,7 +16,7 @@ export interface Effects {
   ghostMat: THREE.MeshBasicMaterial;
   /** Show the outline around box b = [x0, y0, z0, x1, y1, z1] (block units) of block (x, y, z). */
   showOutline(x: number, y: number, z: number, b: number[]): void;
-  /** Show the placement ghost of block `id` with block state `state` at (x, y, z): a cube or its model. */
+  /** Show the placement ghost of block `id` with block state `state` at (x, y, z): a cube or its model, as lit there. */
   showGhost(x: number, y: number, z: number, id: number, state: number): void;
   /** Spray of little cubes textured like block `id` from the block at (x, y, z). */
   burst(x: number, y: number, z: number, id: number): void;
@@ -74,8 +75,10 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     parts.push({ m, v: [0, 0, 0], life: 0, max: 1 });
   }
 
+  const lit = new THREE.Color();
   function burst(x: number, y: number, z: number, id: number): void {
     const map = tex[B[id].particle];
+    lightColor(world.getLight(x, y, z), lit);          // as bright as the spot they fly from
     let n = 0;
     for (const p of parts) {
       if (p.life > 0) continue;
@@ -84,7 +87,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
       p.life = p.max = 0.5 + Math.random() * 0.4;
       const k = 0.7 + Math.random() * 0.4;
       p.m.material.map = map;
-      p.m.material.color.setScalar(k);
+      p.m.material.color.copy(lit).multiplyScalar(k);
       p.m.scale.setScalar(1);
       p.m.visible = true;
       if (++n >= 12) break;
@@ -115,6 +118,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     ghost.visible = true;
     ghost.geometry = MODEL[id] === 1 ? torches[state <= 4 ? state : 0] : cube;
     ghost.position.set(x, y, z);
+    lightColor(world.getLight(x, y, z), ghostMat.color);
   }
 
   return { outline, ghost, ghostMat, showOutline, showGhost, burst, updateParticles };

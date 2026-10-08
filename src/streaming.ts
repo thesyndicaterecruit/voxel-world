@@ -180,14 +180,15 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
 
   function dispatchMesh(ci: number, urgent: boolean): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = s.epoch, version = s.version;
-    const pad = pads.pop() || new Uint8Array(PAD_VOL), c = world.chunk(cx, cz);
+    const pad = pads.pop() || new Uint8Array(PAD_VOL), light = pads.pop() || new Uint8Array(PAD_VOL), c = world.chunk(cx, cz);
     paddedCopy(world, cx, cz, pad);
+    paddedCopy(world, cx, cz, light, true);
     const state = c && c.state ? c.state.slice() : null;
     s.sent = version;
-    pool.run({ type: 'mesh', id: 0, seed: world.seed, cx, cz, pad, state, opaqueLeaves },
-      state ? [pad.buffer, state.buffer] : [pad.buffer], (res) => {
+    pool.run({ type: 'mesh', id: 0, seed: world.seed, cx, cz, pad, light, state, opaqueLeaves },
+      state ? [pad.buffer, light.buffer, state.buffer] : [pad.buffer, light.buffer], (res) => {
         if (res.type !== 'mesh') return;
-        pads.push(res.pad);
+        pads.push(res.pad, res.light);
         if (s.sent === version) s.sent = -1;
         if (s.epoch === epoch) ready.push({ ci, epoch, version, urgent, data: res.mesh });
       });

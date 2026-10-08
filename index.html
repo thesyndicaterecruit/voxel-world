@@ -31,22 +31,35 @@
   <div id="menu" data-act="none">
     <div class="card">
       <h2>MENU</h2>
-      <div class="setting">
-        <span>View distance</span>
-        <div class="stepper">
-          <div class="sbtn" data-act="rd-" role="button" aria-label="Less">&minus;</div>
-          <span id="rd">6</span>
-          <div class="sbtn" data-act="rd+" role="button" aria-label="More">+</div>
+      <div class="opts">
+        <div class="opt">
+          <span class="lab">View distance</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="rd-" role="button" aria-label="Less">&minus;</div>
+            <span id="rd" class="val">6</span>
+            <div class="sbtn" data-act="rd+" role="button" aria-label="More">+</div>
+          </div>
+          <p class="hint">Lower it if the game stutters</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Fancy leaves</span>
+          <div class="sbtn tog" id="leavesBtn" data-act="leaves" role="button" aria-pressed="true">ON</div>
+          <p class="hint">Off: solid leaves, faster on weak phones</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Brightness</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="br-" role="button" aria-label="Darker">&minus;</div>
+            <span id="br" class="val wide">NORMAL</span>
+            <div class="sbtn" data-act="br+" role="button" aria-label="Brighter">+</div>
+          </div>
+          <p class="hint">How dark nights and caves get</p>
         </div>
       </div>
-      <p class="hint">Lower it if the game stutters</p>
-      <div class="setting">
-        <span>Fancy leaves</span>
-        <div class="sbtn tog" id="leavesBtn" data-act="leaves" role="button" aria-pressed="true">ON</div>
+      <div class="mbtns">
+        <div class="mbtn" data-act="resume" role="button">RESUME</div>
+        <div class="mbtn sec" data-act="quit" role="button">SAVE &amp; EXIT</div>
       </div>
-      <p class="hint">Off draws leaves as solid blocks: faster on weak phones</p>
-      <div class="mbtn" data-act="resume" role="button">RESUME</div>
-      <div class="mbtn sec" data-act="quit" role="button">SAVE &amp; EXIT</div>
     </div>
   </div>
 </div>

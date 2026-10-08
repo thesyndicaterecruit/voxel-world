@@ -44,6 +44,8 @@ src/
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, RGBA tile texture array,
                      chunk materials per render pass
+  shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
+                     time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
   light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relight() after an edit
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
@@ -58,16 +60,17 @@ src/
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
-  mesher.ts          Pure chunk mesher: padded chunk data → typed arrays per render pass (face culling, baked
-                     face light, AO, tile layer; cube, torch and liquid models)
-  meshing.ts         paddedCopy (chunk + 1-block border), mesher output → BufferGeometry; boxesGeometry
+  mesher.ts          Pure chunk mesher: padded chunk blocks + light → typed arrays per render pass (face culling,
+                     baked face shading, AO, smooth light, tile layer; cube, torch and liquid models)
+  meshing.ts         paddedCopy (chunk + 1-block border, blocks or light), mesher output → BufferGeometry; boxesGeometry
   environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles
+                     (the last two lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
   interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
-                     save & exit), fullscreen, start screen + world list, error display
+                     Brightness, save & exit), fullscreen, start screen + world list, error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
                      chunk borders, incremental = fresh), mesher, torch geometry, save format + migration, RLE,
@@ -161,6 +164,18 @@ ahead of everything else.
   carry a version and results from before an edit are thrown away. Meshing needs the chunk and its
   8 neighbours lit. `tests/light.test.ts` checks that incremental updates always equal a fresh
   computation; in the game `__voxel.verifyLight(cx, cz)` does the same for one chunk.
+- **Shading** (`shading.ts`): every chunk vertex carries its colour as r = face shading × AO ×
+  jitter, g = skylight, b = block light (light as level × 17). Smooth light: a vertex averages the
+  light of the cells touching its corner on the face's outer side (the face's neighbour, the two
+  beside it, the diagonal unless both of those are solid), leaving out solid cells; a torch takes its
+  own cell's light, its flame full block light. The chunk shader makes
+  `max(curve(sky × daylight) × skyTint, curve(block × flicker) × warm, floor)` per vertex, where
+  `curve` is Minecraft's l / (4 − 3l) lifted by the Brightness setting (Moody / Normal / Bright:
+  curve lift and floor, saved in localStorage) — all uniforms in `lightUniforms`, so time of day
+  never re-meshes. Torches flicker in the shader (a slow wave in `time`). Anything else drawn in the
+  world should follow the light: `lightColor(world.getLight(…), color)` gives the same colour on the
+  CPU (break particles, the placement ghost). In full skylight by day the result equals the old unlit
+  look.
 - **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
   chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
   player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
@@ -193,8 +208,8 @@ ahead of everything else.
   `chunkMaterials` are `MeshBasicMaterial`s patched in `onBeforeCompile` to sample the array (the
   opaque one ignores alpha). Vertex positions are `Uint16` fixed point in 1/64 block relative to the
   chunk (`FP` in `mesher.ts`, fine enough for the tilted torch; meshes are scaled by 1/FP), uvs are
-  `Uint8` texels (0–`TEX` = 32; the materials divide by 32), colours are normalized `Uint8`. Dispose
-  geometries when meshes go away.
+  `Uint8` texels (0–`TEX` = 32; the materials divide by 32), colours are normalized `Uint8` (shading
+  and light, see Shading). Dispose geometries when meshes go away.
 - **Cutout tiles** (tiles of cutout blocks with see-through texels) get colour bleeding into their
   clear texels and coverage-preserving mip levels (`mipmaps.ts`), uploaded over GL's generated
   mips in the texture's `onUpdate`, so leaves and glass frames don't fade out in the distance.
@@ -230,10 +245,11 @@ ahead of everything else.
   (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible counts, draw calls, worker
   time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
   or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
-  (cells that differ from a fresh lighting), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as
-  the menu toggle), `getState`, `look(yaw, pitch)`, `target()` (the block under the crosshair, with
-  the face hit and its id), `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the
-  browser tests drive the game through it; `?seed=123` in the URL gives a fixed world.
+  (cells that differ from a fresh lighting), `setDaylight(d)` (skylight strength, 1 = day),
+  `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
+  `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
+  `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests drive the
+  game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames

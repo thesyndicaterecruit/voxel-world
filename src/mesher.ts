@@ -1,10 +1,11 @@
 import { CS, H, CI } from './config';
-import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, faceHidden } from './blocks';
+import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, FILTER, faceHidden } from './blocks';
 import { TORCH_MODELS } from './torch';
 import { hash3 } from './noise';
 
-/* ======================= CHUNK MESHING (+AO) ======================= */
-// Pure: reads a padded copy of the chunk and returns typed arrays, so it can run off the main thread.
+/* ======================= CHUNK MESHING (+AO, smooth light) ======================= */
+// Pure: reads a padded copy of the chunk (blocks and light) and returns typed arrays, so it can run
+// off the main thread.
 
 /** Padded chunk width: the chunk plus one column of each neighbour, for face culling and AO at borders. */
 export const PW = CS + 2;
@@ -61,7 +62,10 @@ export const TEX = 32;
 export interface PassMesh {
   /** Vertex position relative to the chunk origin, in 1/FP block (x, y, z) */
   pos: Uint16Array;
-  /** Baked face light × AO × block jitter, 0..255 (r = g = b) */
+  /**
+   * Per vertex: r = baked face shading × AO × block jitter, g = skylight, b = block light (light as
+   * level × 17, so 15 = 255; the chunk shader turns them into brightness, see textures.ts)
+   */
   col: Uint8Array;
   /** Texture coords in texels, 0..TEX (u, v; v = TEX is the top of the tile) */
   uv: Uint8Array;
@@ -78,8 +82,8 @@ function builder() {
   let pos = new Uint16Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
   let lay = new Uint8Array(cap), idx = new Uint32Array(cap * 1.5);
   return {
-    /** Add a vertex; returns its index. */
-    vert(x: number, y: number, z: number, k: number, u: number, v: number, l: number): number {
+    /** Add a vertex (k: shading, sky / blk: light × 17); returns its index. */
+    vert(x: number, y: number, z: number, k: number, sky: number, blk: number, u: number, v: number, l: number): number {
       if (n === cap) {
         cap *= 2;
         const p2 = new Uint16Array(cap * 3), c2 = new Uint8Array(cap * 3), u2 = new Uint8Array(cap * 2);
@@ -88,7 +92,7 @@ function builder() {
         pos = p2; col = c2; uv = u2; lay = l2; idx = i2;
       }
       pos[n * 3] = x; pos[n * 3 + 1] = y; pos[n * 3 + 2] = z;
-      col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = k;
+      col[n * 3] = k; col[n * 3 + 1] = sky; col[n * 3 + 2] = blk;
       uv[n * 2] = u; uv[n * 2 + 1] = v;
       lay[n] = l;
       return n++;
@@ -113,21 +117,42 @@ const TP = FP / TEX;
 
 /**
  * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
- * outside the world or in missing chunks are air); `state` is the chunk's own per-block state (CI
- * layout), if it has any. (x0, z0) is the chunk's world origin: the per-block brightness and tile
+ * outside the world or in missing chunks are air), `light` the same cells' light (packed, see
+ * light.ts); `state` is the chunk's own per-block state (CI layout), if it has any. (x0, z0) is the chunk's world origin: the per-block brightness and tile
  * rotation hash world coordinates with the world seed, so the result does not depend on which
  * chunk is meshed first. Each block's faces go into its render pass, one mesh per pass: the tile is
  * a vertex attribute, so every pass of a chunk draws in a single call. `opaqueLeaves`: leaves are
  * meshed as opaque cubes, in the opaque pass (see faceHidden).
  */
-export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number, z0: number, seed: number, opaqueLeaves = true): MeshData {
+export function meshChunk(pad: Uint8Array, light: Uint8Array, state: Uint8Array | null, x0: number, z0: number, seed: number,
+  opaqueLeaves = true): MeshData {
   const passes = [builder(), builder(), builder()];
   const occ = (px: number, y: number, pz: number) => (y >= 0 && y < H ? OCCLUDES[pad[PI(px, y, pz)]] : 0);
   const aoAt = (px: number, y: number, pz: number, o: number[]) => {
     const s1 = occ(px + o[0], y + o[1], pz + o[2]), s2 = occ(px + o[3], y + o[4], pz + o[5]);
     return s1 && s2 ? AO[0] : AO[3 - s1 - s2 - occ(px + o[6], y + o[7], pz + o[8])];
   };
-  const L = [0, 0, 0, 0], vi = [0, 0, 0, 0];
+  // smooth light: a vertex gets the average light of the cells touching its corner on the face's
+  // outer side — the face's own neighbour, the two beside it and the diagonal one (unless both of
+  // those hide it) — leaving out solid ones, which hold no light; above the world is open sky
+  let ss = 0, sb = 0, sc = 0;
+  const take = (px: number, y: number, pz: number) => {
+    if (y >= H) { ss += 15; sc++; return true; }
+    if (y < 0) return false;
+    const i = PI(px, y, pz);
+    if (FILTER[pad[i]] >= 15) return false;
+    const v = light[i];
+    ss += v >> 4; sb += v & 15; sc++;
+    return true;
+  };
+  const smooth = (px: number, y: number, pz: number, n: number[], o: number[], i: number) => {
+    ss = sb = sc = 0;
+    take(px + n[0], y + n[1], pz + n[2]);
+    const a = take(px + o[0], y + o[1], pz + o[2]), b = take(px + o[3], y + o[4], pz + o[5]);
+    if (a || b) take(px + o[6], y + o[7], pz + o[8]);
+    SKY[i] = Math.round((ss / sc) * 17); BLK[i] = Math.round((sb / sc) * 17);
+  };
+  const L = [0, 0, 0, 0], vi = [0, 0, 0, 0], SKY = [0, 0, 0, 0], BLK = [0, 0, 0, 0];
   // skip the empty layers above the highest block
   let top = H - 1;
   for (; top >= 0; top--) {
@@ -144,12 +169,13 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
 
     if (model === 1) {                             // torch: its stick-and-flame model, tilted per facing
       const st = state ? state[CI(lx, y, lz)] : 0, quads = TORCH_MODELS[st <= 4 ? st : 0];
+      const v = light[PI(px, y, pz)], sky = (v >> 4) * 17, blk = (v & 15) * 17;   // the light it stands in
       for (const q of quads) {
         const k = q.glow ? 255 : Math.round(q.shade * 255);
         for (let i = 0; i < 4; i++) {
           const p = q.p[i];
           vi[i] = out.vert(Math.round((lx * TEX + p[0]) * TP), Math.round((y * TEX + p[1]) * TP), Math.round((lz * TEX + p[2]) * TP),
-            k, q.uv[i][0], q.uv[i][1], tex[0]);
+            k, sky, q.glow ? 255 : blk, q.uv[i][0], q.uv[i][1], tex[0]);   // the flame shines at full
         }
         out.quad(vi[0], vi[1], vi[2], vi[3], false);
       }
@@ -165,7 +191,8 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
         const k = Math.round(F.s * 255), tl = tex[F.k];
         for (let i = 0; i < 4; i++) {
           const v = F.v[i], q = F.uv[i];
-          vi[i] = out.vert((lx + v[0]) * FP, y * FP + (v[1] ? t * TP : 0), (lz + v[2]) * FP, k,
+          smooth(px, y, pz, F.n, F.ao[i], i);
+          vi[i] = out.vert((lx + v[0]) * FP, y * FP + (v[1] ? t * TP : 0), (lz + v[2]) * FP, k, SKY[i], BLK[i],
             q[0] * TEX, F.n[1] ? q[1] * TEX : (v[1] ? t : 0), tl);
         }
         out.quad(vi[0], vi[1], vi[2], vi[3], false);
@@ -185,11 +212,14 @@ export function meshChunk(pad: Uint8Array, state: Uint8Array | null, x0: number,
       const sh = F.s * j;
       for (let i = 0; i < 4; i++) {
         const v = F.v[i], q = F.uv[(i + rot) & 3];
-        // baked light + AO tints the texture
-        vi[i] = out.vert((lx + v[0]) * FP, (y + v[1]) * FP, (lz + v[2]) * FP, Math.round(sh * L[i] * 255), q[0] * TEX, q[1] * TEX, tl);
+        smooth(px, y, pz, F.n, o[i], i);
+        // face shading × AO tints the texture; the light goes along for the shader
+        vi[i] = out.vert((lx + v[0]) * FP, (y + v[1]) * FP, (lz + v[2]) * FP, Math.round(sh * L[i] * 255), SKY[i], BLK[i],
+          q[0] * TEX, q[1] * TEX, tl);
       }
-      // flip the quad diagonal so AO interpolates smoothly
-      out.quad(vi[0], vi[1], vi[2], vi[3], l0 + l2 > l1 + l3);
+      // flip the quad diagonal so AO and light interpolate smoothly
+      const b0 = l0 * (1 + SKY[0] + BLK[0]), b1 = l1 * (1 + SKY[1] + BLK[1]), b2 = l2 * (1 + SKY[2] + BLK[2]), b3 = l3 * (1 + SKY[3] + BLK[3]);
+      out.quad(vi[0], vi[1], vi[2], vi[3], b0 + b2 > b1 + b3);
     }
   }
   return passes.map((p) => p.finish());

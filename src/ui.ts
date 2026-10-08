@@ -21,6 +21,7 @@ export const els = {
   worlds: $('worlds'),
   newWorld: $('newWorld') as HTMLButtonElement,
   leavesBtn: $('leavesBtn'),
+  br: $('br'),
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -118,6 +119,19 @@ export function setFancyLeaves(on: boolean, notify = true): void {
   if (notify) onFancyLeaves(on);
 }
 export const toggleFancyLeaves = () => setFancyLeaves(!fancyLeaves);
+let brightness = 1, brightnessNames: string[] = [], onBrightness: (i: number) => void = () => {};
+/** Wire the menu's Brightness stepper: step `i` of `names`; `apply` is told about every change. */
+export function initBrightness(i: number, names: string[], apply: (i: number) => void): void {
+  brightness = i; brightnessNames = names; onBrightness = apply;
+  els.br.textContent = names[i];
+}
+export function stepBrightness(delta: number): void {
+  const i = Math.max(0, Math.min(brightnessNames.length - 1, brightness + delta));
+  if (i === brightness) return;
+  brightness = i;
+  els.br.textContent = brightnessNames[i];
+  onBrightness(i);
+}
 export const menuOpen = () => document.body.classList.contains('menu');
 export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); }
 export function stepRenderDistance(delta: number): void {

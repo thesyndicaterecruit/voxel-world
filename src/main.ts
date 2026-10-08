@@ -12,12 +12,14 @@ import { createEffects } from './effects';
 import { P, V, player, spawn, update, collides, aim } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initMenu, initLeavesToggle, initStartScreen, selectSlot, setFancyLeaves, setMode, setNote, showError, showWorlds, toast } from './ui';
+import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initStartScreen, selectSlot, setFancyLeaves, setMode, setNote,
+  showError, showWorlds, toast } from './ui';
+import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
 /** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
-const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves';
+const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves', BRIGHT_KEY = 'voxel-island.brightness';
 
 function savedRenderDistance(): number {
   try {
@@ -113,6 +115,16 @@ async function boot(): Promise<void> {
     try { localStorage.setItem(LEAVES_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
+  // Brightness: how far the light curve is lifted, and how dark the darkest places get
+  let bright = 1;
+  try { const v = localStorage.getItem(BRIGHT_KEY); if (v !== null && BRIGHTNESS[+v]) bright = +v; } catch (e) { /* storage unavailable */ }
+  const setBrightness = (i: number) => { lightUniforms.lift.value = BRIGHTNESS[i].lift; lightUniforms.lightFloor.value = BRIGHTNESS[i].floor; };
+  setBrightness(bright);
+  initBrightness(bright, BRIGHTNESS.map((b) => b.name), (i) => {
+    setBrightness(i);
+    try { localStorage.setItem(BRIGHT_KEY, String(i)); } catch (e) { /* storage unavailable */ }
+  });
+
   const interaction = createInteraction(fx);
   initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].tex[0]]; });
 
@@ -187,6 +199,7 @@ async function boot(): Promise<void> {
       setMode(record.mode);
       initStartScreen(() => { playing = true; save.requestSave(); });
     }
+    lightUniforms.time.value = now / 1000;           // torch flicker
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     env.update(dt, camera);
@@ -214,6 +227,7 @@ async function boot(): Promise<void> {
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
     verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
+    setDaylight: (d: number) => { lightUniforms.daylight.value = d; },
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
     look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
     target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },

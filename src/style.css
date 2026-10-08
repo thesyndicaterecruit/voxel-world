@@ -64,19 +64,24 @@ body.menu #menu{display:flex}
 body.menu #cross,body.menu #joy{display:none}
 #menu .card{max-width:340px;background:rgba(14,24,38,.95)}
 h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
-.setting{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:15px;color:#dce8f4}
+/* settings: label | control rows, a hint under each; three columns on short landscape screens */
+.opts{display:grid;gap:14px;text-align:left}
+.opt{display:grid;grid-template-columns:1fr auto;align-items:center;gap:0 12px}
+.lab{font-size:15px;color:#dce8f4}
+.opt .hint{grid-column:1 / -1;margin-top:6px}
 .stepper{display:flex;align-items:center;gap:10px}
-#rd{min-width:22px;text-align:center;font-size:18px;font-weight:800;color:#fff}
+.val{min-width:22px;text-align:center;font-size:18px;font-weight:800;color:#fff}
+.val.wide{min-width:76px;font-size:13px;letter-spacing:.08em}
 .sbtn,.mbtn{display:flex;align-items:center;justify-content:center;border-radius:10px;background:rgba(255,255,255,.14);
   font-weight:800;color:#fff;cursor:pointer;transition:transform .08s}
 .sbtn{width:44px;height:44px;font-size:24px}
 .sbtn.tog{width:auto;min-width:64px;padding:0 12px;font-size:14px;letter-spacing:.1em;background:#4fae3f}
 .sbtn.tog.off{background:rgba(255,255,255,.14)}
-.setting+.hint+.setting{margin-top:12px}
 .sbtn.down,.mbtn.down{transform:scale(.92);background:rgba(255,255,255,.28)}
 .hint{margin:8px 0 0;font-size:11.5px;color:#8ea6bd;text-align:left}
 .mbtn{height:48px;margin-top:16px;background:#4fae3f;letter-spacing:.12em;font-size:16px;box-shadow:inset 0 -4px 0 rgba(0,0,0,.25)}
 .mbtn.sec{margin-top:8px;height:42px;font-size:14px}
+.mbtns{margin-top:2px}
 
 /* ---------- start screen ---------- */
 #start{position:fixed;top:0;left:0;right:0;bottom:0;z-index:5;display:flex;align-items:center;justify-content:center;padding:16px;
@@ -112,6 +117,15 @@ h1{margin:0;font-size:32px;font-weight:900;letter-spacing:.07em;text-shadow:0 3p
   #start .card{display:flex;gap:20px;max-width:760px;align-items:center}
   .intro,.actions{flex:1;min-width:0}
   #worlds{margin-top:0}
+}
+@media (orientation:landscape) and (max-height:500px){
+  #menu .card{max-width:700px;padding:16px 20px}
+  #menu h2{margin-bottom:10px}
+  .opts{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 22px}
+  .opt{grid-template-columns:1fr}
+  .opt .stepper,.opt .tog{justify-self:start;margin-top:6px}
+  .mbtns{display:flex;gap:10px;margin-top:14px}
+  .mbtns .mbtn{flex:1;margin-top:0;height:44px}
 }
 @media (max-height:440px){
   .card{padding:12px 18px}h1{font-size:24px}.sub{display:none}

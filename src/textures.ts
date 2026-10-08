@@ -4,6 +4,7 @@ import { radialFogVertex } from './fog';
 import { B } from './blocks';
 import { TEX } from './mesher';
 import { coverageMips, bleedColors } from './mipmaps';
+import { lightUniforms, LIGHT_VERTEX_PARS, LIGHT_VERTEX } from './shading';
 
 /* ================= PROCEDURAL PIXEL-ART TEXTURES (32×32) ================= */
 const TS = 32;
@@ -225,18 +226,21 @@ export interface Textures {
 
 /**
  * Chunk material for render pass `pass`: 0 opaque (alpha ignored), 1 cutout (alpha-tested at 0.5,
- * writes depth), 2 translucent (alpha-blended, no depth writes, drawn after the rest).
+ * writes depth), 2 translucent (alpha-blended, no depth writes, drawn after the rest). The vertex
+ * colour carries shading (r) and light (g sky, b block): see shading.ts.
  */
 function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE.MeshBasicMaterial {
   const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: pass === 2, depthWrite: pass !== 2 });
   m.onBeforeCompile = (sh) => {
-    sh.uniforms.tiles = { value: tileArray };
+    Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray } });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float layer;\nvarying vec3 vTile;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, layer );`);
+      .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, layer );`)
+      .replace('#include <project_vertex>', `#include <project_vertex>${LIGHT_VERTEX}`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;')
-      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : 'diffuseColor *= texture( tiles, vTile );');
+      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;\nvarying vec3 vLight;')
+      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : 'diffuseColor *= texture( tiles, vTile );')
+      .replace('#include <color_fragment>', 'diffuseColor.rgb *= vColor.r * vLight;');
     radialFogVertex(sh);
   };
   m.customProgramCacheKey = () => 'tiles' + pass;
