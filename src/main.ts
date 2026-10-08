@@ -106,7 +106,7 @@ async function boot(): Promise<void> {
   });
 
   const interaction = createInteraction(fx);
-  initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
+  initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].tex[0]]; });
 
   // autosave: within 5 s of a change, and right away when the app is hidden, closed or exited
   let quitting = false;
@@ -196,7 +196,7 @@ async function boot(): Promise<void> {
 
   // small debug handle (handy for testing from the console)
   (window as unknown as { __voxel: unknown }).__voxel = {
-    P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world),
+    P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world), getState: world.getState.bind(world),
     act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },

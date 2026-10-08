@@ -44,8 +44,8 @@ interface Slot {
 interface Ready { ci: number; epoch: number; version: number; urgent: boolean; data: MeshData }
 
 export interface ChunkSource {
-  /** Edited data for chunk (cx, cz) kept from earlier, or null to generate it from the seed. */
-  load?(cx: number, cz: number): Promise<Uint8Array> | null;
+  /** Edited contents of chunk (cx, cz) kept from earlier, or null to generate it from the seed. */
+  load?(cx: number, cz: number): Promise<{ data: Uint8Array; state: Uint8Array | null }> | null;
   /** Called with a chunk that is about to be dropped from memory (keep it if it was edited). */
   unload?(c: Chunk): void;
 }
@@ -85,14 +85,14 @@ export function createStreamer(scene: THREE.Scene, material: THREE.Material, poo
   function dispatchLoad(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = ++s.epoch;
     s.state = LOADING;
-    const done = (data: Uint8Array, edited: boolean) => {
+    const done = (data: Uint8Array, state: Uint8Array | null, edited: boolean) => {
       if (s.epoch !== epoch || s.state !== LOADING) return;   // unloaded meanwhile
-      world.setChunk(cx, cz, data, edited);
+      world.setChunk(cx, cz, data, state, edited);
       s.state = LOADED; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
     };
-    const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, cx, cz }, [], (res) => { if (res.type === 'gen') done(res.data, false); });
+    const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, cx, cz }, [], (res) => { if (res.type === 'gen') done(res.data, null, false); });
     const saved = source.load ? source.load(cx, cz) : null;
-    if (saved) saved.then((data) => done(data, true), gen);
+    if (saved) saved.then((c) => done(c.data, c.state, true), gen);
     else gen();
   }
 

@@ -55,7 +55,7 @@ export function initHotbar(tileCanvas: HTMLCanvasElement[], select: (i: number) 
     el.className = 'slot';
     el.dataset.act = 'slot';
     el.dataset.i = String(i);
-    el.style.backgroundImage = `url(${tileCanvas[B[id].t[0]].toDataURL()})`; // same pixel art as the block
+    el.style.backgroundImage = `url(${tileCanvas[B[id].tex[0]].toDataURL()})`; // same pixel art as the block
     els.hotbar.appendChild(el);
     return el;
   });

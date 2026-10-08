@@ -33,7 +33,8 @@ src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
                      resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sea level, player & physics constants, sky colours
-  blocks.ts          Block ids, texture tile ids, block definitions (B), HOTBAR, rotatable tiles
+  blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
+                     faceHidden() culling rule, HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, tile texture array, chunk material
   fog.ts             Radial-fog shader patch for built-in materials
@@ -41,7 +42,8 @@ src/
   worker.ts          Web Worker entry: runs generateChunk and meshChunk off the main thread
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
   streaming.ts       Chunk streaming: load/mesh/unload regions, job priorities, upload budget, edit re-meshes
-  world.ts           Chunk storage + World class (getBlock/setBlock/isSolid/topY in world coords, seed), raycast
+  world.ts           Chunk storage (block ids + lazy per-block state) + World class (getBlock/getState/setBlock/
+                     isSolid/topY in world coords, seed), raycast
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
@@ -89,6 +91,20 @@ borders) ahead of everything else.
   `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
   (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
   place, so never reassign them.
+- **Block registry** (`blocks.ts`): every block type has an id (stored in chunks and saves, so ids
+  never change; new blocks get new ids), a name, a tile per face kind, `solid` (collides),
+  `opaque` (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' |
+  'translucent'), `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves,
+  2 water, 15 opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared
+  face: glass, water) and `jit` (brightness variation). Hot loops use the `Uint8Array` tables
+  (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, …) instead of the objects. Face culling is
+  `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
+  `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes.
+  AO corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves).
+- **Per-block state:** each chunk can carry a second `Uint8Array` (`chunk.state`, same layout as
+  the block ids) for things like torch facing and water level. It is `null` until some block gets a
+  non-zero state — generated terrain never has any — and `world.setBlock(x, y, z, id, state)` sets
+  both.
 - **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
   chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
   player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
@@ -113,10 +129,14 @@ borders) ahead of everything else.
   (positions relative to the chunk, normalized colours). Dispose geometries when meshes go away.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar
-  slot, break/place mode); store `chunks` holds only *edited* chunks, run-length encoded, under
-  `${worldId}:${cx},${cz}`. Everything else regenerates from the seed — so changing `gen.ts`
-  changes the unedited terrain of existing saves; bump `SAVE_VERSION` (and migrate in `openSaves`)
-  when the stored format changes. The save is the streamer's chunk source: a loaded chunk reads its
+  slot, break/place mode); store `chunks` holds only *edited* chunks under `${worldId}:${cx},${cz}`
+  as `{ v, rle, srle? }`: the block ids run-length encoded, plus the per-block state the same way
+  when any of it is non-zero. Everything else regenerates from the seed — so changing `gen.ts`
+  changes the unedited terrain of existing saves. `SAVE_VERSION` is 2; when the stored format
+  changes, bump it, note it in the history at the top of `saves.ts`, and extend `migrateWorld` /
+  `migrateChunk`, which bring any older record up to date every time one is read (a migrated
+  record is written back the next time it is saved). New hotbar items go at the end, so saved slot
+  numbers keep pointing at the same block. The save is the streamer's chunk source: a loaded chunk reads its
   saved data instead of being generated, and an edited chunk that streams out keeps an RLE snapshot
   in memory until it is written. Autosave runs within 5 s of the first unsaved change (edits, or the
   player moving/looking), and immediately on `visibilitychange → hidden`, `pagehide` and the menu's

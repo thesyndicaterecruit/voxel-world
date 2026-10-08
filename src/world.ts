@@ -1,11 +1,17 @@
 import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
-import { AIR } from './blocks';
+import { AIR, SOLID, TARGETABLE } from './blocks';
 
 /* ============================ CHUNKS ============================ */
 export interface Chunk {
   readonly cx: number;
   readonly cz: number;
+  /** Block ids (CI layout) */
   readonly data: Uint8Array;
+  /**
+   * Per-block state, 1 byte per block in the same layout (torch facing, water level, …). null while
+   * every block's state is 0, which is true of all generated terrain; allocated on first use.
+   */
+  state: Uint8Array | null;
   /** Differs from what the seed generates (edited by the player, now or in an earlier session) */
   edited: boolean;
 }
@@ -26,9 +32,9 @@ export class World {
   chunk(cx: number, cz: number): Chunk | undefined {
     return cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ ? this.chunks[cx + cz * NCX] : undefined;
   }
-  /** Install chunk data (it is used directly, not copied). */
-  setChunk(cx: number, cz: number, data: Uint8Array, edited = false): Chunk {
-    const c: Chunk = { cx, cz, data, edited };
+  /** Install chunk data and state (used directly, not copied). */
+  setChunk(cx: number, cz: number, data: Uint8Array, state: Uint8Array | null = null, edited = false): Chunk {
+    const c: Chunk = { cx, cz, data, state, edited };
     this.chunks[cx + cz * NCX] = c;
     return c;
   }
@@ -44,12 +50,24 @@ export class World {
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     return c ? c.data[CI(x & (CS - 1), y, z & (CS - 1))] : AIR;
   }
-  /** Change one block. Returns false (and changes nothing) outside the world or in an unloaded chunk. */
-  setBlock(x: number, y: number, z: number, id: number): boolean {
+  /** A block's state byte (0 outside the world, in unloaded chunks and wherever none was set). */
+  getState(x: number, y: number, z: number): number {
+    if (y < 0 || y >= H || !inWorld(x, z)) return 0;
+    const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
+    return c && c.state ? c.state[CI(x & (CS - 1), y, z & (CS - 1))] : 0;
+  }
+  /**
+   * Change one block and its state. Returns false (and changes nothing) outside the world or in an
+   * unloaded chunk.
+   */
+  setBlock(x: number, y: number, z: number, id: number, state = 0): boolean {
     if (y < 0 || y >= H || !inWorld(x, z)) return false;
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     if (!c) return false;
-    c.data[CI(x & (CS - 1), y, z & (CS - 1))] = id;
+    const i = CI(x & (CS - 1), y, z & (CS - 1));
+    c.data[i] = id;
+    if (state && !c.state) c.state = new Uint8Array(CHUNK_VOL);
+    if (c.state) c.state[i] = state;
     c.edited = true;
     if (this.onChange) this.onChange(x, y, z);
     return true;
@@ -59,7 +77,7 @@ export class World {
     if (y < 0 || !inWorld(x, z)) return true;
     if (y >= H) return false;
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
-    return c ? c.data[CI(x & (CS - 1), y, z & (CS - 1))] !== AIR : true;
+    return c ? SOLID[c.data[CI(x & (CS - 1), y, z & (CS - 1))]] === 1 : true;
   }
   /** Highest non-air block in column (x, z), or -1 (empty or unloaded). */
   topY(x: number, z: number): number {
@@ -81,8 +99,9 @@ export interface Hit { x: number; y: number; z: number; nx: number; ny: number; 
 const hit: Hit = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 };
 
 /**
- * First non-air block along the ray, plus the face normal it was entered through. Works across
- * chunk borders; unloaded chunks read as air. The result object is reused.
+ * First block that can be aimed at (not air, not liquid) along the ray, plus the face normal it was
+ * entered through. Works across chunk borders; unloaded chunks read as air. The result object is
+ * reused.
  */
 export function raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): Hit | null {
   let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
@@ -93,7 +112,7 @@ export function raycast(ox: number, oy: number, oz: number, dx: number, dy: numb
   let tz = dz ? (dz > 0 ? z + 1 - oz : oz - z) * ddz : Infinity;
   let nx = 0, ny = 0, nz = 0, t = 0;
   while (t <= max) {
-    if (world.getBlock(x, y, z) !== AIR) {
+    if (TARGETABLE[world.getBlock(x, y, z)]) {
       hit.x = x; hit.y = y; hit.z = z; hit.nx = nx; hit.ny = ny; hit.nz = nz;
       return hit;
     }

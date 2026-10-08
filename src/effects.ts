@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { AIR, B, T_DIRT, T_GRASS_SIDE } from './blocks';
+import { B, SOLID, T_DIRT, T_GRASS_SIDE } from './blocks';
 import { boxesGeometry } from './meshing';
 import { world } from './world';
 import { radialFog } from './fog';
@@ -42,7 +42,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
   }
 
   function burst(x: number, y: number, z: number, id: number): void {
-    const map = tex[B[id].t[0]];
+    const map = tex[B[id].tex[0]];
     let n = 0;
     for (const p of parts) {
       if (p.life > 0) continue;
@@ -66,7 +66,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
       p.v[1] -= 20 * dt;
       q.x += p.v[0] * dt; q.z += p.v[2] * dt;
       const ny = q.y + p.v[1] * dt;
-      if (p.v[1] < 0 && world.getBlock(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z)) !== AIR) {
+      if (p.v[1] < 0 && SOLID[world.getBlock(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z))]) {
         q.y = Math.floor(ny - 0.08) + 1.08; p.v[1] *= -0.3; p.v[0] *= 0.6; p.v[2] *= 0.6;
       } else q.y = ny;
       p.m.scale.setScalar(Math.min(1, (p.life / p.max) * 1.6));

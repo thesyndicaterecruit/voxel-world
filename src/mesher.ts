@@ -1,5 +1,5 @@
 import { CS, H } from './config';
-import { AIR, B, ROT } from './blocks';
+import { AIR, B, ROT, OCCLUDES, faceHidden } from './blocks';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO) ======================= */
@@ -68,13 +68,14 @@ export interface MeshData {
  * outside the world or in missing chunks are air). (x0, z0) is the chunk's world origin: the
  * per-block brightness and tile rotation hash world coordinates with the world seed, so the result
  * does not depend on which chunk is meshed first. Every face goes in one index list: the tile is a
- * vertex attribute, so a chunk draws in a single call.
+ * vertex attribute, so a chunk draws in a single call. `opaqueLeaves`: leaves are meshed as opaque
+ * cubes (see faceHidden).
  */
-export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number): MeshData {
+export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number, opaqueLeaves = true): MeshData {
   let cap = 8192, n = 0, ni = 0;                  // vertex capacity, vertex count, index count
   let pos = new Uint8Array(cap * 3), col = new Uint8Array(cap * 3), uv = new Uint8Array(cap * 2);
   let lay = new Uint8Array(cap), idx = new Uint32Array(cap * 1.5);
-  const occ = (px: number, y: number, pz: number) => (y >= 0 && y < H && pad[PI(px, y, pz)] !== AIR ? 1 : 0);
+  const occ = (px: number, y: number, pz: number) => (y >= 0 && y < H ? OCCLUDES[pad[PI(px, y, pz)]] : 0);
   const aoAt = (px: number, y: number, pz: number, o: number[]) => {
     const s1 = occ(px + o[0], y + o[1], pz + o[2]), s2 = occ(px + o[3], y + o[4], pz + o[5]);
     return s1 && s2 ? AO[0] : AO[3 - s1 - s2 - occ(px + o[6], y + o[7], pz + o[8])];
@@ -95,11 +96,11 @@ export function meshChunk(pad: Uint8Array, x0: number, z0: number, seed: number)
     const b = B[id], j = 1 - b.jit * hash3(seed, x, y, z);
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], ny = y + F.n[1];
-      if (ny < 0 || (ny < H && pad[PI(px + F.n[0], ny, pz + F.n[2])] !== AIR)) continue; // hidden face
+      if (ny < 0 || (ny < H && faceHidden(id, pad[PI(px + F.n[0], ny, pz + F.n[2])], opaqueLeaves))) continue; // hidden face
       const o = F.ao;
       const l0 = L[0] = aoAt(px, y, pz, o[0]), l1 = L[1] = aoAt(px, y, pz, o[1]);
       const l2 = L[2] = aoAt(px, y, pz, o[2]), l3 = L[3] = aoAt(px, y, pz, o[3]);
-      const tl = b.t[F.k];
+      const tl = b.tex[F.k];
       const rot = ROT.has(tl) ? Math.floor(hash3(seed, x * 3 + f, y, z - f) * 4) : 0;
       const sh = F.s * j;
       if (n + 4 > cap) {                           // grow the buffers
