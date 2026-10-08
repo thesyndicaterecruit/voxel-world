@@ -31,7 +31,7 @@ export function torchBox(state: number): number[] {
   if (state === TORCH_FLOOR || state > 4) return [0.36, 0, 0.36, 0.64, 0.78, 0.64];
   // the wall torch leaning toward +x, turned to face the right way
   const [ax, az] = rotY(0 - 0.5, 0.32 - 0.5, TURN[state]), [bx, bz] = rotY(0.58 - 0.5, 0.68 - 0.5, TURN[state]);
-  return [Math.min(ax, bx) + 0.5, 0.12, Math.min(az, bz) + 0.5, Math.max(ax, bx) + 0.5, 1, Math.max(az, bz) + 0.5];
+  return [Math.min(ax, bx) + 0.5, 0.03, Math.min(az, bz) + 0.5, Math.max(ax, bx) + 0.5, 1, Math.max(az, bz) + 0.5];
 }
 
 /* ---------- model ---------- */
@@ -43,8 +43,9 @@ export interface TorchQuad { p: number[][]; uv: number[][]; shade: number; glow:
 const STICK0 = 14, STICK1 = 18, STICK_TOP = 20;            // the stick: 4×20 texels
 const FLAME0 = 11, FLAME1 = 21, FLAME_BOT = 18, FLAME_TOP = 30;
 const TILT = (22.5 * Math.PI) / 180;
-/** A wall torch's foot (centre of the stick's end): texels out from the wall, and up from the floor */
-const FOOT_X = 2, FOOT_Y = 5;
+/** A wall torch's foot (centre of the stick's end): texels out from the wall, and up from the floor
+ *  (low enough that the tilted flame stays inside the block) */
+const FOOT_X = 2, FOOT_Y = 2;
 
 function floorModel(): TorchQuad[] {
   const q: TorchQuad[] = [], a = STICK0, b = STICK1, t = STICK_TOP;
@@ -68,7 +69,7 @@ function floorModel(): TorchQuad[] {
   return q;
 }
 
-/** Torch model per state, positions in texels relative to the block (may poke slightly past it). */
+/** Torch model per state, positions in texels relative to the block (all inside it). */
 export const TORCH_MODELS: TorchQuad[][] = [0, 1, 2, 3, 4].map((state) => {
   const base = floorModel();
   if (state === TORCH_FLOOR) return base;

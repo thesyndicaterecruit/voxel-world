@@ -1,0 +1,39 @@
+name: Browser tests
+
+# Every push: the Playwright tests in e2e/ (phone-emulated Chromium, WebGL 2 through SwiftShader)
+# against a production build. Separate from the deploy so a slow or failing run never holds up
+# the build that goes to GitHub Pages.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push to the same branch replaces a run still in progress
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

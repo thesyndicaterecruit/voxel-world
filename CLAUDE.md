@@ -20,12 +20,16 @@ npm install
 npm run dev        # dev server on the LAN (--host) — open the printed Network URL on a phone
 npm run build      # tsc --noEmit + vite build → dist/
 npm run preview    # serve dist/
-npm run typecheck
+npm run typecheck  # the game, the unit tests and the browser tests
+npm test           # unit tests (Vitest, tests/), a second or two
+npm run test:e2e   # build, then the browser tests (Playwright, e2e/), a few minutes;
+                   # needs `npx playwright install chromium` once
 ```
 
-There is no test suite yet. Verify changes by running the game (desktop: WASD/arrows, Shift sprint,
-Space jump, mouse drag on the right half to look, click/F to act, Q/E switch mode, 1–9 and 0 pick a
-hotbar slot, mouse wheel over the hotbar scrolls it).
+Unit tests run in CI before every deploy (`deploy.yml`); the browser tests run in their own workflow
+(`e2e.yml`) on every push and don't hold up the deploy. Still play the change to check it (desktop:
+WASD/arrows, Shift sprint, Space jump, mouse drag on the right half to look, click/F to act, Q/E
+switch mode, 1–9 and 0 pick a hotbar slot, mouse wheel over the hotbar scrolls it).
 
 ## Structure
 
@@ -63,7 +67,13 @@ src/
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
                      save & exit), fullscreen, start screen + world list, error display
   style.css          All styles
-.github/workflows/deploy.yml   Build + deploy to GitHub Pages on every push
+tests/               Unit tests of the pure modules (Vitest): registry + face culling, mesher, torch geometry,
+                     save format + migration, RLE, mipmaps, generation determinism
+e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
+                     aiming, taps, pixel captures); see-through blocks, torches, hotbar, Fancy leaves, old saves
+vitest.config.ts, playwright.config.ts
+.github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
+.github/workflows/e2e.yml      Browser tests on every push
 ```
 
 Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update()` (only once the chunks
@@ -112,18 +122,18 @@ borders) ahead of everything else.
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
   `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes. AO
   corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves).
-- **Torches** (`torch.ts`): block state 0 = standing on the block below, 1–4 = on a wall, leaning
-  out of it, with the supporting block at −x, +x, −z, +z (`TORCH_SUPPORT`). The state comes from the
-  face you build against (`torchStateFor`; never an underside), and the support must be a solid
-  cube. Torches aren't solid, nothing builds against them, and the raycast only hits them inside
-  their small `torchBox` (rays past the stick reach the block behind). Breaking a block pops the
-  torches it holds (`popTorches` in `interact.ts`); that is the only way a support disappears today,
-  so anything new that removes blocks must do the same. The model is built in texels (1/32 block,
-  uv = position in the torch tile), tilted 22.5° and turned per state in `TORCH_MODELS`; the mesher
-  copies it into the cutout pass (flame and tip full-bright), and the placement ghost uses it too.
+- **Torches** (`torch.ts`): block state 0 = standing on the block below, 1–4 = on a wall, leaning out
+  of it, with the supporting block at −x, +x, −z, +z (`TORCH_SUPPORT`). The state comes from the face
+  you build against (`torchStateFor`; never an underside), and the support must be a solid cube.
+  Torches aren't solid, nothing builds against them, and the raycast only hits them inside their
+  small `torchBox` (rays past the stick reach the block behind). Breaking a block pops the torches it
+  holds (`popTorches` in `interact.ts`); that is the only way a support disappears today, so anything
+  new that removes blocks must do the same. The model is built in texels (1/32 block, uv = position
+  in the torch tile), tilted 22.5° and turned per state in `TORCH_MODELS`; the mesher copies it into
+  the cutout pass (flame and tip full-bright), and the placement ghost uses it too.
 - **Fancy leaves** (menu toggle, default on, saved in localStorage): on, leaves use the see-through
-  `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as
-  opaque cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
+  `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as opaque
+  cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
   Switching re-meshes the chunks with leaves and their neighbours as normal jobs.
 - **Hotbar:** 10 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
@@ -169,20 +179,21 @@ borders) ahead of everything else.
   mips in the texture's `onUpdate`, so leaves and glass frames don't fade out in the distance.
   Other tiles keep GL's mipmaps. New tiles go at the end of `TILE_PAINTERS`.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
-  world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar
-  slot, break/place mode); store `chunks` holds only *edited* chunks under `${worldId}:${cx},${cz}`
-  as `{ v, rle, srle? }`: the block ids run-length encoded, plus the per-block state the same way
-  when any of it is non-zero. Everything else regenerates from the seed — so changing `gen.ts`
-  changes the unedited terrain of existing saves. `SAVE_VERSION` is 2; when the stored format
-  changes, bump it, note it in the history at the top of `saves.ts`, and extend `migrateWorld` /
-  `migrateChunk`, which bring any older record up to date every time one is read (a migrated
-  record is written back the next time it is saved). New hotbar items go at the end, so saved slot
-  numbers keep pointing at the same block. The save is the streamer's chunk source: a loaded chunk reads its
-  saved data instead of being generated, and an edited chunk that streams out keeps an RLE snapshot
-  in memory until it is written. Autosave runs within 5 s of the first unsaved change (edits, or the
-  player moving/looking), and immediately on `visibilitychange → hidden`, `pagehide` and the menu's
-  Save & exit. `navigator.storage.persist()` is requested once. Without IndexedDB (some private
-  modes) the game still runs and keeps edits in memory for the session.
+  world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar slot,
+  break/place mode); store `chunks` holds only *edited* chunks under `${worldId}:${cx},${cz}` as
+  `{ v, rle, srle? }`: the block ids run-length encoded, plus the per-block state the same way when
+  any of it is non-zero. Everything else regenerates from the seed — so changing `gen.ts` changes the
+  unedited terrain of existing saves. `SAVE_VERSION` is 2; when the stored format changes, bump it,
+  note it in the history at the top of `saves.ts`, add a fixture of the previous version to
+  `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which bring any older record up
+  to date every time one is read (a migrated record is written back the next time it is saved). New
+  hotbar items go at the end, so saved slot numbers keep pointing at the same block. The save is the
+  streamer's chunk source: a loaded chunk reads its saved data instead of being generated, and an
+  edited chunk that streams out keeps an RLE snapshot in memory until it is written. Autosave runs
+  within 5 s of the first unsaved change (edits, or the player moving/looking), and immediately on
+  `visibilitychange → hidden`, `pagehide` and the menu's Save & exit. `navigator.storage.persist()`
+  is requested once. Without IndexedDB (some private modes) the game still runs and keeps edits in
+  memory for the session.
 - **Switching worlds reloads the page** (`?world=<id>`, removed from the URL right away). The start
   card lists worlds by last played; `?seed=123` opens (or creates) the world "Seed 123".
 - **Mobile first.** Every feature must work on a touchscreen with no keyboard. Keep the gesture
@@ -200,7 +211,13 @@ borders) ahead of everything else.
   `setFancyLeaves(on)` (same as the menu toggle), `getState`, `look(yaw, pitch)`, `target()` (the
   block under the crosshair, with the face hit and its id), `tiles` (the tile canvases), `worldId`
   and `save()`.
-  Keep it working. Headless tests can use it; `?seed=123` in the URL gives a fixed world.
+  Keep it working: the browser tests drive the game through it; `?seed=123` in the URL gives a
+  fixed world.
+- **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
+  tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
+  `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames
+  (`until`), never in wall time, and read pixels with `capture` (the 3D view, without the HUD). Every
+  browser test checks that the console stayed free of errors and warnings.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
 
@@ -208,9 +225,8 @@ borders) ahead of everything else.
 
 Ideas, roughly in priority order. Nothing here is committed to.
 
-1. **Automated checks:** unit tests for the pure modules (generation determinism across chunk order,
-   trees across borders, RLE round trip) and a Playwright smoke test driving `window.__voxel` (fixed
-   `?seed=`: stream, edit, save, reload), run in CI before deploying.
+1. **More automated checks:** trees across chunk borders, streaming and unloading while the player
+   moves, autosave timing; screenshot comparisons to catch changes in the look.
 2. **Saves:** rename worlds, export/import a world as a file, guard against two tabs writing the same
    world.
 3. **PWA:** web app manifest + service worker for home-screen install and offline play.
