@@ -1,5 +1,5 @@
 import { W, D } from './config';
-import { GRASS, DIRT, STONE, SAND } from './blocks';
+import { AIR, GRASS, DIRT, STONE, SAND, GRAVEL, CLAY, PODZOL, MUD, MOSS, SNOW, SANDSTONE, RED_SAND, TERRACOTTA, BASALT, COARSE_DIRT } from './blocks';
 import { hash2, vnoise } from './noise';
 
 /* ============================ BIOMES ============================ */
@@ -20,23 +20,38 @@ export const DEEP_OCEAN = 0, WARM_REEF = 1, FROZEN_OCEAN = 2, TROPICAL = 3, MEAD
   SNOWY_PEAKS = 8, DESERT = 9, BADLANDS = 10, JUNGLE = 11, SWAMP = 12, VOLCANIC = 13;
 export const NBIOMES = 14;
 
-/** What a biome's ground looks like and how it is shaped (see landform in gen.ts) */
+/**
+ * A biome, as data: how its ground is shaped (landform in gen.ts), what it is made of, its colours
+ * and its haze, and what grows on it.
+ */
 export interface Biome {
   readonly id: number;
   readonly name: string;
+  /** A sea biome (its ground is the sea floor) */
   readonly ocean: boolean;
   /** Land: how far the ground rises inland (blocks above the coast), how much it rolls, and how often (1/blocks) */
   readonly lift: number;
   readonly amp: number;
   readonly freq: number;
-  /** Sea: how deep its floor goes */
+  /** Sea: how deep its floor goes below sea level, offshore */
   readonly depth: number;
-  /** Surface block, the blocks under it (and how deep), the surface under water, and the shore's (where land meets the sea) */
+  /**
+   * Its blocks, top down: the surface block, `fill` for fillDepth blocks under it, then `under` for
+   * underDepth more, then stone; `bed` is its ground under water (3 deep), `shore` its ground at the
+   * water's edge (a beach, gravel, mud…, 4 deep)
+   */
   readonly top: number;
   readonly fill: number;
   readonly fillDepth: number;
+  readonly under: number;
+  readonly underDepth: number;
   readonly bed: number;
   readonly shore: number;
+  /** Patches of another surface block (podzol, mud, clay on the sea floor…) on this much of its ground (0–1) */
+  readonly patch: number;
+  readonly patchAmount: number;
+  /** How much of its sea's surface is ice (0–1) */
+  readonly freeze: number;
   /** The colours (0xRRGGBB) its grass, leaves and water have: their tiles are grey and take these (textures.ts) */
   readonly grass: number;
   readonly foliage: number;
@@ -48,27 +63,55 @@ export interface Biome {
   readonly decorations: readonly string[];
 }
 
-const b = (id: number, name: string, ocean: boolean, shape: [number, number, number, number], blocks: [number, number, number, number, number],
-  tint: [number, number, number], haze: [number, number] = [0, 0], decorations: string[] = []): Biome =>
-  ({ id, name, ocean, lift: shape[0], amp: shape[1], freq: shape[2], depth: shape[3], top: blocks[0], fill: blocks[1], fillDepth: blocks[2],
-    bed: blocks[3], shore: blocks[4], grass: tint[0], foliage: tint[1], water: tint[2], haze: haze[0], hazeAmount: haze[1], decorations });
+/** What a biome has unless it says otherwise */
+const BASE: Omit<Biome, 'id' | 'name'> = {
+  ocean: false, lift: 6, amp: 6, freq: 1 / 30, depth: 10, top: GRASS, fill: DIRT, fillDepth: 3, under: STONE, underDepth: 0,
+  bed: SAND, shore: SAND, patch: AIR, patchAmount: 0, freeze: 0, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8,
+  haze: 0, hazeAmount: 0, decorations: [],
+};
+const biome = (id: number, name: string, o: Partial<Biome>): Biome => ({ ...BASE, ...o, id, name });
 
-//                                         lift  amp  freq    depth   top    fill   depth  bed    shore      grass     foliage   water       haze
 export const BIOMES: readonly Biome[] = [
-  b(DEEP_OCEAN,   'Deep Ocean',      true,  [1,   1,   1 / 20, 26],  [SAND,  SAND,  3, STONE, SAND],  [0x55a032, 0x3f8a2a, 0x2c5fa8]),
-  b(WARM_REEF,    'Warm Reef Ocean', true,  [1,   1,   1 / 20, 9],   [SAND,  SAND,  3, SAND,  SAND],  [0x8db84a, 0x5aa03a, 0x2fb5b0]),
-  b(FROZEN_OCEAN, 'Frozen Ocean',    true,  [1,   1,   1 / 20, 16],  [SAND,  SAND,  3, STONE, STONE], [0x8fb09a, 0x6a8a78, 0x6a8fb0], [0xdfe8f0, 0.25]),
-  b(TROPICAL,     'Tropical Beach',  false, [1.5, 2,   1 / 18, 5],   [SAND,  SAND,  4, SAND,  SAND],  [0x8db84a, 0x5aa03a, 0x35b8b8], [0, 0], ['oak-sparse']),
-  b(MEADOW,       'Meadow',          false, [6,   8,   1 / 40, 10],  [GRASS, DIRT,  3, SAND,  SAND],  [0x5aa835, 0x3f8a2a, 0x3b80c8], [0, 0], ['oak-sparse']),
-  b(FOREST,       'Forest',          false, [5,   5,   1 / 24, 10],  [GRASS, DIRT,  3, SAND,  SAND],  [0x4a8f30, 0x2f7524, 0x3a78b8], [0, 0], ['oak']),
-  b(CHERRY,       'Cherry Grove',    false, [9,   10,  1 / 34, 10],  [GRASS, DIRT,  3, SAND,  SAND],  [0x7cb85a, 0x5a9a3c, 0x4088c8], [0xf4d6e4, 0.12], ['oak-sparse']),
-  b(TAIGA,        'Taiga',           false, [8,   10,  1 / 30, 12],  [GRASS, DIRT,  3, STONE, STONE], [0x4f7f5c, 0x3a6650, 0x3a6a98], [0xc8d8e8, 0.15]),
-  b(SNOWY_PEAKS,  'Snowy Peaks',     false, [32,  36,  1 / 44, 14],  [STONE, STONE, 1, STONE, STONE], [0x8fb09a, 0x6a8a78, 0x5a80a8], [0xe8f0f8, 0.3]),
-  b(DESERT,       'Desert Dunes',    false, [4,   6,   1 / 20, 8],   [SAND,  SAND,  5, SAND,  SAND],  [0xb5a94e, 0x8a8a3a, 0x3aa0a8], [0xf0dcb0, 0.25]),
-  b(BADLANDS,     'Badlands',        false, [14,  12,  1 / 40, 10],  [SAND,  SAND,  3, SAND,  SAND],  [0xa58a48, 0x8a7a3a, 0x7a7a60], [0xf0c8a0, 0.25]),
-  b(JUNGLE,       'Jungle',          false, [14,  18,  1 / 30, 10],  [GRASS, DIRT,  4, SAND,  SAND],  [0x3aa028, 0x2a8a1e, 0x3a8a78], [0xc8e0c0, 0.2]),
-  b(SWAMP,        'Swamp',           false, [0.6, 1.5, 1 / 18, 4],   [GRASS, DIRT,  3, DIRT,  GRASS], [0x6a7a3a, 0x4e6630, 0x4a6a3a], [0xb8c4a0, 0.3], ['oak-sparse']),
-  b(VOLCANIC,     'Volcanic Island', false, [20,  4,   1 / 16, 18],  [STONE, STONE, 1, STONE, STONE], [0x5f6e44, 0x4e5a3a, 0x4a6070], [0xa8a4a0, 0.3]),
+  biome(DEEP_OCEAN, 'Deep Ocean', {
+    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 26, top: SAND, fill: SAND, bed: GRAVEL, patch: CLAY, patchAmount: 0.15,
+    grass: 0x55a032, foliage: 0x3f8a2a, water: 0x2c5fa8 }),
+  biome(WARM_REEF, 'Warm Reef Ocean', {
+    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 9, top: SAND, fill: SAND, under: SANDSTONE, underDepth: 3, bed: SAND,
+    grass: 0x8db84a, foliage: 0x5aa03a, water: 0x2fb5b0 }),
+  biome(FROZEN_OCEAN, 'Frozen Ocean', {
+    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 16, top: GRAVEL, fill: GRAVEL, bed: GRAVEL, shore: GRAVEL, patch: CLAY, patchAmount: 0.15,
+    freeze: 0.55, grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x6a8fb0, haze: 0xdfe8f0, hazeAmount: 0.25 }),
+  biome(TROPICAL, 'Tropical Beach', {
+    lift: 1.5, amp: 2, freq: 1 / 18, depth: 5, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 4,
+    grass: 0x8db84a, foliage: 0x5aa03a, water: 0x35b8b8, decorations: ['oak-sparse'] }),
+  biome(MEADOW, 'Meadow', {
+    lift: 6, amp: 8, freq: 1 / 40, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8, decorations: ['oak-sparse'] }),
+  biome(FOREST, 'Forest', {
+    lift: 5, amp: 5, freq: 1 / 24, grass: 0x4a8f30, foliage: 0x2f7524, water: 0x3a78b8, decorations: ['oak'] }),
+  biome(CHERRY, 'Cherry Grove', {
+    lift: 9, amp: 10, freq: 1 / 34, grass: 0x7cb85a, foliage: 0x5a9a3c, water: 0x4088c8, haze: 0xf4d6e4, hazeAmount: 0.12,
+    decorations: ['oak-sparse'] }),
+  biome(TAIGA, 'Taiga', {
+    lift: 8, amp: 10, freq: 1 / 30, depth: 12, bed: GRAVEL, shore: GRAVEL, patch: PODZOL, patchAmount: 0.35,
+    grass: 0x4f7f5c, foliage: 0x3a6650, water: 0x3a6a98, haze: 0xc8d8e8, hazeAmount: 0.15 }),
+  biome(SNOWY_PEAKS, 'Snowy Peaks', {
+    lift: 32, amp: 36, freq: 1 / 44, depth: 14, top: SNOW, fill: STONE, fillDepth: 1, bed: GRAVEL, shore: GRAVEL,
+    grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x5a80a8, haze: 0xe8f0f8, hazeAmount: 0.3 }),
+  biome(DESERT, 'Desert Dunes', {
+    lift: 4, amp: 6, freq: 1 / 20, depth: 8, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 6,
+    grass: 0xb5a94e, foliage: 0x8a8a3a, water: 0x3aa0a8, haze: 0xf0dcb0, hazeAmount: 0.25 }),
+  biome(BADLANDS, 'Badlands', {
+    lift: 14, amp: 12, freq: 1 / 40, top: RED_SAND, fill: RED_SAND, fillDepth: 2, under: TERRACOTTA, underDepth: 14, bed: RED_SAND,
+    shore: RED_SAND, grass: 0xa58a48, foliage: 0x8a7a3a, water: 0x7a7a60, haze: 0xf0c8a0, hazeAmount: 0.25 }),
+  biome(JUNGLE, 'Jungle', {
+    lift: 14, amp: 18, freq: 1 / 30, fillDepth: 4, patch: MOSS, patchAmount: 0.12,
+    grass: 0x3aa028, foliage: 0x2a8a1e, water: 0x3a8a78, haze: 0xc8e0c0, hazeAmount: 0.2 }),
+  biome(SWAMP, 'Swamp', {
+    lift: 0.6, amp: 1.5, freq: 1 / 18, depth: 4, bed: CLAY, shore: MUD, patch: MUD, patchAmount: 0.3,
+    grass: 0x6a7a3a, foliage: 0x4e6630, water: 0x4a6a3a, haze: 0xb8c4a0, hazeAmount: 0.3, decorations: ['oak-sparse'] }),
+  biome(VOLCANIC, 'Volcanic Island', {
+    lift: 20, amp: 4, freq: 1 / 16, depth: 18, top: BASALT, fill: BASALT, fillDepth: 4, bed: GRAVEL, shore: GRAVEL,
+    patch: COARSE_DIRT, patchAmount: 0.2, grass: 0x5f6e44, foliage: 0x4e5a3a, water: 0x4a6070, haze: 0xa8a4a0, hazeAmount: 0.3 }),
 ];
 
 

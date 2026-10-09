@@ -1,5 +1,5 @@
 import { H } from './config';
-import { AIR, BEDROCK, GRASS, DIRT, WATER, HOTBAR, REPLACEABLE, SOLID, OPAQUE, MODEL, TORCH } from './blocks';
+import { AIR, BEDROCK, GRASS, DIRT, WATER, REPLACEABLE, SOLID, OPAQUE, MODEL, TORCH } from './blocks';
 import { world, type Hit } from './world';
 import { P, V, aim, collides, overlapsPlayer } from './player';
 import { hud, toast } from './ui';
@@ -59,7 +59,7 @@ export function createInteraction(fx: Effects): Interaction {
       buzz(14);
       return;
     }
-    const id = HOTBAR[hud.sel], at = placement(h, id);
+    const id = hud.items[hud.sel], at = placement(h, id);
     if (typeof at === 'string') { toast(at); return; }
     if (!at) return;
     const { x, y, z, state } = at;
@@ -83,7 +83,7 @@ export function createInteraction(fx: Effects): Interaction {
     // a torch's outline hugs its hit box
     fx.showOutline(h.x, h.y, h.z, isTorch(world.getBlock(h.x, h.y, h.z)) ? torchBox(world.getState(h.x, h.y, h.z)) : UNIT);
     if (hud.mode !== 'place') return;
-    const id = HOTBAR[hud.sel], at = placement(h, id);
+    const id = hud.items[hud.sel], at = placement(h, id);
     if (!at || typeof at === 'string') return;
     const { x, y, z } = at;
     if (SOLID[id] && overlapsPlayer(x, y, z) && (y + 1 - P[1] > 0.6 || collides(P[0], y + 1, P[2]))) return;

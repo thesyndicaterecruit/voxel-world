@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H, CHUNK_VOL, CI } from '../src/config';
-import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS } from '../src/blocks';
+import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS, ICE, GLOW_CRYSTAL } from '../src/blocks';
 import { computeLight, lightChunk, relight, relightMany, skyOf, blockOf, cellKey, keyX, type LightWorld } from '../src/light';
 
 /** The test worlds are low: everything happens below y = LOW (above, light is open sky), unless a test says otherwise */
@@ -135,6 +135,16 @@ describe('block light', () => {
     expect(t.blk(2, 12, 8)).toBe(0);                    // outside the wall
   });
 
+  it('comes from a glow crystal too: a solid block, 10 in it, 9 next to it', () => {
+    const t = room();
+    t.edit(8, 11, 8, GLOW_CRYSTAL);
+    expect(t.light()).toEqual(t.fresh());
+    expect([t.blk(8, 11, 8), t.blk(9, 11, 8), t.blk(8, 12, 8), t.blk(10, 11, 9)]).toEqual([10, 9, 9, 7]);
+    t.edit(8, 11, 8, AIR);
+    expect(t.light()).toEqual(t.fresh());
+    expect(t.blk(9, 11, 8)).toBe(0);
+  });
+
   it('goes back to darkness when the torch is removed', () => {
     const t = room();
     t.edit(8, 10, 8, TORCH);
@@ -245,7 +255,7 @@ describe('incremental updates match a fresh computation', () => {
   it('after every one of many random edits', () => {
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    const ids = [AIR, AIR, AIR, STONE, STONE, TORCH, GLASS, LEAVES, WATER, PLANKS];
+    const ids = [AIR, AIR, AIR, STONE, STONE, TORCH, GLASS, LEAVES, WATER, PLANKS, ICE, GLOW_CRYSTAL];
     const t = ground(32, 32);
     // some rooms and overhangs to make it interesting
     for (let k = 0; k < 40; k++) {
@@ -271,7 +281,7 @@ describe('incremental updates match a fresh computation', () => {
   it('after every batch of many random edits relit together (water spreading, a wall going up)', () => {
     let seed = 11;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    const ids = [AIR, AIR, STONE, TORCH, GLASS, LEAVES, WATER, WATER, PLANKS];
+    const ids = [AIR, AIR, STONE, TORCH, GLASS, LEAVES, WATER, WATER, PLANKS, ICE, GLOW_CRYSTAL];
     const t = ground(48, 32);
     for (let k = 0; k < 40; k++) {
       const x = Math.floor(rand() * 46), z = Math.floor(rand() * 30), y = 10 + Math.floor(rand() * 8);

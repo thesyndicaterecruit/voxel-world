@@ -9,8 +9,10 @@ each chunk draws in at most two calls (opaque, cutout) plus a share of one for i
 are islands of 14 biomes (meadows, forests, snowy peaks, deserts, badlands, jungles, swamps, a
 volcano, three kinds of ocean…) with the sea at y = 48, whose grass, leaves and water take their
 biome's colours; worlds made before the world grew taller keep the first generator (sea at y = 20)
-so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
-torches among them. Worlds are save files in IndexedDB: edited chunks plus the player state, picked
+so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and
+break/place 36 block types (glass, torches, ice, ores, a glowing crystal among them), any of them
+put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
+plus the player state and hotbar, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
 Chrome are the target. All textures are painted procedurally at startup — there are no image assets
 and no runtime network requests. WebGL 2 is required (texture arrays).
@@ -34,7 +36,8 @@ npm run test:e2e   # build, then the browser tests (Playwright, e2e/), a few min
 Unit tests run in CI before every deploy (`deploy.yml`); the browser tests run in their own workflow
 (`e2e.yml`) on every push and don't hold up the deploy. Still play the change to check it (desktop:
 WASD/arrows, Shift sprint, Space jump, mouse drag on the right half to look, click/F to act, Q/E
-switch mode, 1–9, 0 and − pick a hotbar slot, mouse wheel over the hotbar scrolls it).
+switch mode, 1–9, 0 and − pick a hotbar slot, mouse wheel over the hotbar scrolls it, B opens the
+block picker).
 
 ## Structure
 
@@ -44,8 +47,9 @@ src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
                      biome teleport, biome haze, resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
-  blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
-                     faceHidden() culling rule, HOTBAR, rotatable tiles
+  blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery flags, lookup
+                     tables, faceHidden() culling rule, HOTBAR (a new world's), PICKER (the picker's tabs), rotatable
+                     tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
                      RGBA tile texture array (grass, leaves, water turned grey), the biome tint map (setTints),
@@ -86,12 +90,15 @@ src/
                      sky tint and the sky colour water reflects; the biome haze (setHaze)
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
                      splashes (the last three lit like the spot they're at)
-  player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics, swimming,
+  player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics (sliding on
+                     ice), swimming,
                      auto-jump, aim(); playerEvents (splash)
   audio.ts           Sound hooks (playSound), silent until the game has audio
   interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
-  input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
-  ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
+  input.ts           Touch joystick / look / buttons / hotbar swipes / block picker (taps, swipes), mouse + keyboard
+                     fallback, gesture blocking
+  ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways; the world's blocks), block picker (tabs,
+                     search, 3D block icons), menu (view distance, Fancy leaves,
                      Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
                      screen + world list, error display
   style.css          All styles
@@ -103,11 +110,12 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      5 seeds' worlds, one or two per island, cold never next to hot, borders no steeper than the
                      ground inside, teleport targets, smooth tints; generator 2 deterministic and continuous
                      across chunk and section borders), flowing water (spreading, falling,
-                     draining, infinite sources, chunk borders, saved updates), swimming physics (sinking,
+                     draining, infinite sources, chunk borders, saved updates), sliding on ice, swimming physics (sinking,
                      swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
-                     blocks, torches, hotbar, Fancy leaves, old saves (keeping generator 1), time of day (midday/sunset/midnight
+                     blocks, torches, hotbar, the block picker (tabs, search, a swipe scrolls it, a tap fills the
+                     slot, kept with the world), Fancy leaves, old saves (keeping generator 1), time of day (midday/sunset/midnight
                      screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
@@ -163,10 +171,14 @@ a microtask then hands all the changes made together (one action, one tick of wa
   *A biome is data:* an entry of `BIOMES` (`Biome`; its index is its id, and the teleport list's
   order) with `name`, `ocean`, its landform (`lift`: how far the ground rises above the coast inland,
   `amp` and `freq`: how much and how often it rolls; `depth`: how far its sea floor sinks), its
-  blocks (`top`, `fill` `fillDepth` deep, `bed` under water, `shore` where the land meets the sea),
-  its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours), `haze` and `hazeAmount` (what
-  the fog and sky lean toward there) and `decorations` (names of what grows on it: `oak` and
-  `oak-sparse` trees for now; part 2 fills in the rest). *Blending:* `weights(seed, x, z, out)`
+  blocks top down (`top`, `fill` `fillDepth` deep, `under` `underDepth` deep — sandstone under the
+  desert's sand, terracotta under the badlands' red sand — then stone; `bed` under water, `shore`
+  where the land meets the sea; `patch` on `patchAmount` of its ground in noise patches: podzol in
+  the taiga, mud in the swamp, clay on the sea floor), `freeze` (how much of its sea's surface is ice
+  floes: the frozen ocean's), its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours),
+  `haze` and `hazeAmount` (what the fog and sky lean toward there) and `decorations` (names of what
+  grows on it: `oak` and `oak-sparse` trees for now; part 2 fills in the rest). Fields left out take
+  `BASE`'s values (grass on dirt, a sandy bed and shore). *Blending:* `weights(seed, x, z, out)`
   weighs the cells within `BLEND` (8) blocks with a smooth kernel; a column's height (`column2` in
   `gen.ts`) is the weighted mix of the biomes' landforms, which all meet sea level at the coast, so a
   border never makes a cliff of its own (a test checks that a border is never steeper than the
@@ -244,18 +256,25 @@ a microtask then hands all the changes made together (one action, one tick of wa
   (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
   place, so never reassign them.
 - **Block registry** (`blocks.ts`): every block type has an id (stored in chunks and saves, so ids
-  never change; new blocks get new ids), a name, a tile per face kind, `solid` (collides), `opaque`
+  never change; new blocks get new ids: 0–12 the first blocks, 13–36 the islands' — snow, ice,
+  packed ice, sandstone, red sand, terracotta in 6 colours, gravel, clay, podzol, coarse dirt, mud,
+  moss, basalt, obsidian, coal/copper/iron/gold ore, glow crystal), a name, a tile per face kind
+  (sandstone has a top, sides and bottom; basalt and podzol a top and sides), `solid` (collides), `opaque`
   (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' | 'translucent'),
   `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves, 2 water, 15
   opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared face:
   glass, water), `jit` (brightness variation), `icon` (hotbar tile), `particle` (tile of the bits
-  that fly off when it breaks) and optional `fastTex` (tiles when meshed as an opaque cube: leaves
-  with Fancy leaves off). `lightEmission` and `lightFilter` drive the light (see Light);
-  `lightFilter` also decides which cubes darken AO corners. Hot loops use the `Uint8Array` tables
+  that fly off when it breaks), `slippery` (the feet barely grip: ice and packed ice, see player.ts)
+  and optional `fastTex` (tiles when meshed as an opaque cube: leaves with Fancy leaves off).
+  `lightEmission` and `lightFilter` drive the light (see Light); `lightFilter` also decides which
+  cubes darken AO corners. Ice is a cube in the translucent pass (like water: `lightFilter` 2,
+  `cullSame`, no jitter so its top reflects the sky in the water shader, which animates only the
+  water's own tiles). The glow crystal is an opaque cube that gives off light 10, and its tile is
+  drawn at full brightness (`TILE_KIND` 3 in `textures.ts`: the vertex shader sets its light to 1). Hot loops use the `Uint8Array` tables
   (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
   `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes. AO
-  corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves).
+  corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves, not ice).
 - **Torches** (`torch.ts`): block state 0 = standing on the block below, 1–4 = on a wall, leaning out
   of it, with the supporting block at −x, +x, −z, +z (`TORCH_SUPPORT`). The state comes from the face
   you build against (`torchStateFor`; never an underside), and the support must be a solid cube.
@@ -272,6 +291,17 @@ a microtask then hands all the changes made together (one action, one tick of wa
 - **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
   scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
+  Each world has its own hotbar (`hud.items`, saved as `WorldRecord.hotbar`; a new world starts with
+  `HOTBAR`).
+- **Block picker** (`ui.ts`, the ▦ button right of the hotbar, or B): every block but air on a grid
+  of big targets (3D icons drawn from the tiles: top and two sides shaded like faces in the world),
+  a tab per category (`PICKER` in `blocks.ts`: Natural, Stone, Wood, Plants, Light, Liquids; every
+  block is on exactly one) and a search box (any tab clears it). A tap on a block puts it in the
+  selected slot and switches to Place; the hotbar stays above the picker (`#hotrow` is over
+  `#picker`), so a tap on a slot chooses the next one to fill. Touches on the grid are handled like
+  the hotbar's: a tap picks, an up-down swipe scrolls it (`#pgrid` doesn't scroll by itself under the
+  gesture blocking). While it is open the controls are still and keys typed in the search box don't
+  reach the game. New blocks go on a tab (a unit test checks that every block is on one).
 - **Sections:** a chunk column is `NSEC` (8) sections of 16×16×16 blocks (`SH` layers each). CI runs
   y last, so a section is one contiguous slice of a chunk's arrays (blocks, state, light) — the
   storage stays one array per chunk. `chunk.count` holds the non-air blocks per section (kept by
@@ -375,7 +405,7 @@ a microtask then hands all the changes made together (one action, one tick of wa
   Other tiles keep GL's mipmaps. New tiles go at the end of `TILE_PAINTERS`.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar slot,
-  break/place mode, the world clock, generatorVersion); store `chunks` holds only *edited* chunks
+  break/place mode, the world clock, generatorVersion, the hotbar's blocks); store `chunks` holds only *edited* chunks
   under `${worldId}:${cx},${cz}` as `{ v, rle, srle?, flow? }`: the block ids run-length encoded,
   plus the per-block state the same way when any of it is non-zero, plus the blocks with pending
   water updates (a chunk with some is saved even if its blocks are as generated). Everything else
@@ -383,11 +413,11 @@ a microtask then hands all the changes made together (one action, one tick of wa
   every world made before save version 6). Chunks saved before version 6 are 64 layers high: reading
   them adds a run of air on top (their CI indices, pending water included, stay the same). Chunks
   saved before version 4 had air where the sea is; reading them runs `floodSea` (the air below sea
-  level open to the sea becomes water). `SAVE_VERSION` is 6; when the stored format changes, bump
+  level open to the sea becomes water). Worlds saved before version 7 get the fixed hotbar every
+  world had (`HOTBAR`), so their selected slot holds the same block. `SAVE_VERSION` is 7; when the stored format changes, bump
   it, note it in the history at the top of `saves.ts`, add a fixture of the previous version to
   `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which bring any older record up
-  to date every time one is read (a migrated record is written back the next time it is saved). New
-  hotbar items go at the end, so saved slot numbers keep pointing at the same block. The save is the
+  to date every time one is read (a migrated record is written back the next time it is saved). The save is the
   streamer's chunk source: a loaded chunk reads its saved data instead of being generated, and an
   edited chunk that streams out keeps an RLE snapshot in memory until it is written. Autosave runs
   within 5 s of the first unsaved change (edits, or the player moving/looking), and immediately on
@@ -416,7 +446,8 @@ a microtask then hands all the changes made together (one action, one tick of wa
   changes and time), `waterTick()` (run one now), `showWater(on)` (draw the water or not, to time
   it), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
   `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
-  `tiles` (the tile canvases), `worldId`, `save()`, `biomes` (the biomes' names, by id; empty
+  `tiles` (the tile canvases), `hotbar()` (the block in each slot), `sel()` (the selected slot),
+  `pick(id)` (the picker's tap: that block into the selected slot), `worldId`, `save()`, `biomes` (the biomes' names, by id; empty
   without biomes), `biome()` / `biomeAt(x, z)` (the biome's name there) and `teleport(id)` (the
   menu's Teleport: to the nearest place of that biome; returns how far, −1 if there is none). Keep it working: the browser tests drive the
   game through it; `?seed=123` in the URL gives a fixed world.

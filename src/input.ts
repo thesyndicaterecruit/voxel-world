@@ -1,7 +1,7 @@
-import { B, HOTBAR } from './blocks';
+import { B } from './blocks';
 import { player, bufferJump, type Controls } from './player';
 import { els, hud, setMode, selectSlot, slotAt, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance, toggleFancyLeaves,
-  stepBrightness, stepDayLength, toggleAlwaysDay, showTeleport } from './ui';
+  stepBrightness, stepDayLength, toggleAlwaysDay, showTeleport, showPicker, pickerOpen, setPickerTab, pickBlock } from './ui';
 
 /* ======================= TOUCH CONTROLS ======================= */
 // Left half = floating joystick, right half = drag-to-look (+ tap to act), buttons handled by data-act.
@@ -11,6 +11,8 @@ const look = { id: null as PointerId | null, sx: 0, sy: 0, lx: 0, ly: 0, t: 0, f
 const held = new Map<PointerId, HTMLElement>(); // pointer id -> pressed button element
 /** A finger (or the mouse) on the hotbar: a tap picks a slot, a sideways swipe scrolls it */
 let bar: { id: PointerId; x: number; left: number; moved: boolean; slot: number } | null = null;
+/** A finger (or the mouse) on the block picker's grid: a tap puts that block in the slot, an up-down swipe scrolls it */
+let grid: { id: PointerId; y: number; top: number; moved: boolean; item: HTMLElement | null } | null = null;
 const SWIPE = 8;                                   // px of travel before a touch counts as a swipe
 /** Keyboard state by KeyboardEvent.code */
 const keys: Record<string, boolean> = {};
@@ -25,7 +27,7 @@ export function setSensitivity(s: number): void { sens = s; }
 
 /** Movement intent for this frame: keyboard overrides the joystick. */
 export function readControls(): Controls {
-  if (menuOpen()) return { x: 0, z: 0, run: false, jump: false };
+  if (menuOpen() || pickerOpen()) return { x: 0, z: 0, run: false, jump: false };
   let x = joy.x, z = joy.y;
   const kx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
   const kz = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
@@ -53,13 +55,21 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
       bar = { id, x, left: els.hotbar.scrollLeft, moved: false, slot: slotAt(x) };
       return;
     }
+    if (t && t.closest('#pgrid')) {
+      if (grid) return;                            // one finger at a time on the grid
+      const item = t.closest<HTMLElement>('.pitem');
+      item?.classList.add('down');
+      grid = { id, y, top: els.pgrid.scrollTop, moved: false, item };
+      els.psearch.blur();                          // put the keyboard away
+      return;
+    }
     const el = t ? t.closest<HTMLElement>('[data-act]') : null;
     if (el) {
       held.set(id, el);
       el.classList.add('down');
       const a = el.dataset.act;
       if (a === 'jump') { jumpHeld = true; bufferJump(); }
-      else if (a === 'mode') { setMode(hud.mode === 'break' ? 'place' : 'break'); toast(hud.mode === 'break' ? 'Break mode' : 'Place mode: ' + B[HOTBAR[hud.sel]].name, 900); }
+      else if (a === 'mode') { setMode(hud.mode === 'break' ? 'place' : 'break'); toast(hud.mode === 'break' ? 'Break mode' : 'Place mode: ' + B[hud.items[hud.sel]].name, 900); }
       else if (a === 'menu') showMenu(true);
       else if (a === 'leaves') toggleFancyLeaves();
       else if (a === 'resume') showMenu(false);
@@ -70,6 +80,10 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
       else if (a === 'quit') quit();
       else if (a === 'tp' || a === 'tpback') showTeleport(a === 'tp');
       else if (a && a.startsWith('tp:')) { showMenu(false); teleport(+a.slice(3)); }
+      else if (a === 'pick') showPicker(!pickerOpen());
+      else if (a === 'pclose') showPicker(false);
+      else if (a && a.startsWith('cat:')) setPickerTab(+a.slice(4));
+      else if (a === 'search') els.psearch.focus();
       return;
     }
     if (x < window.innerWidth * 0.5) {
@@ -93,6 +107,12 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
       if (bar.moved) els.hotbar.scrollLeft = bar.left - dx;
       return;
     }
+    if (grid && id === grid.id) {
+      const dy = y - grid.y;
+      if (!grid.moved && Math.abs(dy) > SWIPE) { grid.moved = true; grid.item?.classList.remove('down'); }
+      if (grid.moved) els.pgrid.scrollTop = grid.top - dy;
+      return;
+    }
     if (id === joy.id) {
       const dx = x - joy.ox, dy = y - joy.oy, d = Math.hypot(dx, dy), c = d > JMAX ? JMAX / d : 1;
       knob.style.transform = `translate(${dx * c}px,${dy * c}px)`;
@@ -111,8 +131,14 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
   }
   function up(id: PointerId, cancel: boolean, ts?: number): void {
     if (bar && id === bar.id) {
-      if (!bar.moved && !cancel && bar.slot >= 0) { selectSlot(bar.slot); setMode('place'); toast(B[HOTBAR[hud.sel]].name, 900); }
+      if (!bar.moved && !cancel && bar.slot >= 0) { selectSlot(bar.slot); setMode('place'); toast(B[hud.items[hud.sel]].name, 900); }
       bar = null;
+      return;
+    }
+    if (grid && id === grid.id) {
+      grid.item?.classList.remove('down');
+      if (!grid.moved && !cancel && grid.item) pickBlock(+grid.item.dataset.id!);
+      grid = null;
       return;
     }
     const el = held.get(id);
@@ -138,6 +164,8 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
   }
   function releaseAll(): void {
     bar = null;
+    grid?.item?.classList.remove('down');
+    grid = null;
     for (const k in keys) keys[k] = false;
     [...held.keys()].forEach((id) => up(id, true));
     if (joy.id !== null) up(joy.id, true);
@@ -158,7 +186,7 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
   document.addEventListener('gesturestart', stop, { passive: false });
   document.addEventListener('dblclick', stop, { passive: false });
   document.addEventListener('contextmenu', stop);
-  document.addEventListener('selectstart', stop);
+  document.addEventListener('selectstart', (e) => { if (!(e.target as Element).closest?.('input')) stop(e); });
   document.addEventListener('wheel', (e) => { if (e.ctrlKey) stop(e); }, { passive: false });
 
   // ---- touch routing (each finger tracked by its identifier → true multi-touch) ----
@@ -199,13 +227,19 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
   window.addEventListener('mousemove', (e) => { if (realMouse(e)) move('m', e.clientX, e.clientY); });
   window.addEventListener('mouseup', (e) => { if (realMouse(e)) up('m', false, e.timeStamp); });
   window.addEventListener('keydown', (e) => {
+    if ((e.target as Element).closest?.('input')) {     // typing in the picker's search box
+      if (e.code === 'Escape' || e.code === 'Enter') els.psearch.blur();
+      return;
+    }
     keys[e.code] = true;
     if (!isPlaying()) return;
+    if (e.code === 'Escape' && pickerOpen()) { showPicker(false); return; }
     if (e.code === 'Escape' || e.code === 'KeyM') showMenu(!menuOpen());
     if (menuOpen()) return;
+    if (e.code === 'KeyB') showPicker(!pickerOpen());
     if (/^Digit[0-9]$/.test(e.code) || e.code === 'Minus') {   // 1–9, then 0 and − for the tenth and eleventh slots
       const i = e.code === 'Minus' ? 10 : (+e.code.slice(5) + 9) % 10;
-      if (i < HOTBAR.length) { selectSlot(i); setMode('place'); }
+      if (i < hud.items.length) { selectSlot(i); setMode('place'); }
     }
     if (e.code === 'KeyQ' || e.code === 'KeyE') setMode(hud.mode === 'break' ? 'place' : 'break');
     if (e.code === 'KeyF' || e.code === 'Enter') act();
@@ -214,6 +248,7 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
   window.addEventListener('keyup', (e) => { keys[e.code] = false; });
   // mouse wheel / trackpad over the hotbar scrolls it
   els.hotbar.addEventListener('wheel', (e) => { els.hotbar.scrollLeft += e.deltaX + e.deltaY; e.preventDefault(); }, { passive: false });
+  els.pgrid.addEventListener('wheel', (e) => { els.pgrid.scrollTop += e.deltaY; e.preventDefault(); }, { passive: false });
   window.addEventListener('blur', releaseAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 }

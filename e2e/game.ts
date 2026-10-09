@@ -25,6 +25,10 @@ export interface Voxel {
   getState(x: number, y: number, z: number): number;
   setBlock(x: number, y: number, z: number, id: number, state?: number): void;
   look(yaw: number, pitch: number): void;
+  /** The block in each hotbar slot, the selected slot, and putting a block in it (the block picker's tap) */
+  hotbar(): number[];
+  sel(): number;
+  pick(id: number): void;
   target(): { x: number; y: number; z: number; nx: number; ny: number; nz: number; id: number } | null;
   count(): number;
   chunk(cx: number, cz: number): { tris: number[]; meshed: number };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_VOL, CI, CS, OLD_H } from '../src/config';
-import { AIR, STONE, PLANKS, TORCH, WATER, GLASS } from '../src/blocks';
+import { AIR, STONE, PLANKS, TORCH, WATER, GLASS, SNOW, ICE, HOTBAR } from '../src/blocks';
 import { generateChunk, SEA_LEVEL_1 } from '../src/gen1';
 import { GENERATOR_VERSION } from '../src/gen';
 import { rleEncode, rleDecode } from '../src/rle';
@@ -101,7 +101,8 @@ describe('migration from save version 1', () => {
     expect(w.saveVersion).toBe(SAVE_VERSION);
     expect(w.time).toBe(NEW_WORLD_TIME);
     expect(w.generatorVersion).toBe(1);
-    expect({ ...w, saveVersion: 1, time: undefined, generatorVersion: undefined }).toEqual({ ...v1World, time: undefined });
+    expect(w.hotbar).toEqual(HOTBAR);
+    expect({ ...w, saveVersion: 1, time: undefined, generatorVersion: undefined, hotbar: undefined }).toEqual({ ...v1World, time: undefined });
   });
 
   it('decodes a version 1 chunk: the same blocks, no block state', () => {
@@ -117,7 +118,7 @@ describe('migration from save version 1', () => {
   });
 
   it('leaves up-to-date records alone', () => {
-    const w = { ...v1World, saveVersion: SAVE_VERSION, time: 3.6, generatorVersion: 1 }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
+    const w = { ...v1World, saveVersion: SAVE_VERSION, time: 3.6, generatorVersion: 1, hotbar: HOTBAR.slice() }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
     expect(migrateWorld(w)).toBe(w);
     expect(migrateChunk(c)).toBe(c);
   });
@@ -141,7 +142,8 @@ describe('migration from save version 2', () => {
   it('gives the world a clock, starting in the morning, and keeps the rest', () => {
     const w = migrateWorld(structuredClone(v2World));
     expect([w.saveVersion, w.time, w.generatorVersion]).toEqual([SAVE_VERSION, NEW_WORLD_TIME, 1]);
-    expect({ ...w, saveVersion: 2, time: undefined, generatorVersion: undefined }).toEqual({ ...v2World, time: undefined });
+    expect(w.hotbar).toEqual(HOTBAR);
+    expect({ ...w, saveVersion: 2, time: undefined, generatorVersion: undefined, hotbar: undefined }).toEqual({ ...v2World, time: undefined });
   });
 
   it('reads its chunks with their block state', () => {
@@ -171,7 +173,7 @@ describe('migration from save version 3', () => {
   it('keeps the world record as it was, clock and all', () => {
     const w = migrateWorld(structuredClone(v3World));
     expect([w.saveVersion, w.generatorVersion]).toEqual([SAVE_VERSION, 1]);
-    expect({ ...w, saveVersion: 3, generatorVersion: undefined }).toEqual({ ...v3World, generatorVersion: undefined });
+    expect({ ...w, saveVersion: 3, generatorVersion: undefined, hotbar: undefined }).toEqual({ ...v3World, generatorVersion: undefined });
   });
 
   it('fills the sea back in when its chunks are read, but not the shut-off room', () => {
@@ -221,7 +223,7 @@ describe('migration from save version 5', () => {
   it('gives the world the first generator, so its unexplored ground is what it always was', () => {
     const w = migrateWorld(structuredClone(v5World));
     expect([w.saveVersion, w.generatorVersion]).toEqual([SAVE_VERSION, 1]);
-    expect({ ...w, saveVersion: 5, generatorVersion: undefined }).toEqual({ ...v5World, generatorVersion: undefined });
+    expect({ ...w, saveVersion: 5, generatorVersion: undefined, hotbar: undefined }).toEqual({ ...v5World, generatorVersion: undefined });
   });
 
   it('reads its chunks in the taller world: the same blocks, state and pending water, air above', () => {
@@ -240,5 +242,43 @@ describe('migration from save version 5', () => {
 
   it('gives new worlds the newest generator', async () => {
     expect((await createWorld('Island 5', 99)).generatorVersion).toBe(GENERATOR_VERSION);
+  });
+});
+
+describe('migration from save version 6', () => {
+  // version 6: a world with a generator, and the fixed hotbar every world had (no `hotbar` in the record)
+  const v6World: StoredWorld = {
+    id: 'mj4d0e7rb', name: 'Island 6', seed: 777, createdAt: 1760200000000, lastPlayed: 1760290000000,
+    saveVersion: 6, player: { x: 240.5, y: 52, z: 251.5, yaw: 0.2, pitch: -0.1 }, slot: 9, mode: 'place', time: 2.4, generatorVersion: 2,
+  };
+  const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
+  for (let y = 0; y < 100; y++) data[CI(3, y, 3)] = STONE;
+  data[CI(3, 100, 3)] = TORCH;
+  data[CI(4, 99, 3)] = WATER; state[CI(4, 99, 3)] = 2;
+  const v6Chunk: ChunkRecord = { v: 6, rle: rleEncode(data), srle: rleEncode(state), flow: Uint16Array.from([CI(4, 99, 3)]) };
+
+  it('gives the world the hotbar it always had, so its selected slot still holds the same block (a torch)', () => {
+    const w = migrateWorld(structuredClone(v6World));
+    expect([w.saveVersion, w.generatorVersion, w.time]).toEqual([SAVE_VERSION, 2, 2.4]);
+    expect(w.hotbar).toEqual(HOTBAR);
+    expect(w.hotbar[w.slot]).toBe(TORCH);
+    expect({ ...w, saveVersion: 6, hotbar: undefined }).toEqual({ ...v6World, hotbar: undefined });
+  });
+
+  it('reads its chunks as they are: full height already', () => {
+    const back = decodeChunk(structuredClone(v6Chunk));
+    expect(back.data).toEqual(data);
+    expect(back.state).toEqual(state);
+    expect(Array.from(back.flow!)).toEqual([CI(4, 99, 3)]);
+    expect(migrateChunk(v6Chunk)).toEqual({ ...v6Chunk, v: SAVE_VERSION });
+  });
+});
+
+describe('save version 7', () => {
+  it('keeps each world\'s own hotbar: new worlds start with the usual one, and a changed one is saved as it is', async () => {
+    const w = await createWorld('Island 7', 5);
+    expect(w.hotbar).toEqual(HOTBAR);
+    const picked = { ...w, hotbar: [SNOW, ICE, ...HOTBAR.slice(2)] };
+    expect(migrateWorld(structuredClone(picked))).toEqual(picked);
   });
 });

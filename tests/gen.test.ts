@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H, W, D, CI, OLD_H, CHUNK_VOL } from '../src/config';
-import { AIR, WATER, SOLID, BEDROCK, STONE } from '../src/blocks';
+import { AIR, WATER, SOLID, BEDROCK, STONE, ICE } from '../src/blocks';
 import { generateChunk, columnHeight, waterLevel, findSpawn, SEA_LEVEL_1 as SEA_LEVEL } from '../src/gen1';
 import { generator, GENERATOR_VERSION } from '../src/gen';
 
@@ -84,15 +84,20 @@ describe('generator 2 (new worlds)', () => {
     const first = g.generateChunk(4242, 16, 16);
     for (const [cx, cz] of [[15, 16], [17, 16], [3, 29]]) g.generateChunk(4242, cx, cz);
     expect(g.generateChunk(4242, 16, 16)).toEqual(first);
-    const sea = g.generateChunk(4242, 0, 0);                    // the open ocean in the world's corner
+    const sea = g.generateChunk(4242, 0, 0);                    // the open ocean in the world's corner: cold, so in part frozen
+    let ice = 0;
     for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
       expect(sea[CI(lx, 0, lz)]).toBe(BEDROCK);
       expect(sea[CI(lx, 1, lz)]).toBe(STONE);
-      expect(sea[CI(lx, g.seaLevel - 1, lz)]).toBe(WATER);
+      const top = sea[CI(lx, g.seaLevel - 1, lz)];
+      expect([WATER, ICE]).toContain(top);
+      if (top === ICE) ice++;
       expect(sea[CI(lx, g.seaLevel, lz)]).toBe(AIR);
       const h = g.surfaceHeight(4242, lx, lz);
-      for (let y = 1; y < H; y++) expect(sea[CI(lx, y, lz)] === WATER).toBe(y >= h && y < g.seaLevel);
+      for (let y = 1; y < g.seaLevel - 1; y++) expect(sea[CI(lx, y, lz)] === WATER).toBe(y >= h);
     }
+    expect(ice).toBeGreaterThan(0);                              // floes
+    expect(ice).toBeLessThan(CS * CS);                           // and open water between them
   });
 
   it('puts the spawn on dry ground above the sea', () => {

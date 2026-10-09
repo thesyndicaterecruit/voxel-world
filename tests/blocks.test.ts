@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   AIR, GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, BEDROCK, WATER, GLASS, TORCH, B, HOTBAR, NT,
-  SOLID, OPAQUE, PASS, MODEL, OCCLUDES, TARGETABLE, REPLACEABLE, faceHidden,
+  SOLID, OPAQUE, PASS, MODEL, OCCLUDES, TARGETABLE, REPLACEABLE, SLIPPERY, faceHidden, PICKER, TERRACOTTAS,
+  SNOW, ICE, PACKED_ICE, SANDSTONE, RED_SAND, TERRACOTTA, GRAVEL, CLAY, PODZOL, COARSE_DIRT, MUD, MOSS, BASALT, OBSIDIAN,
+  COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL, T_SNOW,
 } from '../src/blocks';
+import { TILE_PAINTERS } from '../src/textures';
 
 /** Plain opaque cubes */
 const CUBES = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, BRICK, BEDROCK];
@@ -12,6 +15,18 @@ describe('block registry', () => {
   it('keeps every id: chunks and saves store them', () => {
     expect([AIR, GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, BEDROCK, WATER, GLASS, TORCH])
       .toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it('keeps the ids of the islands\' blocks too', () => {
+    expect([SNOW, ICE, PACKED_ICE, SANDSTONE, RED_SAND, TERRACOTTA, GRAVEL, CLAY, PODZOL, COARSE_DIRT, MUD, MOSS, BASALT, OBSIDIAN,
+      COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL]).toEqual([13, 14, 15, 16, 17, 18, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
+    expect(TERRACOTTAS.map((_, i) => B[TERRACOTTA + i].name)).toEqual(TERRACOTTAS);
+    expect(TERRACOTTAS.length).toBe(6);
+    expect(B.length).toBe(37);
+  });
+
+  it('has a painter for every tile', () => {
+    expect(TILE_PAINTERS.length).toBe(NT);
   });
 
   it('has every block at its own id, with valid flags and tiles', () => {
@@ -40,6 +55,25 @@ describe('block registry', () => {
     expect(B[TORCH].lightEmission).toBeGreaterThan(0);
   });
 
+  it('describes the islands\' blocks: ice see-through and slippery, a glowing crystal, faces of their own', () => {
+    expect(B[ICE]).toMatchObject({ solid: true, opaque: false, renderPass: 'translucent', lightFilter: 2, model: 'cube', cullSame: true, slippery: true });
+    expect(B[PACKED_ICE]).toMatchObject({ solid: true, opaque: true, slippery: true });
+    expect(B[GLOW_CRYSTAL]).toMatchObject({ solid: true, opaque: true, lightEmission: 10 });
+    expect([STONE, SNOW, ICE, PACKED_ICE, GRASS].map((id) => SLIPPERY[id])).toEqual([0, 0, 1, 1, 0]);
+    expect(new Set(B[SANDSTONE].tex).size).toBe(3);                   // top, sides and bottom
+    for (const id of [BASALT, PODZOL]) expect(B[id].tex[0]).not.toBe(B[id].tex[1]);
+    // each has tiles of its own (ores, terracotta colours…), and every new tile is used
+    const tiles = B.filter((b) => b.id > TORCH).flatMap((b) => [...new Set(b.tex)]);
+    expect(new Set(tiles).size).toBe(tiles.length);
+    expect(tiles.filter((t) => t >= T_SNOW).length).toBe(NT - T_SNOW);
+  });
+
+  it('puts every block but air on exactly one tab of the block picker', () => {
+    expect(PICKER.map((t) => t.name)).toEqual(['Natural', 'Stone', 'Wood', 'Plants', 'Light', 'Liquids']);
+    const all = PICKER.flatMap((t) => [...t.blocks]);
+    expect(all.slice().sort((a, b) => a - b)).toEqual(B.filter((b) => b.id !== AIR).map((b) => b.id));
+  });
+
   it('keeps the first 8 hotbar slots, so slot numbers in old saves still mean the same block', () => {
     expect(HOTBAR.slice(0, 8)).toEqual([GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK]);
     expect(HOTBAR.slice(8)).toEqual([GLASS, TORCH, WATER]);
@@ -55,8 +89,9 @@ describe('block registry', () => {
     // aim at anything but air and liquids; build into air and liquids only
     expect([AIR, WATER, TORCH, GLASS, STONE].map((id) => TARGETABLE[id])).toEqual([0, 0, 1, 1, 1]);
     expect([AIR, WATER, TORCH, GLASS, STONE].map((id) => REPLACEABLE[id])).toEqual([1, 1, 0, 0, 0]);
-    // ambient occlusion: opaque cubes and leaves darken corners; glass, water and torches don't
-    expect([STONE, LEAVES, GLASS, WATER, TORCH, AIR].map((id) => OCCLUDES[id])).toEqual([1, 1, 0, 0, 0, 0]);
+    // ambient occlusion: opaque cubes and leaves darken corners; glass, water, ice and torches don't
+    expect([STONE, LEAVES, GLASS, WATER, ICE, TORCH, AIR].map((id) => OCCLUDES[id])).toEqual([1, 1, 0, 0, 0, 0, 0]);
+    expect([GLOW_CRYSTAL, ICE, OBSIDIAN].map((id) => [TARGETABLE[id], REPLACEABLE[id]])).toEqual([[1, 0], [1, 0], [1, 0]]);
   });
 });
 

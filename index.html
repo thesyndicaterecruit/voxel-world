@@ -15,7 +15,25 @@
 <div id="tint"></div>
 <div id="ui">
   <div id="cross"></div>
-  <div id="hotbar" data-act="none"></div>
+  <div id="hotrow">
+    <div id="hotbar" data-act="none"></div>
+    <div id="pickBtn" class="btn" data-act="pick" role="button" aria-label="All blocks">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="#fff"><rect x="3" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5" fill-opacity=".55"/></svg>
+    </div>
+  </div>
+  <div id="picker" data-act="none">
+    <div class="pcard">
+      <div class="ptop">
+        <div id="ptabs"></div>
+        <input id="psearch" type="search" placeholder="Search" data-act="search" autocomplete="off" spellcheck="false" enterkeyhint="done">
+        <div class="sbtn pclose" data-act="pclose" role="button" aria-label="Close">&times;</div>
+      </div>
+      <div id="pgrid"></div>
+      <p class="hint">Tap a block to put it in the selected slot &middot; tap a slot above to choose another</p>
+    </div>
+  </div>
   <div id="joy"><div id="knob"></div></div>
   <div id="toast"></div>
   <div id="menuBtn" class="btn" data-act="menu" role="button" aria-label="Menu">
@@ -103,7 +121,7 @@
         <span class="k">RIGHT SIDE</span><span>Drag to look &middot; tap to break / place</span>
         <span class="k">JUMP</span><span>Jump (1-block steps auto-jump)</span>
         <span class="k">⛏️ / 🧱</span><span>Switch Break &harr; Place mode</span>
-        <span class="k">TOP BAR</span><span>Pick a block to build with &middot; swipe for more</span>
+        <span class="k">TOP BAR</span><span>Pick a block to build with &middot; ▦ for every block</span>
       </div>
     </div>
     <div class="actions">

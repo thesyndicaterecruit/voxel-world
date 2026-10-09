@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CB, CS, EYE, HORIZON } from './config';
-import { B, HOTBAR } from './blocks';
+import { B, AIR, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
 import { createTextures, setUnderwater, setTints } from './textures';
 import { world, waterDepth } from './world';
@@ -16,7 +16,7 @@ import { playSound } from './audio';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
-  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport } from './ui';
+  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock } from './ui';
 import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
@@ -103,7 +103,8 @@ async function boot(): Promise<void> {
   /** The world clock: days since the world began (the fraction is the time of day), saved with it */
   let days = record.time;
   const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
-    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days } : null),
+    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days,
+      hotbar: hud.items.slice() } : null),
     (cx, cz) => water.pendingIn(cx, cz));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
@@ -170,7 +171,10 @@ async function boot(): Promise<void> {
   });
 
   const interaction = createInteraction(fx);
-  initHotbar(canvases, (i) => { const b = B[HOTBAR[i]]; fx.ghostMat.map = textures[b.model === 'liquid' ? b.icon : b.tex[0]]; });
+  // the world's hotbar; the block picker puts any block in the selected slot
+  hud.items = HOTBAR.map((d, i) => { const id = record.hotbar[i]; return B[id] && id !== AIR ? id : d; });
+  initHotbar(canvases, (i) => { const b = B[hud.items[i]]; fx.ghostMat.map = textures[b.model === 'liquid' ? b.icon : b.tex[0]]; });
+  initPicker((id) => { setMode('place'); toast(B[id].name, 900); save.requestSave(); });
 
   // autosave: within 5 s of a change, and right away when the app is hidden, closed or exited
   let quitting = false;
@@ -316,6 +320,7 @@ async function boot(): Promise<void> {
     setTime: (t: number) => { days = Math.floor(days) + t; },
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
     look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
+    hotbar: () => hud.items.slice(), pick: pickBlock, sel: () => hud.sel,
     target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },
     worldId: record.id, save: () => save.save(),
     teleport, biome: () => (biomes ? BIOMES[biomeAt(seed, Math.floor(P[0]), Math.floor(P[2]))].name : null),

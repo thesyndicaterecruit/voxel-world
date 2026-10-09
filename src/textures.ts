@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
-import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES } from './blocks';
+import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES, T_GLOW_CRYSTAL } from './blocks';
 import { W, D } from './config';
 import { GN } from './biomes';
 import { TEX } from './mesher';
@@ -228,10 +228,190 @@ const flowWater = (f: number): Painter => (put, each) => {
 };
 const frames = (paint: (f: number) => Painter) => Array.from({ length: WATER_FRAMES }, (_, f) => paint(f));
 
+/* ---------- the islands' blocks: snow and ice, sand and sandstone, terracotta, soils, rock, ores ---------- */
+/**
+ * Tileable cells round n × n jittered points (seed s): texel (x, y)'s distance to the nearest point
+ * and to the second nearest (a small gap between them is an edge), and which point is nearest.
+ */
+function cells(x: number, y: number, n: number, s: number): [number, number, number] {
+  const c = TS / n, gx = Math.floor((x + 0.5) / c), gy = Math.floor((y + 0.5) / c);
+  let d1 = 1e9, d2 = 1e9, id = 0;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const cx = gx + i, cy = gy + j, wx = ((cx % n) + n) % n, wy = ((cy % n) + n) % n;
+    const d = Math.hypot(x + 0.5 - (cx + 0.15 + 0.7 * thash(wx, wy, s)) * c, y + 0.5 - (cy + 0.15 + 0.7 * thash(wx, wy, s + 1)) * c);
+    if (d < d1) { d2 = d1; d1 = d; id = wx + wy * n; } else if (d < d2) d2 = d;
+  }
+  return [d1, d2, id];
+}
+const P_SNOW = pal(0xd3dfe9, 0xdce7ef, 0xe5edf3, 0xedf3f7, 0xf5f8fb, 0xffffff);
+const snow: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_SNOW, 0.45 * tn(x, y, 8, 8, 50) + 0.3 * tn(x, y, 4, 4, 51) + 0.25 * trand())));
+  for (let i = 0; i < 16; i++) { const x = rx(), y = rx(); put(x, y, P_SNOW[5]); put(x + 1, y + 1, hx(0xc6d3df)); } // glints
+};
+const P_ICE = pal(0x76a3dc, 0x83ade3, 0x91b8e9, 0xa0c4ef, 0xb2d1f4);
+const ice: Painter = (put, each) => {
+  // see-through blue, clearer in places, with white cracks and a little glare
+  each((x, y) => {
+    const v = 0.55 * tn(x, y, 16, 16, 52) + 0.3 * tn(x, y, 8, 8, 53) + 0.15 * trand();
+    put(x, y, pick(P_ICE, v), 1, 140 + Math.round(v * 50));
+  });
+  for (let i = 0; i < 5; i++) {
+    let x = rx(), y = rx();
+    const dx = trand() < 0.5 ? 1 : -1;
+    for (let j = 0, n = 6 + Math.floor(trand() * 10); j < n; j++) {
+      put(x, y, hx(0xe4f0fc), 1, 215);
+      if (trand() < 0.6) x += dx; else y += 1;
+    }
+  }
+  for (let i = 0; i < 3; i++) { const x = rx(), y = rx(); for (let j = 0; j < 4; j++) put(x + j, y - j, hx(0xf2f8ff), 1, 200); }
+};
+const P_PICE = pal(0x7199d4, 0x7ea4db, 0x8bafe2, 0x99bbe8, 0xa8c7ee);
+const packedIce: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_PICE, 0.5 * tn(x, y, 8, 8, 54) + 0.3 * tn(x, y, 4, 4, 55) + 0.2 * trand())));
+  for (let i = 0; i < 7; i++) {                // fine pale cracks
+    let x = rx(), y = rx();
+    for (let j = 0, n = 3 + Math.floor(trand() * 6); j < n; j++) {
+      put(x, y, hx(0xc9dcf4));
+      if (trand() < 0.5) x += trand() < 0.5 ? 1 : -1; else y += trand() < 0.5 ? 1 : -1;
+    }
+  }
+};
+const P_SST = pal(0xc9b47a, 0xd2bf86, 0xdac891, 0xe1d09b, 0xe8d8a6);
+const sandstoneTop: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_SST, 0.35 * tn(x, y, 8, 8, 56) + 0.25 * tn(x, y, 4, 4, 57) + 0.4 * trand())));
+  for (let i = 0; i < 12; i++) put(rx(), rx(), P_SST[0], 0.92);
+};
+const sandstoneSide: Painter = (put, each) => {
+  // a smooth lip at the top, fine layers under it, and a rougher, darker base
+  const tone = Array.from({ length: TS }, () => (trand() - 0.5) * 0.18);
+  each((x, y) => {
+    if (y < 5) { put(x, y, pick(P_SST, 0.55 + 0.25 * tn(x, y, 8, 4, 58) + 0.15 * trand()), y === 4 ? 0.86 : 1); return; }
+    if (y >= 25) { put(x, y, pick(P_SST, 0.25 * tn(x, y, 4, 4, 59) + 0.45 * trand()), y === 25 ? 0.88 : 0.95); return; }
+    put(x, y, pick(P_SST, 0.45 + tone[y] + 0.3 * (tn(x, y, 16, 2, 60) - 0.5) + 0.15 * (trand() - 0.5)));
+  });
+};
+const sandstoneBottom: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_SST, 0.3 * tn(x, y, 4, 4, 61) + 0.55 * trand()), 0.96));
+  for (let i = 0; i < 26; i++) put(rx(), rx(), P_SST[0], 0.84);
+};
+const P_RSAND = pal(0xa24f1e, 0xad5822, 0xb86127, 0xc26b2d, 0xcc7634);
+const redSand: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_RSAND, 0.3 * tn(x, y, 8, 8, 62) + 0.7 * trand())));
+  for (let i = 0; i < 30; i++) put(rx(), rx(), hx(trand() < 0.6 ? 0x8c4319 : 0xdb8f55));
+};
+/** Terracotta's colours, in id order (blocks.ts TERRACOTTAS): plain, white, orange, yellow, red, brown */
+const TERRACOTTA_COLOURS = [0x985e43, 0xd1b2a1, 0xa1531f, 0xba8523, 0x8f3d2e, 0x4d3323];
+const terracotta = (c: number): Painter => (put, each) => {
+  const base = hx(c);
+  each((x, y) => put(x, y, base, 0.93 + 0.1 * tn(x, y, 8, 8, 63) + 0.05 * (trand() - 0.5)));
+  for (let i = 0; i < 14; i++) put(rx(), rx(), base, trand() < 0.5 ? 0.86 : 1.08);
+};
+const P_GRAVEL = pal(0x5d5856, 0x6b6563, 0x797370, 0x87817d, 0x96908b, 0x7a6a5e);
+const gravel: Painter = (put, each) => {
+  // pebbles of different stones, rounded, with dark gaps between them
+  each((x, y) => {
+    const [d1, d2, id] = cells(x, y, 7, 64);
+    if (d2 - d1 < 0.9) { put(x, y, hx(0x45403e)); return; }
+    put(x, y, P_GRAVEL[Math.floor(thash(id, 0, 66) * P_GRAVEL.length)], 1.08 - 0.07 * d1 + 0.06 * (trand() - 0.5));
+  });
+};
+const P_CLAY = pal(0x8b92a0, 0x939aa8, 0x9ba2af, 0xa3a9b6, 0xabb1bd);
+const clay: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_CLAY, 0.5 * tn(x, y, 8, 8, 67) + 0.25 * tn(x, y, 4, 4, 68) + 0.25 * trand())));
+  for (let i = 0; i < 10; i++) { const x = rx(), y = rx(); put(x, y, P_CLAY[4], 1.06); put(x + 1, y, P_CLAY[3]); }
+};
+const P_POD = pal(0x4a3117, 0x593b1b, 0x684520, 0x775026, 0x875b2c);
+const podzolTop: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_POD, 0.4 * tn(x, y, 8, 8, 69) + 0.25 * tn(x, y, 4, 4, 70) + 0.35 * trand())));
+  for (let i = 0; i < 40; i++) {               // fallen needles: short strokes, orange-brown and dark
+    const x = rx(), y = rx(), c = hx(trand() < 0.6 ? 0x9a6630 : 0x35230f), h = trand() < 0.5;
+    put(x, y, c); put(x + (h ? 1 : 0), y + (h ? 0 : 1), c);
+  }
+};
+const podzolSide: Painter = (put, each) => {
+  dirt(put, each);
+  for (let x = 0; x < TS; x++) {               // the podzol on top, ragged
+    const len = 3 + Math.floor(tn(x, 0, 4, 32, 71) * 3) + (trand() < 0.25 ? 1 : 0);
+    for (let y = 0; y < len; y++) put(x, y, pick(P_POD, 0.2 + 0.6 * trand()), y === len - 1 ? 0.85 : 1);
+  }
+};
+const coarseDirt: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_DIRT, 0.35 * tn(x, y, 4, 4, 72) + 0.65 * trand())));
+  for (let i = 0; i < 34; i++) {               // gravelly bits
+    const x = rx(), y = rx(), c = hx(trand() < 0.5 ? 0x7c766f : 0x5a554f);
+    put(x, y, c, 1.1); put(x + 1, y, c); put(x, y + 1, c, 0.85);
+  }
+};
+const P_MUD = pal(0x2e2a29, 0x383332, 0x423c3a, 0x4c4542, 0x564e4a);
+const mud: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_MUD, 0.55 * tn(x, y, 8, 8, 73) + 0.25 * tn(x, y, 4, 4, 74) + 0.2 * trand())));
+  for (let i = 0; i < 9; i++) {                // wet sheen
+    const x = rx(), y = rx(), n = 2 + Math.floor(trand() * 4);
+    for (let j = 0; j < n; j++) put(x + j, y, hx(0x6f6661));
+  }
+};
+const P_MOSS = pal(0x3c5419, 0x47631e, 0x527224, 0x5e8129, 0x6a902f, 0x7aa038);
+const moss: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_MOSS, 0.4 * tn(x, y, 4, 4, 75) + 0.3 * tn(x, y, 2, 2, 76) + 0.3 * trand())));
+  for (let i = 0; i < 26; i++) { const x = rx(), y = rx(); put(x, y, P_MOSS[5], 1.05); put(x, y + 1, P_MOSS[1]); } // tufts
+};
+const P_BAS = pal(0x2c2c30, 0x36363b, 0x414146, 0x4c4c52, 0x58585e);
+const basaltTop: Painter = (put, each) => {
+  // the end of a column: rough rings round its middle
+  each((x, y) => {
+    const r = Math.max(Math.abs(x - 15.5), Math.abs(y - 15.5)) + 1.5 * tn(x, y, 8, 8, 77);
+    put(x, y, pick(P_BAS, 0.25 + 0.3 * (Math.floor(r / 3) % 2) + 0.35 * trand()), r > 14 ? 0.8 : 1);
+  });
+};
+const basaltSide: Painter = (put, each) => {
+  // columns side by side, dark seams between them, a few cracks across
+  const seams = [0, 7, 15, 22, 28];
+  each((x, y) => {
+    if (seams.includes(x)) { put(x, y, hx(0x222226)); return; }
+    put(x, y, pick(P_BAS, 0.2 + 0.5 * tn(x, y, 2, 16, 78) + 0.3 * trand()), seams.includes(x - 1) ? 1.12 : 1);
+  });
+  for (let i = 0; i < 5; i++) { const x = rx(), y = rx(); for (let j = 0; j < 3; j++) put(x + j, y, hx(0x26262a)); }
+};
+const P_OBS = pal(0x0e0b15, 0x16111e, 0x1e1728, 0x271e33, 0x31263f);
+const obsidian: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_OBS, 0.5 * tn(x, y, 8, 8, 79) + 0.25 * tn(x, y, 4, 4, 80) + 0.25 * trand())));
+  for (let i = 0; i < 6; i++) {                // glassy purple streaks
+    const x = rx(), y = rx(), n = 2 + Math.floor(trand() * 4);
+    for (let j = 0; j < n; j++) put(x + j, y + j, hx(0x4a3570), 1 - j * 0.1);
+  }
+  for (let i = 0; i < 10; i++) put(rx(), rx(), hx(0x6b4fa0));
+};
+/** Stone with ore in it: clusters of nuggets in `p`'s colours (shadow, body, highlight), lit from the top left */
+const ore = (p: RGB[]): Painter => (put, each) => {
+  stone(put, each);
+  for (let i = 0; i < 6; i++) {
+    const cx = rx(), cy = rx();
+    for (let j = 0, n = 2 + Math.floor(trand() * 2); j < n; j++) {
+      const x = cx + Math.floor(trand() * 4) - 1, y = cy + Math.floor(trand() * 4) - 1;
+      put(x, y, p[2]); put(x + 1, y, p[1]); put(x, y + 1, p[1]); put(x + 1, y + 1, p[0]);
+    }
+  }
+};
+const P_COAL = pal(0x18181a, 0x2a2a2d, 0x46464a), P_COPPER = pal(0x9c5430, 0xc56f3e, 0xe8935c);
+const P_IRON = pal(0xa98468, 0xcda385, 0xe8c6a8), P_GOLD = pal(0xc9961a, 0xf0c63a, 0xfde77a);
+const P_GLOW = pal(0x1f8fa6, 0x2fb0c4, 0x48c8d8, 0x6adce6, 0x95ebf0, 0xd2fafb);
+const glowCrystal: Painter = (put, each) => {
+  // facets of crystal, each lit its own way, with bright edges (drawn at full brightness: TILE_KIND)
+  each((x, y) => {
+    const [d1, d2, id] = cells(x, y, 4, 81);
+    if (d2 - d1 < 0.8) { put(x, y, P_GLOW[5]); return; }
+    put(x, y, pick(P_GLOW, 0.15 + 0.55 * thash(id, 1, 82) + 0.25 * (1 - d1 / 8) + 0.1 * trand()));
+  });
+  for (let i = 0; i < 8; i++) put(rx(), rx(), hx(0xffffff));
+};
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
-const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
-  glass, leavesCut, torch, ...frames(stillWater), ...frames(flowWater)];
+export const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
+  glass, leavesCut, torch, ...frames(stillWater), ...frames(flowWater),
+  snow, ice, packedIce, sandstoneTop, sandstoneSide, sandstoneBottom, redSand, ...TERRACOTTA_COLOURS.map(terracotta), gravel, clay,
+  podzolTop, podzolSide, coarseDirt, mud, moss, basaltTop, basaltSide, obsidian, ore(P_COAL), ore(P_COPPER), ore(P_IRON), ore(P_GOLD),
+  glowCrystal];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
@@ -263,11 +443,16 @@ const tintMap = new THREE.DataTexture2DArray(tintData, GN, GN, 3);
 tintMap.magFilter = tintMap.minFilter = THREE.LinearFilter;
 tintMap.generateMipmaps = false;
 tintMap.needsUpdate = true;
-/** The tint kind of each tile: −1 none, 0 grass, 1 foliage, 2 water (the tint map's layers) */
-const TINT_KIND = new Array<number>(NT).fill(-1);
-TINT_KIND[T_GRASS_TOP] = TINT_KIND[T_GRASS_SIDE] = 0;
-TINT_KIND[T_LEAVES] = TINT_KIND[T_LEAVES_CUT] = 1;
-TINT_KIND[T_WATER_STILL] = TINT_KIND[T_WATER_FLOW] = 2;
+/**
+ * What kind of tile each is, for the chunk shader: −1 plain, 0 grass, 1 foliage, 2 water (they take
+ * that layer of the tint map), 3 glowing (drawn at full brightness, whatever the light). Four to a
+ * vec4 uniform.
+ */
+const TILE_KIND = new Float32Array(Math.ceil(NT / 4) * 4).fill(-1);
+TILE_KIND[T_GRASS_TOP] = TILE_KIND[T_GRASS_SIDE] = 0;
+TILE_KIND[T_LEAVES] = TILE_KIND[T_LEAVES_CUT] = 1;
+TILE_KIND[T_WATER_STILL] = TILE_KIND[T_WATER_FLOW] = 2;
+TILE_KIND[T_GLOW_CRYSTAL] = 3;
 /** The world's tints (biomes.ts tintMap: GN × GN RGBA per layer, grass, foliage, water; the colours they show) */
 export function setTints(data: Uint8Array): void {
   tintData.set(data);
@@ -275,11 +460,14 @@ export function setTints(data: Uint8Array): void {
 }
 const TINT_VERTEX_PARS = `
 uniform highp sampler2DArray tintMap;
-uniform float tintKinds[ ${NT} ];
+uniform vec4 tileKinds[ ${TILE_KIND.length / 4} ];
 varying vec3 vTint;`;
 const TINT_VERTEX = `
-	float tk = tintKinds[ int( layer + 0.5 ) ];
-	vTint = tk < 0.0 ? vec3( 1.0 ) : textureLod( tintMap, vec3( ( modelMatrix * vec4( transformed, 1.0 ) ).xz * vec2( ${1 / W}, ${1 / D} ), tk ), 0.0 ).rgb * ${(1 / GREY).toFixed(6)};`;
+	int tl = int( layer + 0.5 );
+	float tk = tileKinds[ tl / 4 ][ tl % 4 ];
+	vTint = tk < 0.0 || tk > 2.5 ? vec3( 1.0 ) :
+		textureLod( tintMap, vec3( ( modelMatrix * vec4( transformed, 1.0 ) ).xz * vec2( ${1 / W}, ${1 / D} ), tk ), 0.0 ).rgb * ${(1 / GREY).toFixed(6)};
+	if ( tk > 2.5 ) vLight = vec3( 1.0 );`;
 
 /* ---------- the water's shader code (translucent pass) ---------- */
 const WATER_VERTEX_PARS = `
@@ -287,9 +475,10 @@ uniform vec3 skyColor;
 varying vec3 vView;
 varying vec3 vUp;
 varying vec3 vSkyRefl;
-// animated water tiles play their frames: ripples at 8 a second, streaks at 16 (a block a second)
+// animated water tiles play their frames: ripples at 8 a second, streaks at 16 (a block a second);
+// anything else in this pass (ice) keeps its tile
 float waterFrame( float l ) {
-	if ( l < ${T_WATER_STILL - 0.5} ) return l;
+	if ( abs( l - ${T_WATER_STILL}.0 ) > 0.5 && abs( l - ${T_WATER_FLOW}.0 ) > 0.5 ) return l;
 	return l + mod( floor( time * ( l > ${T_WATER_FLOW - 0.5} ? 16.0 : 8.0 ) ), ${WATER_FRAMES}.0 );
 }`;
 /**
@@ -345,7 +534,7 @@ function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE
   const water = pass === 2;
   const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: water, depthWrite: !water });
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray }, tintMap: { value: tintMap }, tintKinds: { value: TINT_KIND } });
+    Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray }, tintMap: { value: tintMap }, tileKinds: { value: TILE_KIND } });
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}${TINT_VERTEX_PARS}${water ? WATER_VERTEX_PARS : ''}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, ${water ? 'waterFrame( layer )' : 'layer'} );`)

@@ -1,5 +1,5 @@
 import { CS, CHUNK_VOL, CI, H, W, D, inWorld } from './config';
-import { AIR, GRASS, DIRT, STONE, LOG, LEAVES, BEDROCK, WATER } from './blocks';
+import { AIR, GRASS, DIRT, STONE, LOG, LEAVES, BEDROCK, WATER, ICE } from './blocks';
 import { hash2, hash3, vnoise, fbm, sstep } from './noise';
 import { BIOMES, NBIOMES, weights, coast, type Biome } from './biomes';
 import * as g1 from './gen1';
@@ -37,7 +37,7 @@ export interface Generator {
 export const SEA_LEVEL = 48;
 const S = SEA_LEVEL;
 const K_RELIEF = 0x7a3b9c41, K_BED = 0x2e6f81d3, K_DITHER = 0x5d1f2a77, K_TREE = 0x68e31da4, K_TX = 0x1b56c4e9, K_TZ = 0x3c6ef372;
-const K_TH = 0x5be0cd19, K_PRI = 0x6a09e667, K_LEAF = 0x1f83d9ab;
+const K_TH = 0x5be0cd19, K_PRI = 0x6a09e667, K_LEAF = 0x1f83d9ab, K_PATCH = 0x4c8f3b2d, K_ICE = 0x71d3a9e5;
 /** How far inland the ground takes to rise from the beach, and offshore the sea floor to sink (blocks) */
 const RISE = 14, SHELF = 28;
 
@@ -56,30 +56,40 @@ function landform(seed: number, bm: Biome, x: number, z: number, t: number): num
 }
 
 const W8 = new Float32Array(NBIOMES);
-/** Column (x, z): its ground height (blocks y < h are filled) and the biome whose blocks are on top */
-export function column2(seed: number, x: number, z: number): { h: number; biome: number } {
+/**
+ * Column (x, z): its ground height (blocks y < h are filled), the biome whose blocks are on top, and
+ * how much of the sea's surface freezes there (the biomes' `freeze`, blended)
+ */
+export function column2(seed: number, x: number, z: number): { h: number; biome: number; freeze: number } {
   const { t } = coast(seed, x, z);
-  let best = weights(seed, x, z, W8), second = -1, h = 0;
+  let best = weights(seed, x, z, W8), second = -1, h = 0, freeze = 0;
   for (let i = 0; i < NBIOMES; i++) {
     if (W8[i] <= 0) continue;
     h += W8[i] * landform(seed, BIOMES[i], x, z, t);
+    freeze += W8[i] * BIOMES[i].freeze;
     if (i !== best && (second < 0 || W8[i] > W8[second])) second = i;
   }
   // near a border the two biomes' blocks mingle
   if (second >= 0 && hash2(seed ^ K_DITHER, x, z) < W8[second] * 0.9) best = second;
-  return { h: Math.max(2, Math.min(H - 8, Math.round(h))), biome: best };
+  return { h: Math.max(2, Math.min(H - 8, Math.round(h))), biome: best, freeze };
 }
 
-/** Block at height y of a column h high (with the sea above it) whose top belongs to biome bm */
-function layer2(bm: Biome, y: number, h: number): number {
+/** Does column (x, z) of biome bm have a patch of its patch block on top (on land; on the sea floor for a sea biome)? */
+const patched = (seed: number, bm: Biome, x: number, z: number, h: number) =>
+  bm.patchAmount > 0 && (h < S) === bm.ocean && vnoise(seed ^ K_PATCH, x / 7, z / 7) * 0.8 + hash2(seed ^ K_PATCH, x, z) * 0.2 < bm.patchAmount;
+
+/** Block at height y of a column h high (with the sea above it) whose top belongs to biome bm; `patch`: a patch on top */
+function layer2(bm: Biome, y: number, h: number, patch: boolean): number {
   if (y === 0) return BEDROCK;
-  if (h < S) return y >= h - 3 ? bm.bed : STONE;                      // under the sea
-  if (h <= S + 1 && bm.shore !== bm.top) {                           // the shore: a beach, stones, mud…
-    if (y === h - 1) return bm.shore;
-    return y >= h - 4 ? (bm.shore === GRASS ? DIRT : bm.shore) : STONE;
+  const d = h - 1 - y;                                               // how deep under the surface
+  if (h < S) return d === 0 && patch ? bm.patch : d < 3 ? bm.bed : STONE;   // under the sea
+  if (h <= S + 1 && bm.shore !== bm.top) {                           // the shore: a beach, gravel, mud…
+    if (d === 0) return bm.shore;
+    return d < 4 ? (bm.shore === GRASS ? DIRT : bm.shore) : STONE;
   }
-  if (y === h - 1) return bm.top;
-  return y >= h - 1 - bm.fillDepth ? bm.fill : STONE;
+  if (d === 0) return patch ? bm.patch : bm.top;
+  if (d <= bm.fillDepth) return bm.fill;
+  return d <= bm.fillDepth + bm.underDepth ? bm.under : STONE;
 }
 
 /* ---------- trees (for now: the oaks every biome with "oak" in its decorations grows) ---------- */
@@ -140,9 +150,11 @@ function stampTree(seed: number, data: Uint8Array, x0: number, z0: number, t: Tr
 function generateChunk2(seed: number, cx: number, cz: number): Uint8Array {
   const data = new Uint8Array(CHUNK_VOL), x0 = cx * CS, z0 = cz * CS;
   for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
-    const { h, biome } = column2(seed, x0 + lx, z0 + lz), bm = BIOMES[biome];
-    for (let y = 0; y < h; y++) data[CI(lx, y, lz)] = layer2(bm, y, h);
+    const x = x0 + lx, z = z0 + lz, { h, biome, freeze } = column2(seed, x, z), bm = BIOMES[biome], p = patched(seed, bm, x, z, h);
+    for (let y = 0; y < h; y++) data[CI(lx, y, lz)] = layer2(bm, y, h, p);
     for (let y = h; y < S; y++) data[CI(lx, y, lz)] = WATER;           // still water: sources
+    // a cold sea freezes over in floes
+    if (h < S && freeze > 0 && vnoise(seed ^ K_ICE, x / 6, z / 6) * 0.85 + hash2(seed ^ K_ICE, x, z) * 0.15 < freeze) data[CI(lx, S - 1, lz)] = ICE;
   }
   for (const t of treesNear(seed, x0, z0, x0 + CS - 1, z0 + CS - 1)) stampTree(seed, data, x0, z0, t);
   return data;

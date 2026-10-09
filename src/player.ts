@@ -1,5 +1,6 @@
 import { H, PR, PH, EYE, GRAV, JUMP, WALK, RUN, REACH, EPS } from './config';
 import { world, raycast, inWater, waterFlow, type Hit } from './world';
+import { SLIPPERY } from './blocks';
 
 /* ============================ PLAYER ============================ */
 /** Feet position (x, y, z). Mutated in place — never reassign. */
@@ -28,6 +29,8 @@ const CLIMB = 9.5;
 const WADE_FALL = -4;
 /** How fast flowing water carries you along */
 const CURRENT = 1.2;
+/** How quickly the player's speed follows the controls (1/s): on the ground, on slippery ground (ice), in the air, swimming */
+const GRIP = 14, ICE_GRIP = 1.6, AIR_GRIP = 5, SWIM_GRIP = 4;
 /** Told when the player hits the water fast: where (on the surface) and how fast (blocks a second) */
 export const playerEvents = { splash: (_x: number, _y: number, _z: number, _speed: number) => {} };
 
@@ -111,7 +114,9 @@ export function update(dt: number, ctl: Controls): void {
     const fl = waterFlow(Math.floor(P[0]), Math.floor(P[1] + (swim ? WAIST : FEET)), Math.floor(P[2]));
     tx += fl[0] * CURRENT; tz += fl[1] * CURRENT;
   }
-  const k = 1 - Math.exp(-(swim ? 4 : player.onGround ? 14 : 5) * dt);
+  // on ice the feet barely grip: slow to get going, slow to stop
+  const ground = player.onGround ? (SLIPPERY[world.getBlock(Math.floor(P[0]), Math.floor(P[1] - 0.05), Math.floor(P[2]))] ? ICE_GRIP : GRIP) : AIR_GRIP;
+  const k = 1 - Math.exp(-(swim ? SWIM_GRIP : ground) * dt);
   V[0] += (tx - V[0]) * k;
   V[2] += (tz - V[2]) * k;
 

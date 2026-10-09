@@ -1,4 +1,4 @@
-import { B, HOTBAR } from './blocks';
+import { B, HOTBAR, PICKER } from './blocks';
 
 /* ============================ HUD ============================ */
 export type Mode = 'break' | 'place';
@@ -27,10 +27,13 @@ export const els = {
   clock: $('clock'),
   tpOpt: $('tpOpt'),
   tpList: $('tpList'),
+  ptabs: $('ptabs'),
+  pgrid: $('pgrid'),
+  psearch: $('psearch') as HTMLInputElement,
 };
 
-/** HUD state: current tool mode and selected hotbar slot. */
-export const hud = { mode: 'break' as Mode, sel: 0 };
+/** HUD state: current tool mode, selected hotbar slot, and the block in each slot (the world's, see saves.ts). */
+export const hud = { mode: 'break' as Mode, sel: 0, items: HOTBAR.slice() };
 
 let toastTimer = 0;
 export function toast(msg: string, ms = 1300): void {
@@ -50,22 +53,33 @@ export function setMode(m: Mode): void {
 
 let slots: HTMLElement[] = [];
 let onSelect: (i: number) => void = () => {};
+let tiles: HTMLCanvasElement[] = [];
+const iconUrls = new Map<number, string>();
+/** A slot shows the block's icon tile: the same pixel art as the block */
+function showItem(i: number): void {
+  const id = hud.items[i];
+  let url = iconUrls.get(id);
+  if (!url) iconUrls.set(id, (url = tiles[B[id].icon].toDataURL()));
+  slots[i].title = B[id].name;
+  slots[i].style.backgroundImage = `url(${url})`;
+}
 
 /**
- * Build the hotbar from the block tile canvases and select slot 0.
- * `select` is told about every selection (used to retexture the placement ghost).
+ * Build the hotbar (hud.items) from the block tile canvases and select slot 0.
+ * `select` is told about every selection, and about a new block in the selected slot (used to
+ * retexture the placement ghost).
  */
 export function initHotbar(tileCanvas: HTMLCanvasElement[], select: (i: number) => void): void {
   onSelect = select;
-  slots = HOTBAR.map((id, i) => {
+  tiles = tileCanvas;
+  slots = hud.items.map((_, i) => {
     const el = document.createElement('div');
     el.className = 'slot';
     el.dataset.i = String(i);
-    el.title = B[id].name;
-    el.style.backgroundImage = `url(${tileCanvas[B[id].icon].toDataURL()})`; // same pixel art as the block
     els.hotbar.appendChild(el);
     return el;
   });
+  slots.forEach((_, i) => showItem(i));
   // when not every slot fits, fade the end(s) with more slots past them, as a hint that it scrolls
   const bar = els.hotbar, fade = () => {
     const more = bar.scrollWidth - bar.clientWidth;
@@ -97,7 +111,113 @@ export function selectSlot(i: number): void {
     if (el.offsetLeft - pad < bar.scrollLeft) bar.scrollLeft = el.offsetLeft - pad;
     else if (el.offsetLeft + el.offsetWidth + pad > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = el.offsetLeft + el.offsetWidth + pad - bar.clientWidth;
   }
+  markCurrent();
   onSelect(i);
+}
+/** Put block `id` in hotbar slot i */
+export function setSlotItem(i: number, id: number): void {
+  hud.items[i] = id;
+  showItem(i);
+  markCurrent();
+  if (i === hud.sel) onSelect(i);
+}
+
+/* ============================ BLOCK PICKER ============================ */
+// Every block on a grid, a tab per category (blocks.ts PICKER), and a search box. A tap on a block
+// puts it in the selected hotbar slot; the hotbar stays in view above the grid, so a tap on a slot
+// chooses the one to fill.
+let pickTab = 0, onPick: (id: number) => void = () => {};
+let tabs: HTMLElement[] = [], items: HTMLElement[] = [];
+export const pickerOpen = () => document.body.classList.contains('pick');
+
+/**
+ * A block's picture for the picker: a little cube seen from above at an angle, its top and two sides
+ * shaded like the faces in the world (non-cubes: their icon tile, flat), on a `size`-px canvas.
+ */
+function blockIcon(id: number, size = 96): HTMLCanvasElement {
+  const b = B[id], cv = document.createElement('canvas'), g = cv.getContext('2d')!;
+  cv.width = cv.height = size;
+  g.imageSmoothingEnabled = false;
+  if (b.model === 'torch') { g.drawImage(tiles[b.icon], 0, 0, size, size); return cv; }
+  const cube = b.model === 'cube' && !b.fastTex, T = 32, h = size / 2, q = size / 4;
+  // one face: its tile, darkened by `shade`, drawn through the affine map that puts the tile's
+  // corners on the face's (tile x along (ax, ay), tile y along (bx, by), from (ox, oy))
+  const face = (tile: number, shade: number, ax: number, ay: number, bx: number, by: number, ox: number, oy: number) => {
+    const t = document.createElement('canvas'), tg = t.getContext('2d')!;
+    t.width = t.height = T;
+    tg.drawImage(tiles[tile], 0, 0);
+    tg.globalCompositeOperation = 'source-atop';
+    tg.fillStyle = `rgba(0,0,0,${1 - shade})`;
+    tg.fillRect(0, 0, T, T);
+    g.setTransform(ax / T, ay / T, bx / T, by / T, ox, oy);
+    g.drawImage(t, 0, 0);
+  };
+  const top = cube ? b.tex[1] : b.icon, side = cube ? b.tex[0] : b.icon;
+  face(top, 1, h, -q, h, q, 0, q);                  // the top: a diamond
+  face(side, 0.8, h, q, 0, h, 0, q);                // the left side
+  face(side, 0.62, h, -q, 0, h, h, h);              // the right side
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return cv;
+}
+
+/** Build the picker's tabs and grid; `pick` is told about every block put in a slot. */
+export function initPicker(pick: (id: number) => void): void {
+  onPick = pick;
+  PICKER.forEach((cat, c) => {
+    const t = document.createElement('div');
+    t.className = 'ptab';
+    t.dataset.act = 'cat:' + c;
+    t.setAttribute('role', 'button');
+    t.textContent = cat.name.toUpperCase();
+    els.ptabs.appendChild(t);
+    tabs.push(t);
+    for (const id of cat.blocks) {
+      const it = document.createElement('div'), label = document.createElement('span');
+      it.className = 'pitem';
+      it.dataset.id = String(id);
+      it.dataset.cat = String(c);
+      it.setAttribute('role', 'button');
+      label.textContent = B[id].name;
+      it.append(blockIcon(id), label);
+      els.pgrid.appendChild(it);
+      items.push(it);
+    }
+  });
+  els.psearch.addEventListener('input', filterPicker);
+  setPickerTab(0);
+}
+/** Open or close the picker */
+export function showPicker(open: boolean): void {
+  document.body.classList.toggle('pick', open);
+  if (!open) els.psearch.blur();
+  markCurrent();
+}
+/** Show tab c's blocks (and clear the search) */
+export function setPickerTab(c: number): void {
+  pickTab = c;
+  els.psearch.value = '';
+  filterPicker();
+}
+/** Show the blocks of the open tab, or with a search, every block whose name has it */
+function filterPicker(): void {
+  const q = els.psearch.value.trim().toLowerCase();
+  tabs.forEach((t, i) => t.classList.toggle('on', !q && i === pickTab));
+  items.forEach((it) => { it.hidden = q ? !B[+it.dataset.id!].name.toLowerCase().includes(q) : +it.dataset.cat! !== pickTab; });
+  els.pgrid.scrollTop = 0;
+}
+/** Outline the block that is in the selected slot */
+function markCurrent(): void {
+  items.forEach((it) => it.classList.toggle('cur', +it.dataset.id! === hud.items[hud.sel]));
+}
+/** The picker's block under screen point (x, y), if any */
+export function pickerItemAt(x: number, y: number): number | null {
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('.pitem');
+  return el && !el.hidden ? +el.dataset.id! : null;
+}
+/** Put block `id` in the selected slot (a tap on it in the picker) */
+export function pickBlock(id: number): void {
+  setSlotItem(hud.sel, id);
+  onPick(id);
 }
 
 /* ============================ MENU ============================ */
@@ -164,7 +284,11 @@ export function setClock(days: number): void {
   if (els.clock.textContent !== text) els.clock.textContent = text;
 }
 export const menuOpen = () => document.body.classList.contains('menu');
-export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); showTeleport(false); }
+export function showMenu(open: boolean): void {
+  document.body.classList.toggle('menu', open);
+  showTeleport(false);
+  if (open) showPicker(false);
+}
 /**
  * The menu's Teleport option: a button per biome (data-act "tp:<index>"), or no option at all
  * (null: a world without biomes).

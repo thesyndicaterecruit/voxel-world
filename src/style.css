@@ -27,10 +27,13 @@ body.playing #ui{display:block}
 #mode.place{background:rgba(40,150,72,.7)}
 #fs{top:calc(10px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
 #menuBtn{top:calc(10px + env(safe-area-inset-top));right:calc(62px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
-/* hotbar: centred between the corner buttons; scrolls sideways (swipe, see input.ts) when it doesn't fit */
-#hotbar{position:fixed;left:50%;top:calc(8px + env(safe-area-inset-top));transform:translateX(-50%);display:flex;gap:5px;padding:5px;
-  border-radius:13px;background:rgba(0,0,0,.3);pointer-events:auto;touch-action:none;overflow:hidden;
-  max-width:calc(100vw - 236px - env(safe-area-inset-left) - env(safe-area-inset-right))}
+/* hotbar and the block picker's button beside it: centred between the corner buttons; the hotbar
+   scrolls sideways (swipe, see input.ts) when it doesn't fit */
+#hotrow{position:fixed;left:50%;top:calc(8px + env(safe-area-inset-top));transform:translateX(-50%);display:flex;align-items:center;gap:6px;
+  z-index:4;max-width:calc(100vw - 236px - env(safe-area-inset-left) - env(safe-area-inset-right))}
+#hotbar{display:flex;gap:5px;padding:5px;min-width:0;border-radius:13px;background:rgba(0,0,0,.3);pointer-events:auto;touch-action:none;overflow:hidden}
+#pickBtn{position:relative;flex:none;width:44px;height:44px;border-radius:12px}
+body.pick #pickBtn{background:#4fae3f}
 #hotbar.fade-l,#hotbar.fade-r{--l:#000;--r:#000;
   -webkit-mask-image:linear-gradient(90deg,var(--l) 0,#000 16px,#000 calc(100% - 16px),var(--r) 100%);
   mask-image:linear-gradient(90deg,var(--l) 0,#000 16px,#000 calc(100% - 16px),var(--r) 100%)}
@@ -41,7 +44,7 @@ body.playing #ui{display:block}
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2)}
 .slot.sel{border-color:#fff;transform:scale(1.14);
   box-shadow:inset 0 -5px 0 rgba(0,0,0,.22),inset 0 3px 0 rgba(255,255,255,.2),0 0 0 2px rgba(0,0,0,.4)}
-@media (max-width:600px){#hotbar{top:calc(60px + env(safe-area-inset-top));
+@media (max-width:600px){#hotrow{top:calc(60px + env(safe-area-inset-top));
   max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}}
 #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px}
 #cross:before,#cross:after{content:"";position:absolute;background:#fff;border-radius:1px;box-shadow:0 0 2px rgba(0,0,0,.7)}
@@ -57,6 +60,44 @@ body.playing #ui{display:block}
 #toast{position:fixed;left:50%;top:26%;transform:translateX(-50%);padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.5);
   font-size:14px;font-weight:600;white-space:nowrap;opacity:0;transition:opacity .25s}
 #toast.show{opacity:1}
+body.pick #toast{top:auto;bottom:calc(40px + env(safe-area-inset-bottom));z-index:5}
+
+/* ---------- block picker: under the hotbar, which stays on top to choose the slot ---------- */
+#picker{position:fixed;left:0;right:0;top:calc(60px + env(safe-area-inset-top));bottom:0;z-index:3;display:none;justify-content:center;
+  padding:0 calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+  pointer-events:auto;touch-action:none}
+body.pick #picker{display:flex}
+body.pick #cross,body.pick #joy{display:none}
+.pcard{display:flex;flex-direction:column;width:100%;max-width:900px;height:100%;padding:10px 12px 8px;border-radius:16px;
+  background:rgba(14,24,38,.93);border:1px solid rgba(255,255,255,.14);box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.ptop{display:flex;align-items:center;gap:8px}
+#ptabs{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px}
+.ptab{height:40px;padding:0 13px;display:flex;align-items:center;border-radius:10px;background:rgba(255,255,255,.12);
+  font-size:12.5px;font-weight:800;letter-spacing:.08em;cursor:pointer}
+.ptab.on{background:#4fae3f}
+#psearch{flex:none;width:130px;height:40px;padding:0 12px;border:0;border-radius:10px;outline:none;background:rgba(255,255,255,.14);
+  color:#fff;font:600 14px system-ui,Roboto,sans-serif;-webkit-user-select:text;user-select:text;touch-action:manipulation}
+#psearch::placeholder{color:#9fb6cc}
+.pclose{flex:none;width:40px;height:40px;font-size:26px}
+#pgrid{flex:1;min-height:0;overflow:hidden;display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));grid-auto-rows:88px;
+  gap:8px;align-content:start;margin-top:10px}
+.pitem{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;border-radius:12px;
+  background:rgba(255,255,255,.07);border:2px solid transparent;cursor:pointer}
+.pitem[hidden]{display:none}
+.pitem.cur{border-color:#fff;background:rgba(255,255,255,.16)}
+.pitem.down{background:rgba(255,255,255,.26)}
+.pitem canvas{position:static;width:50px;height:50px;image-rendering:pixelated;image-rendering:crisp-edges}
+.pitem span{max-width:100%;padding:0 4px;font-size:11px;font-weight:700;line-height:1.15;text-align:center;color:#dce8f4}
+.pcard .hint{margin-top:6px}
+@media (max-width:600px){
+  #picker{top:calc(112px + env(safe-area-inset-top))}
+  .ptop{flex-wrap:wrap}
+  #ptabs{flex-basis:100%;order:1}
+  .ptab{flex:1 1 28%;justify-content:center;padding:0 6px}
+  #psearch{flex:1;width:auto}
+  #pgrid{grid-template-columns:repeat(auto-fill,minmax(76px,1fr))}
+}
+@media (max-height:440px){.pcard .hint{display:none}#pgrid{grid-auto-rows:80px}}
 
 /* ---------- in-game menu ---------- */
 #menu{position:fixed;top:0;left:0;right:0;bottom:0;z-index:4;display:none;align-items:center;justify-content:center;
