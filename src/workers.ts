@@ -5,24 +5,28 @@
 import type { MeshData } from './mesher';
 
 export type WorkerRequest =
-  | { type: 'gen'; id: number; seed: number; cx: number; cz: number }
+  /** Generate chunk (cx, cz) with generator version `gen` (gen.ts) */
+  | { type: 'gen'; id: number; seed: number; gen: number; cx: number; cz: number }
   /**
-   * Light chunk (cx, cz) from `blocks`: its own and its 8 neighbours' block data (see lightChunk),
-   * bit k of `present` set where neighbour k exists. `blocks` comes back for reuse.
+   * Light chunk (cx, cz) from `blocks`: the lowest `height` layers of its own and its 8 neighbours'
+   * block data (see lightChunk), bit k of `present` set where neighbour k exists. `blocks` comes back
+   * for reuse.
    */
-  | { type: 'light'; id: number; cx: number; cz: number; blocks: Uint8Array; present: number }
+  | { type: 'light'; id: number; cx: number; cz: number; blocks: Uint8Array; present: number; height: number }
   /**
-   * `pad`, `light` and `state` are the chunk's blocks, light and per-block state plus a one-block
-   * border (see paddedCopy; state is null when none of those chunks has any); they come back with
-   * the result for reuse.
+   * Mesh `sections` of chunk (cx, cz). `pad`, `light` and `state` are the chunk's blocks, light and
+   * per-block state plus a one-block border (see paddedCopy; state is null when none of those chunks
+   * has any), covering those sections and a layer above and below; they come back with the result
+   * for reuse.
    */
-  | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array; light: Uint8Array; state: Uint8Array | null;
-      opaqueLeaves: boolean };
+  | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; sections: number[]; pad: Uint8Array; light: Uint8Array;
+      state: Uint8Array | null; opaqueLeaves: boolean; seaLevel: number };
 export type WorkerResponse =
   | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array }
   /** `ms`: how long the lighting took in the worker */
   | { type: 'light'; id: number; cx: number; cz: number; light: Uint8Array; blocks: Uint8Array; ms: number }
-  | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array; light: Uint8Array; state: Uint8Array | null };
+  /** `meshes`: one per section asked for, in the same order */
+  | { type: 'mesh'; id: number; cx: number; cz: number; meshes: MeshData[]; pad: Uint8Array; light: Uint8Array; state: Uint8Array | null };
 
 /** Jobs in flight per worker: enough to keep a worker busy while its last result travels back. */
 const MAX_INFLIGHT = 2;

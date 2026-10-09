@@ -4,19 +4,21 @@ import type { World } from './world';
 import { FACES, PI, FP, type PassMesh } from './mesher';
 
 /**
- * Copy chunk (cx, cz) plus a one-block border from its 8 neighbours into `out` (PI layout): their
- * block ids, their light, or their per-block state. Missing neighbours and columns outside the world
- * are air, lit by the open sky.
+ * Copy layers y0…y1 of chunk (cx, cz) plus a one-block border from its 8 neighbours into `out` (PI
+ * layout, full height; other layers are left as they were): their block ids, their light, or their
+ * per-block state. Missing neighbours and columns outside the world are air, lit by the open sky.
  */
-export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array, what: 'blocks' | 'light' | 'state' = 'blocks'): void {
-  out.fill(what === 'light' ? 0xf0 : 0);
+export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array, what: 'blocks' | 'light' | 'state' = 'blocks',
+  y0 = 0, y1 = H - 1): void {
+  y0 = Math.max(0, y0); y1 = Math.min(H - 1, y1);
+  out.fill(what === 'light' ? 0xf0 : 0, PI(0, y0, 0), PI(0, y1 + 1, 0));
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
     const c = w.chunk(cx + dx, cz + dz), d = c && (what === 'light' ? c.light : what === 'state' ? c.state : c.data);
     if (!d) continue;
     // local range copied from this neighbour, and where it lands in the padded volume
     const lx0 = dx < 0 ? CS - 1 : 0, lx1 = dx > 0 ? 1 : CS, lz0 = dz < 0 ? CS - 1 : 0, lz1 = dz > 0 ? 1 : CS;
     const ox = 1 + dx * CS, oz = 1 + dz * CS, len = lx1 - lx0;
-    for (let y = 0; y < H; y++) for (let lz = lz0; lz < lz1; lz++) {
+    for (let y = y0; y <= y1; y++) for (let lz = lz0; lz < lz1; lz++) {
       const s = CI(lx0, y, lz), t = PI(lx0 + ox, y, lz + oz);
       if (len === 1) out[t] = d[s];
       else out.set(d.subarray(s, s + len), t);

@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { CHUNK_VOL, CI, SEA_LEVEL } from '../src/config';
+import { CHUNK_VOL, CI, CS, OLD_H } from '../src/config';
 import { AIR, STONE, PLANKS, TORCH, WATER, GLASS } from '../src/blocks';
-import { generateChunk } from '../src/gen';
+import { generateChunk, SEA_LEVEL_1 } from '../src/gen1';
+import { GENERATOR_VERSION } from '../src/gen';
 import { rleEncode, rleDecode } from '../src/rle';
-import { SAVE_VERSION, NEW_WORLD_TIME, migrateWorld, migrateChunk, encodeChunk, decodeChunk, type StoredWorld, type ChunkRecord } from '../src/saves';
+import { SAVE_VERSION, NEW_WORLD_TIME, migrateWorld, migrateChunk, encodeChunk, decodeChunk, createWorld, type StoredWorld,
+  type ChunkRecord } from '../src/saves';
+
+/** Blocks in a chunk saved before version 6, when the world was OLD_H high */
+const OLD_VOL = CS * CS * OLD_H;
+/** An old (OLD_H high) chunk's data in today's taller chunk: air above */
+const raised = (old: Uint8Array) => { const d = new Uint8Array(CHUNK_VOL); d.set(old); return d; };
+/** What migrating appends to an old chunk's RLE streams: one run of air up to the top of the world */
+const TOP_AIR = rleEncode(new Uint8Array(CHUNK_VOL - OLD_VOL));
+const plusTop = (rle: Uint8Array) => Uint8Array.from([...rle, ...TOP_AIR]);
 
 /** Deterministic pseudo-random bytes */
 function rand(seed: number) {
@@ -90,22 +100,24 @@ describe('migration from save version 1', () => {
     const w = migrateWorld(structuredClone(v1World));
     expect(w.saveVersion).toBe(SAVE_VERSION);
     expect(w.time).toBe(NEW_WORLD_TIME);
-    expect({ ...w, saveVersion: 1, time: undefined }).toEqual({ ...v1World, time: undefined });
+    expect(w.generatorVersion).toBe(1);
+    expect({ ...w, saveVersion: 1, time: undefined, generatorVersion: undefined }).toEqual({ ...v1World, time: undefined });
   });
 
   it('decodes a version 1 chunk: the same blocks, no block state', () => {
     const { data, state } = decodeChunk(v1Chunk);
     expect(state).toBeNull();
+    expect(data.length).toBe(CHUNK_VOL);
     expect(data.subarray(0, CI(0, 4, 0)).every((v) => v === STONE)).toBe(true);
     expect(data[CI(0, 4, 0)]).toBe(PLANKS);
     expect(data.subarray(CI(0, 4, 0) + 1).every((v) => v === 0)).toBe(true);
-    // the block stream itself is unchanged, so re-saving it only adds the version
-    expect(encodeChunk(data, state)).toEqual({ v: SAVE_VERSION, rle: v1Chunk.rle });
-    expect(migrateChunk(v1Chunk)).toEqual({ v: SAVE_VERSION, rle: v1Chunk.rle });
+    // the block stream itself is kept, with air on top
+    expect(migrateChunk(v1Chunk)).toEqual({ v: SAVE_VERSION, rle: plusTop(v1Chunk.rle) });
+    expect(rleDecode(encodeChunk(data, state).rle)).toEqual(data);
   });
 
   it('leaves up-to-date records alone', () => {
-    const w = { ...v1World, saveVersion: SAVE_VERSION, time: 3.6 }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
+    const w = { ...v1World, saveVersion: SAVE_VERSION, time: 3.6, generatorVersion: 1 }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
     expect(migrateWorld(w)).toBe(w);
     expect(migrateChunk(c)).toBe(c);
   });
@@ -122,21 +134,21 @@ describe('migration from save version 2', () => {
     id: 'mg2a91k3p', name: 'Island 2', seed: 4242, createdAt: 1759000000000, lastPlayed: 1759900000000,
     saveVersion: 2, player: { x: 271.5, y: 33, z: 248.5, yaw: -0.6, pitch: 0.1 }, slot: 9, mode: 'place',
   };
-  const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
+  const data = new Uint8Array(OLD_VOL), state = new Uint8Array(OLD_VOL);
   data[CI(3, 30, 4)] = PLANKS; data[CI(4, 30, 4)] = TORCH; state[CI(4, 30, 4)] = 1;
   const v2Chunk: ChunkRecord = { v: 2, rle: rleEncode(data), srle: rleEncode(state) };
 
   it('gives the world a clock, starting in the morning, and keeps the rest', () => {
     const w = migrateWorld(structuredClone(v2World));
-    expect([w.saveVersion, w.time]).toEqual([SAVE_VERSION, NEW_WORLD_TIME]);
-    expect({ ...w, saveVersion: 2, time: undefined }).toEqual({ ...v2World, time: undefined });
+    expect([w.saveVersion, w.time, w.generatorVersion]).toEqual([SAVE_VERSION, NEW_WORLD_TIME, 1]);
+    expect({ ...w, saveVersion: 2, time: undefined, generatorVersion: undefined }).toEqual({ ...v2World, time: undefined });
   });
 
   it('reads its chunks with their block state', () => {
     const back = decodeChunk(v2Chunk);
-    expect(back.data).toEqual(data);
-    expect(back.state).toEqual(state);
-    expect(migrateChunk(v2Chunk)).toEqual({ v: SAVE_VERSION, rle: v2Chunk.rle, srle: v2Chunk.srle });
+    expect(back.data).toEqual(raised(data));
+    expect(back.state).toEqual(raised(state));
+    expect(migrateChunk(v2Chunk)).toEqual({ v: SAVE_VERSION, rle: plusTop(v2Chunk.rle), srle: plusTop(v2Chunk.srle!) });
   });
 });
 
@@ -150,7 +162,7 @@ describe('migration from save version 3', () => {
    * world), with a glass room shut off on the seabed
    */
   const at = { seed: 4242, cx: 0, cz: 0 }, sea = generateChunk(4242, 0, 0);
-  const old = sea.map((b) => (b === WATER ? AIR : b));
+  const old = sea.slice(0, OLD_VOL).map((b) => (b === WATER ? AIR : b));
   for (let y = 4; y <= 8; y++) for (let z = 4; z <= 8; z++) for (let x = 4; x <= 8; x++) {
     old[CI(x, y, z)] = x === 4 || x === 8 || y === 4 || y === 8 || z === 4 || z === 8 ? GLASS : AIR;
   }
@@ -158,8 +170,8 @@ describe('migration from save version 3', () => {
 
   it('keeps the world record as it was, clock and all', () => {
     const w = migrateWorld(structuredClone(v3World));
-    expect(w.saveVersion).toBe(SAVE_VERSION);
-    expect({ ...w, saveVersion: 3 }).toEqual(v3World);
+    expect([w.saveVersion, w.generatorVersion]).toEqual([SAVE_VERSION, 1]);
+    expect({ ...w, saveVersion: 3, generatorVersion: undefined }).toEqual({ ...v3World, generatorVersion: undefined });
   });
 
   it('fills the sea back in when its chunks are read, but not the shut-off room', () => {
@@ -169,25 +181,64 @@ describe('migration from save version 3', () => {
       if (!room) expect(data[i]).toBe(sea[i]);
     }
     expect(data[CI(6, 6, 6)]).toBe(AIR);
-    expect(data[CI(6, SEA_LEVEL - 1, 6)]).toBe(WATER);
-    expect(data[CI(6, SEA_LEVEL, 6)]).toBe(AIR);
-    // a record migrated with its place has the sea in it; without it, nothing is added
+    expect(data[CI(6, SEA_LEVEL_1 - 1, 6)]).toBe(WATER);
+    expect(data[CI(6, SEA_LEVEL_1, 6)]).toBe(AIR);
+    // a record migrated with its place has the sea in it; without it, nothing is added (but the air on top)
     expect(rleDecode(migrateChunk(v3Chunk, at).rle)).toEqual(data);
-    expect(migrateChunk(v3Chunk).rle).toEqual(v3Chunk.rle);
+    expect(migrateChunk(v3Chunk).rle).toEqual(plusTop(v3Chunk.rle));
   });
 });
 
 describe('migration from save version 4', () => {
   // version 4: chunks with no pending water updates; world records like version 3's
-  const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
+  const data = new Uint8Array(OLD_VOL), state = new Uint8Array(OLD_VOL);
   data[CI(5, 19, 5)] = WATER; state[CI(5, 19, 5)] = 3;
   const v4Chunk: ChunkRecord = { v: 4, rle: rleEncode(data), srle: rleEncode(state) };
 
   it('reads its chunks as they were, with nothing left to flow', () => {
     const back = decodeChunk(v4Chunk, { seed: 4242, cx: 0, cz: 0 });
-    expect(back.data).toEqual(data);
-    expect(back.state).toEqual(state);
+    expect(back.data).toEqual(raised(data));
+    expect(back.state).toEqual(raised(state));
     expect(back.flow).toBeNull();
-    expect(migrateChunk(v4Chunk)).toEqual({ v: SAVE_VERSION, rle: v4Chunk.rle, srle: v4Chunk.srle });
+    expect(migrateChunk(v4Chunk)).toEqual({ v: SAVE_VERSION, rle: plusTop(v4Chunk.rle), srle: plusTop(v4Chunk.srle!) });
+  });
+});
+
+describe('migration from save version 5', () => {
+  // version 5: a world 64 blocks high, every world made by the first generator (no generatorVersion yet)
+  const v5World: StoredWorld = {
+    id: 'mi1c8d2qa', name: 'Island 4', seed: 4242, createdAt: 1760100000000, lastPlayed: 1760190000000,
+    saveVersion: 5, player: { x: 250.5, y: 21, z: 260.5, yaw: 1.1, pitch: -0.4 }, slot: 10, mode: 'place', time: 5.25,
+  };
+  // a chunk with a stone pillar up to the old top of the world, water flowing off it, a torch on it
+  const data = new Uint8Array(OLD_VOL), state = new Uint8Array(OLD_VOL);
+  for (let y = 0; y < OLD_H; y++) data[CI(8, y, 8)] = STONE;
+  data[CI(9, 63, 8)] = WATER; state[CI(9, 63, 8)] = 1;
+  data[CI(8, 40, 9)] = TORCH; state[CI(8, 40, 9)] = 4;
+  const flow = Uint16Array.from([CI(9, 63, 8), CI(10, 63, 8)]);
+  const v5Chunk: ChunkRecord = { v: 5, rle: rleEncode(data), srle: rleEncode(state), flow };
+
+  it('gives the world the first generator, so its unexplored ground is what it always was', () => {
+    const w = migrateWorld(structuredClone(v5World));
+    expect([w.saveVersion, w.generatorVersion]).toEqual([SAVE_VERSION, 1]);
+    expect({ ...w, saveVersion: 5, generatorVersion: undefined }).toEqual({ ...v5World, generatorVersion: undefined });
+  });
+
+  it('reads its chunks in the taller world: the same blocks, state and pending water, air above', () => {
+    const back = decodeChunk(structuredClone(v5Chunk));
+    expect(back.data.length).toBe(CHUNK_VOL);
+    expect(back.data).toEqual(raised(data));
+    expect(back.state).toEqual(raised(state));
+    expect(back.data[CI(8, OLD_H - 1, 8)]).toBe(STONE);
+    expect(back.data.subarray(OLD_VOL).every((b) => b === AIR)).toBe(true);
+    expect(Array.from(back.flow!)).toEqual(Array.from(flow));      // the same blocks: CI indices don't change
+    const m = migrateChunk(v5Chunk);
+    expect(m).toEqual({ v: SAVE_VERSION, rle: plusTop(v5Chunk.rle), srle: plusTop(v5Chunk.srle!), flow });
+    // and once saved again, it reads back the same
+    expect(decodeChunk(encodeChunk(back.data, back.state, back.flow))).toEqual(back);
+  });
+
+  it('gives new worlds the newest generator', async () => {
+    expect((await createWorld('Island 5', 99)).generatorVersion).toBe(GENERATOR_VERSION);
   });
 });

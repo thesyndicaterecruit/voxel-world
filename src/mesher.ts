@@ -1,13 +1,17 @@
-import { CS, H, W as WORLD_W, D as WORLD_D } from './config';
+import { CS, H, SH, NSEC, W as WORLD_W, D as WORLD_D } from './config';
 import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, FILTER, SOLID, FALLING, faceHidden, liquidHeight } from './blocks';
 import { TORCH_MODELS } from './torch';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO, smooth light) ======================= */
 // Pure: reads a padded copy of the chunk (blocks and light) and returns typed arrays, so it can run
-// off the main thread.
+// off the main thread. A chunk is meshed a section (SH layers) at a time, so an edit re-meshes only
+// the sections it touches; the sections' meshes are put together per pass to be drawn (mergeMeshes).
 
-/** Padded chunk width: the chunk plus one column of each neighbour, for face culling and AO at borders. */
+/**
+ * Padded chunk width: the chunk plus one column of each neighbour, for face culling and AO at borders.
+ * Padded copies are full height; meshing a section reads its layers and one more above and below.
+ */
 export const PW = CS + 2;
 export const PAD_VOL = PW * PW * H;
 /** Index into padded data; px = lx + 1, pz = lz + 1. */
@@ -73,8 +77,63 @@ export interface PassMesh {
   layer: Uint8Array;
   index: Uint16Array | Uint32Array;
 }
-/** A chunk's meshes by render pass — 0 opaque, 1 cutout, 2 translucent — null where a pass is empty. */
+/** A chunk's (or a section's) meshes by render pass — 0 opaque, 1 cutout, 2 translucent — null where a pass is empty. */
 export type MeshData = (PassMesh | null)[];
+
+/**
+ * One pass of a chunk's mesh, made of its sections' meshes one after another: section k's vertices
+ * are v[k] … v[k + 1] − 1 and its indices i[k] … i[k + 1] − 1.
+ */
+export interface SectionedMesh { mesh: PassMesh | null; v: Uint32Array; i: Uint32Array }
+export const noSections = (): SectionedMesh => ({ mesh: null, v: new Uint32Array(NSEC + 1), i: new Uint32Array(NSEC + 1) });
+
+/**
+ * `old` with some sections' meshes replaced: `parts[k]` is section k's new mesh (null: it has none),
+ * undefined to keep what it had. The other sections' vertices are copied over as they were.
+ */
+export function spliceSections(old: SectionedMesh, parts: (PassMesh | null | undefined)[]): SectionedMesh {
+  const out = noSections(), m = old.mesh;
+  for (let k = 0; k < NSEC; k++) {
+    const p = parts[k];
+    out.v[k + 1] = out.v[k] + (p !== undefined ? (p ? p.layer.length : 0) : old.v[k + 1] - old.v[k]);
+    out.i[k + 1] = out.i[k] + (p !== undefined ? (p ? p.index.length : 0) : old.i[k + 1] - old.i[k]);
+  }
+  const nv = out.v[NSEC], ni = out.i[NSEC];
+  if (!ni) return out;
+  const pos = new Uint16Array(nv * 3), col = new Uint8Array(nv * 3), uv = new Uint8Array(nv * 2), layer = new Uint8Array(nv);
+  const index = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  for (let k = 0; k < NSEC; k++) {
+    const p = parts[k], v0 = out.v[k], i0 = out.i[k];
+    let src: PassMesh | null, sv: number, si: number, n: number, ni_: number;
+    if (p !== undefined) { src = p; sv = 0; si = 0; n = p ? p.layer.length : 0; ni_ = p ? p.index.length : 0; }
+    else { src = m; sv = old.v[k]; si = old.i[k]; n = old.v[k + 1] - sv; ni_ = old.i[k + 1] - si; }
+    if (!src || !ni_) continue;
+    pos.set(src.pos.subarray(sv * 3, (sv + n) * 3), v0 * 3); col.set(src.col.subarray(sv * 3, (sv + n) * 3), v0 * 3);
+    uv.set(src.uv.subarray(sv * 2, (sv + n) * 2), v0 * 2); layer.set(src.layer.subarray(sv, sv + n), v0);
+    const shift = v0 - sv, idx = src.index;
+    for (let j = 0; j < ni_; j++) index[i0 + j] = idx[si + j] + shift;
+  }
+  out.mesh = { pos, col, uv, layer, index };
+  return out;
+}
+
+/** Several meshes of one pass (a chunk's sections) as one, positions unchanged; null if there are none. */
+export function mergeMeshes(parts: (PassMesh | null)[]): PassMesh | null {
+  let nv = 0, ni = 0, n = 0, last: PassMesh | null = null;
+  for (const m of parts) if (m) { nv += m.layer.length; ni += m.index.length; n++; last = m; }
+  if (n <= 1) return last;
+  const pos = new Uint16Array(nv * 3), col = new Uint8Array(nv * 3), uv = new Uint8Array(nv * 2), layer = new Uint8Array(nv);
+  const index = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let v = 0, i = 0;
+  for (const m of parts) {
+    if (!m) continue;
+    pos.set(m.pos, v * 3); col.set(m.col, v * 3); uv.set(m.uv, v * 2); layer.set(m.layer, v);
+    if (v) for (let k = 0; k < m.index.length; k++) index[i + k] = m.index[k] + v;
+    else index.set(m.index, i);
+    v += m.layer.length; i += m.index.length;
+  }
+  return { pos, col, uv, layer, index };
+}
 
 /** Growable vertex/index buffers for one pass. */
 function builder() {
@@ -102,44 +161,61 @@ function builder() {
       if (flip) { idx[ni++] = b; idx[ni++] = c; idx[ni++] = d; idx[ni++] = b; idx[ni++] = d; idx[ni++] = a; }
       else { idx[ni++] = a; idx[ni++] = b; idx[ni++] = c; idx[ni++] = a; idx[ni++] = c; idx[ni++] = d; }
     },
+    /** Start a new mesh */
+    reset(): void { n = ni = 0; },
+    /** The mesh built (copied out), null if it is empty; the buffers are then ready for the next one */
     finish(): PassMesh | null {
-      if (!ni) return null;
+      if (!ni) { n = 0; return null; }
       const index = n > 65535 ? idx.slice(0, ni) : Uint16Array.from(idx.subarray(0, ni));
-      return { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), layer: lay.slice(0, n), index };
+      const out = { pos: pos.slice(0, n * 3), col: col.slice(0, n * 3), uv: uv.slice(0, n * 2), layer: lay.slice(0, n), index };
+      n = ni = 0;
+      return out;
     },
   };
 }
+/** One builder per pass, reused from section to section (finish() copies the mesh out) */
+const builders = [builder(), builder(), builder()];
 
 /** Texels to fixed-point position units */
 const TP = FP / TEX;
 /** Most blocks a merged water surface spans each way (texture coordinates are bytes: 7 × TEX ≤ 255) */
 const MERGE = 7;
 
-/**
- * Mesh one chunk. `pad` is the chunk plus a one-block border from its neighbours (PI layout; columns
- * outside the world or in missing chunks are air), `light` the same cells' light (packed, see
- * light.ts), `state` their per-block state (null when none of them has any). (x0, z0) is the chunk's
- * world origin: the per-block brightness and tile rotation hash world coordinates with the world
- * seed, so the result does not depend on which chunk is meshed first. Each block's faces go into its
- * render pass, one mesh per pass: the tile is a vertex attribute, so every pass of a chunk draws in a
- * single call. `opaqueLeaves`: leaves are meshed as opaque cubes, in the opaque pass (see faceHidden).
- */
+/** Mesh a whole chunk: all its sections, merged per pass (see meshSection; handy in tests). */
 export function meshChunk(pad: Uint8Array, light: Uint8Array, state: Uint8Array | null, x0: number, z0: number, seed: number,
-  opaqueLeaves = true): MeshData {
-  const passes = [builder(), builder(), builder()];
+  opaqueLeaves = true, seaLevel = 0): MeshData {
+  const secs = Array.from({ length: NSEC }, (_, sy) => meshSection(pad, light, state, x0, z0, sy, seed, opaqueLeaves, seaLevel));
+  return [0, 1, 2].map((p) => mergeMeshes(secs.map((m) => m[p])));
+}
+
+/**
+ * Mesh section `sy` (layers sy·SH … sy·SH + SH − 1) of one chunk. `pad` is the chunk plus a one-block
+ * border from its neighbours (PI layout; columns outside the world or in missing chunks are air) —
+ * at least the section's layers and the one above and below — `light` the same cells' light (packed,
+ * see light.ts), `state` their per-block state (null when none of them has any). (x0, z0) is the
+ * chunk's world origin: the per-block brightness and tile rotation hash world coordinates with the
+ * world seed, so the result does not depend on which chunk is meshed first. Each block's faces go
+ * into its render pass, one mesh per pass: the tile is a vertex attribute, so every pass of a chunk
+ * draws in a single call. `opaqueLeaves`: leaves are meshed as opaque cubes, in the opaque pass (see
+ * faceHidden). Beyond the world's edge the sea goes on below `seaLevel`.
+ */
+export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Array | null, x0: number, z0: number, sy: number,
+  seed: number, opaqueLeaves = true, seaLevel = 0): MeshData {
+  const passes = builders;
+  for (const b of passes) b.reset();
   /** Is padded column (qx, qz) beyond the edge of the world? */
   const outside = (qx: number, qz: number) => x0 + qx - 1 < 0 || z0 + qz - 1 < 0 || x0 + qx - 1 >= WORLD_W || z0 + qz - 1 >= WORLD_D;
   /**
    * Liquid `id`'s surface height (0–1 block above layer y) at the top corner shared by padded columns
    * cx−1…cx × cz−1…cz: full where any of them is falling or has the liquid on top, else the average
    * of their liquid heights — sources count 10 times, so open water stays level — pulled down by
-   * open cells; solid cells have no say. Beyond the world's edge is more sea. Liquid next door shares
-   * the corner, so the surfaces join up.
+   * open cells; solid cells have no say. Beyond the world's edge is more sea, below sea level.
+   * Liquid next door shares the corner, so the surfaces join up.
    */
   const surface = (cx: number, y: number, cz: number, id: number) => {
     let sum = 0, n = 0;
     for (let dz = -1; dz <= 0; dz++) for (let dx = -1; dx <= 0; dx++) {
-      const qx = cx + dx, qz = cz + dz, i = PI(qx, y, qz), out = outside(qx, qz), b = out ? id : pad[i];
+      const qx = cx + dx, qz = cz + dz, i = PI(qx, y, qz), out = outside(qx, qz), b = out ? (y < seaLevel ? id : AIR) : pad[i];
       if (b === id) {
         const st = state && !out ? state[i] : 0;
         if (st & FALLING || (!out && y + 1 < H && pad[i + PW * PW] === id)) return 1;
@@ -204,15 +280,17 @@ export function meshChunk(pad: Uint8Array, light: Uint8Array, state: Uint8Array 
       out.quad(vi[0], vi[1], vi[2], vi[3], false);
     }
   };
-  // skip the empty layers above the highest block
-  let top = H - 1;
-  for (; top >= 0; top--) {
+  // skip the section's empty layers above its highest block
+  const y0 = sy * SH;
+  let top = y0 + SH - 1;
+  for (; top >= y0; top--) {
     let any = false;
     for (let pz = 1; pz <= CS && !any; pz++) for (let px = 1; px <= CS; px++) if (pad[PI(px, top, pz)] !== AIR) { any = true; break; }
     if (any) break;
   }
+  if (top < y0) return [null, null, null];
 
-  for (let y = 0; y <= top; y++) { if (y) flushFlat(y - 1); for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
+  for (let y = y0; y <= top; y++) { if (y > y0) flushFlat(y - 1); for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
     const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
     if (id === AIR) continue;
     const x = x0 + lx, z = z0 + lz, b = B[id], model = MODEL[id];
@@ -242,7 +320,7 @@ export function meshChunk(pad: Uint8Array, light: Uint8Array, state: Uint8Array 
       const rot = still ? 0 : Math.abs(gx) >= Math.abs(gz) ? (gx < 0 ? 2 : 3) : (gz < 0 ? 1 : 0);
       for (let f = 0; f < 6; f++) {
         const F = FACES[f], ny = y + F.n[1], qx = px + F.n[0], qz = pz + F.n[2];
-        if (ny < 0 || (!F.n[1] && outside(qx, qz))) continue;           // the sea goes on past the world's edge
+        if (ny < 0 || (!F.n[1] && y < seaLevel && outside(qx, qz))) continue;   // the sea goes on past the world's edge
         // the (lowered) top shows under anything but more liquid; the other faces cull as usual
         const nb = ny < H ? pad[PI(qx, ny, qz)] : AIR;
         if (f === 2 ? nb === id : faceHidden(id, nb, opaqueLeaves)) continue;

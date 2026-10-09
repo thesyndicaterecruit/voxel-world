@@ -10,7 +10,7 @@ import { TORCH_MODELS } from '../src/torch';
  * `light` says otherwise. The chunk is in the middle of the world unless `at` puts its origin elsewhere.
  */
 function mesh(blocks: number[][], opaqueLeaves = false, states: number[][] = [], light?: (x: number, y: number, z: number) => number,
-  at = [256, 256]) {
+  at = [256, 256], seaLevel = 48) {
   const pad = new Uint8Array(PAD_VOL), lit = new Uint8Array(PAD_VOL).fill(0xf0);
   for (const [x, y, z, id] of blocks) pad[PI(x + 1, y, z + 1)] = id;
   if (light) for (let y = 0; y < H; y++) for (let z = -1; z <= CS; z++) for (let x = -1; x <= CS; x++) lit[PI(x + 1, y, z + 1)] = light(x, y, z);
@@ -19,7 +19,7 @@ function mesh(blocks: number[][], opaqueLeaves = false, states: number[][] = [],
     state = new Uint8Array(PAD_VOL);
     for (const [x, y, z, s] of states) state[PI(x + 1, y, z + 1)] = s;
   }
-  return meshChunk(pad, lit, state, at[0], at[1], 1, opaqueLeaves);
+  return meshChunk(pad, lit, state, at[0], at[1], 1, opaqueLeaves, seaLevel);
 }
 /** Quads per pass: opaque, cutout, translucent. */
 const quads = (blocks: number[][], opaqueLeaves = false, states: number[][] = []) =>
@@ -159,9 +159,12 @@ describe('water', () => {
     }
   });
 
-  it('draws no faces toward the world\'s edge: the sea goes on', () => {
+  it('draws no faces toward the world\'s edge below sea level: the sea goes on', () => {
     expect(quads([[4, 5, 4, WATER]])).toEqual([0, 0, 6]);
     const edge = mesh([[0, 5, 4, WATER]], false, [], undefined, [0, 256]);
     expect(edge.map((p) => (p ? p.index.length / 6 : 0))).toEqual([0, 0, 5]);
+    // above sea level (water the player put there) it has its side
+    const high = mesh([[0, 60, 4, WATER]], false, [], undefined, [0, 256]);
+    expect(high.map((p) => (p ? p.index.length / 6 : 0))).toEqual([0, 0, 6]);
   });
 });

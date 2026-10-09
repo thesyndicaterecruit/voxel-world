@@ -4,7 +4,7 @@ import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
 import { createTextures, setUnderwater } from './textures';
 import { world, waterDepth } from './world';
-import { columnHeight, findSpawn } from './gen';
+import { generator } from './gen';
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
@@ -71,9 +71,11 @@ async function boot(): Promise<void> {
   /* ============================ SAVE FILES ============================ */
   if (!(await openSaves())) setNote('Saving is not available in this browser (private mode?), so this island will not be kept.');
   const { record, list } = await pickWorld();
-  const seed = record.seed;
+  const seed = record.seed, gen = generator(record.generatorVersion);
   world.seed = seed;
-  const [sx, sz] = findSpawn(seed);
+  world.generator = gen.version;
+  world.seaLevel = gen.seaLevel;
+  const [sx, sz] = gen.findSpawn(seed);
   // where the player starts: the saved position, or the spawn point of a new world
   const home = record.player ? { x: record.player.x, z: record.player.z } : { x: sx + 0.5, z: sz + 0.5 };
   showWorlds(list.map((w) => ({ id: w.id, name: w.name, seed: w.seed, lastPlayed: w.lastPlayed, played: !!w.player })), record.id, {
@@ -102,7 +104,7 @@ async function boot(): Promise<void> {
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
   const streamer = createStreamer(scene, chunkMaterials, pool, save);
-  const env = createEnvironment(scene, renderer, seed, home.x, home.z);
+  const env = createEnvironment(scene, renderer, seed, home.x, home.z, gen.seaLevel, gen.cloudY);
   const fx = createEffects(scene, textures);
   // flowing water: torches it reaches pop off; a chunk with water updates pending has something to save
   const water = createWater(world, { onWash: (x, y, z, id) => fx.burst(x, y, z, id), onPending: (cx, cz) => save.touch(cx, cz) });
@@ -194,10 +196,10 @@ async function boot(): Promise<void> {
 
   // the title fly-around circles the start point, high enough to clear the hills on its path
   const hx = Math.floor(home.x), hz = Math.floor(home.z);
-  let orbitY = columnHeight(seed, hx, hz) + 12;
+  let orbitY = gen.surfaceHeight(seed, hx, hz) + 12;
   for (let a = 0; a < 64; a++) {
     const x = Math.round(hx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(hz + Math.cos(a / 64 * Math.PI * 2) * 30);
-    orbitY = Math.max(orbitY, columnHeight(seed, x, z) + 6);
+    orbitY = Math.max(orbitY, gen.surfaceHeight(seed, x, z) + 6);
   }
   els.play.textContent = record.player ? 'LOADING ISLAND…' : 'GENERATING ISLANDS…';
 
@@ -266,6 +268,7 @@ async function boot(): Promise<void> {
     P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world), getState: world.getState.bind(world),
     light: (x: number, y: number, z: number) => { const v = world.getLight(x, y, z); return [v >> 4, v & 15]; },
     act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
+    seaLevel: gen.seaLevel, generator: gen.version,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
     get wet() { return player.wet; }, get breath() { return player.breath; },

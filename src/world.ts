@@ -1,4 +1,4 @@
-import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
+import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, SB, SH, NSEC, SEC_VOL, inWorld } from './config';
 import { AIR, WATER, SOLID, TARGETABLE, MODEL, LEVEL, FALLING, liquidHeight } from './blocks';
 import { torchBox } from './torch';
 
@@ -20,6 +20,24 @@ export interface Chunk {
    * until the chunk is lit (that needs its 8 neighbours loaded), and while it is being lit again.
    */
   light: Uint8Array | null;
+  /** Non-air blocks in each of its NSEC sections, kept up to date by setBlock: an empty section has nothing to mesh */
+  readonly count: Uint16Array;
+}
+
+/** Non-air blocks in each section of chunk data */
+export function sectionCounts(data: Uint8Array): Uint16Array {
+  const count = new Uint16Array(NSEC);
+  for (let s = 0, i = 0; s < NSEC; s++) {
+    let n = 0;
+    for (const end = i + SEC_VOL; i < end; i++) if (data[i] !== AIR) n++;
+    count[s] = n;
+  }
+  return count;
+}
+/** The y just above the highest section with any blocks in it (0: none) */
+export function sectionTop(count: Uint16Array): number {
+  for (let s = NSEC - 1; s >= 0; s--) if (count[s]) return (s + 1) * SH;
+  return 0;
 }
 
 /* ============================ WORLD ============================ */
@@ -32,6 +50,10 @@ export class World {
   private readonly chunks: (Chunk | undefined)[] = new Array(NCX * NCZ).fill(undefined);
   /** World seed: terrain generation and per-block texture variation derive from it. */
   seed = 0;
+  /** Version of the generator that makes this world's chunks (gen.ts) */
+  generator = 2;
+  /** The generator's sea level: the sea fills the air below it */
+  seaLevel = 48;
   /** Told about every block change made through setBlock, with the block that was there before. */
   onChange: ((x: number, y: number, z: number, old: number) => void) | null = null;
   /** Told about every chunk put in place (setChunk), with the water updates still pending in it when it was saved. */
@@ -42,7 +64,7 @@ export class World {
   }
   /** Install chunk data and state (used directly, not copied); `flow`: its pending water updates, if it had any. */
   setChunk(cx: number, cz: number, data: Uint8Array, state: Uint8Array | null = null, edited = false, flow: Uint16Array | null = null): Chunk {
-    const c: Chunk = { cx, cz, data, state, edited, light: null };
+    const c: Chunk = { cx, cz, data, state, edited, light: null, count: sectionCounts(data) };
     this.chunks[cx + cz * NCX] = c;
     if (this.onLoad) this.onLoad(c, flow);
     return c;
@@ -81,6 +103,7 @@ export class World {
     if (!c) return false;
     const i = CI(x & (CS - 1), y, z & (CS - 1)), old = c.data[i];
     c.data[i] = id;
+    if ((old === AIR) !== (id === AIR)) c.count[y >> SB] += id === AIR ? -1 : 1;
     if (state && !c.state) c.state = new Uint8Array(CHUNK_VOL);
     if (c.state) c.state[i] = state;
     c.edited = true;
@@ -96,13 +119,18 @@ export class World {
   }
   /** Highest non-air block in column (x, z), or -1 (empty or unloaded). */
   topY(x: number, z: number): number {
-    for (let y = H - 1; y >= 0; y--) if (this.getBlock(x, y, z) !== AIR) return y;
+    const c = inWorld(x, z) ? this.chunks[(x >> CB) + (z >> CB) * NCX] : undefined;
+    if (!c) return -1;
+    for (let s = NSEC - 1; s >= 0; s--) {
+      if (!c.count[s]) continue;                   // an empty section
+      for (let y = s * SH + SH - 1; y >= s * SH; y--) if (c.data[CI(x & (CS - 1), y, z & (CS - 1))] !== AIR) return y;
+    }
     return -1;
   }
   /** Non-air blocks in all loaded chunks. */
   count(): number {
     let n = 0;
-    this.forEachChunk((c) => { for (let i = 0; i < CHUNK_VOL; i++) if (c.data[i] !== AIR) n++; });
+    this.forEachChunk((c) => { for (const k of c.count) n += k; });
     return n;
   }
 }

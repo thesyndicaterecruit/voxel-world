@@ -1,6 +1,6 @@
 import { test, expect, devices, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
-import { openGame, play, stand, ticks, until, capture, meanColor, holdJoystick, frameMs } from './game';
+import { openGame, play, stand, ticks, until, capture, meanColor, holdJoystick, frameMs, airY } from './game';
 
 // block ids (src/blocks.ts)
 const STONE = 3, PLANKS = 6, GLASS = 11, TORCH = 12;
@@ -16,8 +16,9 @@ test.use({ ...devices['Pixel 7 landscape'] });
  * the height of the platform's top.
  */
 async function buildHut(page: Page): Promise<number[]> {
-  const s = await page.evaluate(([STONE, PLANKS, GLASS, TORCH]) => {
-    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), Y = 42;
+  const Y = await airY(page);
+  const s = await page.evaluate(([STONE, PLANKS, GLASS, TORCH, Y]) => {
+    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]);
     for (let x = sx - 11; x <= sx + 3; x++) for (let z = sz - 6; z <= sz + 6; z++) v.setBlock(x, Y - 1, z, STONE);
     for (let x = sx - 10; x <= sx - 6; x++) for (let z = sz - 3; z <= sz + 3; z++) for (let y = Y; y <= Y + 4; y++) {
       if (x === sx - 10 || z === sz - 3 || z === sz + 3 || y === Y + 4) v.setBlock(x, y, z, PLANKS);
@@ -27,7 +28,7 @@ async function buildHut(page: Page): Promise<number[]> {
     v.setBlock(sx - 9, Y + 2, sz + 2, TORCH, 1);
     v.setBlock(sx - 3, Y, sz + 4, TORCH, 0);                  // outside, left of the view
     return [sx, Y, sz];
-  }, [STONE, PLANKS, GLASS, TORCH]);
+  }, [STONE, PLANKS, GLASS, TORCH, Y]);
   await goToStart(page, s);
   // every edit is relit and re-meshed
   await until(page, () => page.evaluate(() => window.__voxel.stream().edits === 0));

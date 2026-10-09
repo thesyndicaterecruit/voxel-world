@@ -3,23 +3,26 @@ import { CS, H, CHUNK_VOL, CI } from '../src/config';
 import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS } from '../src/blocks';
 import { computeLight, lightChunk, relight, relightMany, skyOf, blockOf, cellKey, keyX, type LightWorld } from '../src/light';
 
-/** A small world of chunks: SX × SZ full-height columns (multiples of CS), nothing around it */
-function testWorld(SX: number, SZ: number) {
+/** The test worlds are low: everything happens below y = LOW (above, light is open sky), unless a test says otherwise */
+const LOW = 48;
+
+/** A small world of chunks: SX × SZ full-height columns (multiples of CS), nothing around it; compared below `TOP` */
+function testWorld(SX: number, SZ: number, TOP = LOW) {
   const NX = SX / CS, NZ = SZ / CS;
   const chunks = Array.from({ length: NX * NZ }, () => ({ data: new Uint8Array(CHUNK_VOL), light: new Uint8Array(CHUNK_VOL) as Uint8Array | null }));
   const w: LightWorld = { chunk: (cx, cz) => (cx >= 0 && cx < NX && cz >= 0 && cz < NZ ? chunks[cx + cz * NX] : undefined) };
   const chunk = (x: number, z: number) => chunks[(x >> 4) + (z >> 4) * NX];
   const ci = (x: number, y: number, z: number) => CI(x & (CS - 1), y, z & (CS - 1));
-  /** All blocks as one box (x + SX·(z + SZ·y)), the way computeLight takes them */
+  /** All blocks below TOP as one box (x + SX·(z + SZ·y)), the way computeLight takes them */
   const flat = () => {
-    const out = new Uint8Array(SX * SZ * H);
-    for (let y = 0; y < H; y++) for (let z = 0; z < SZ; z++) for (let x = 0; x < SX; x++) out[x + SX * (z + SZ * y)] = chunk(x, z).data[ci(x, y, z)];
+    const out = new Uint8Array(SX * SZ * TOP);
+    for (let y = 0; y < TOP; y++) for (let z = 0; z < SZ; z++) for (let x = 0; x < SX; x++) out[x + SX * (z + SZ * y)] = chunk(x, z).data[ci(x, y, z)];
     return out;
   };
-  /** All light as one box */
+  /** All light below TOP as one box */
   const light = () => {
-    const out = new Uint8Array(SX * SZ * H);
-    for (let y = 0; y < H; y++) for (let z = 0; z < SZ; z++) for (let x = 0; x < SX; x++) out[x + SX * (z + SZ * y)] = chunk(x, z).light![ci(x, y, z)];
+    const out = new Uint8Array(SX * SZ * TOP);
+    for (let y = 0; y < TOP; y++) for (let z = 0; z < SZ; z++) for (let x = 0; x < SX; x++) out[x + SX * (z + SZ * y)] = chunk(x, z).light![ci(x, y, z)];
     return out;
   };
   const lv = (x: number, y: number, z: number) => chunk(x, z).light![ci(x, y, z)];
@@ -56,8 +59,8 @@ function testWorld(SX: number, SZ: number) {
     },
     sky: (x: number, y: number, z: number) => skyOf(lv(x, y, z)),
     blk: (x: number, y: number, z: number) => blockOf(lv(x, y, z)),
-    /** The light as a fresh computation would have it (same layout as light()) */
-    fresh: () => computeLight(flat(), SX, SZ),
+    /** The light below TOP as a fresh computation would have it (same layout as light()) */
+    fresh: () => computeLight(flat(), SX, SZ).subarray(0, SX * SZ * TOP),
   };
 }
 
@@ -183,7 +186,7 @@ describe('light across chunk borders', () => {
     }
     const centre = lightChunk(blocks9, 0b111111111), all = t.light();
     for (let y = 0; y < H; y++) for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
-      expect(centre[CI(x, y, z)]).toBe(all[CS + x + S * (CS + z + S * y)]);
+      expect(centre[CI(x, y, z)]).toBe(y < LOW ? all[CS + x + S * (CS + z + S * y)] : 0xf0);
     }
     expect(blockOf(centre[CI(0, 10, 6)])).toBe(12);     // 2 blocks past the border
     expect(blockOf(centre[CI(11, 10, 6)])).toBe(1);
@@ -217,6 +220,28 @@ describe('light across chunk borders', () => {
 });
 
 describe('incremental updates match a fresh computation', () => {
+  it('high up in the taller world: a tower, a torch on top, a shaft down it', () => {
+    const t = testWorld(32, 32, H);
+    t.fill(0, 0, 0, 31, 9, 31, STONE);
+    t.fill(12, 10, 12, 18, 95, 18, STONE);
+    t.lightAll();
+    const check = (what: string) => {
+      const fresh = t.fresh(), now = t.light();
+      if (!fresh.every((v, i) => v === now[i])) {
+        const i = fresh.findIndex((v, j) => v !== now[j]);
+        throw new Error(`${what}: cell ${i % 32},${Math.floor(i / 1024)},${Math.floor(i / 32) % 32} is ${now[i].toString(16)}, should be ${fresh[i].toString(16)}`);
+      }
+    };
+    t.edit(15, 96, 15, TORCH); check('torch on top');
+    expect(t.blk(15, 109, 15)).toBe(1);
+    t.edit(15, 100, 15, STONE); check('a block over it');
+    for (let y = 95; y >= 40; y--) { t.edit(15, y, 16, AIR); }
+    check('a shaft dug down the tower');
+    expect(t.sky(15, 40, 16)).toBe(15);                         // the sky straight down it
+    t.edit(15, 112, 16, GLASS); t.edit(15, 112, 16, STONE); check('a roof far above it');
+    expect(t.sky(15, 40, 16)).toBe(14);                         // in beside the roof, then straight down
+  });
+
   it('after every one of many random edits', () => {
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);

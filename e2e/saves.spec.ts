@@ -1,7 +1,8 @@
 import { test, expect, devices } from '@playwright/test';
-import { CHUNK_VOL, CI } from '../src/config';
+import { CS, OLD_H, CI } from '../src/config';
 import { rleEncode } from '../src/rle';
 import { SAVE_VERSION } from '../src/saves';
+import { generateChunk } from '../src/gen1';
 import { openGame, play, ticks, block, waitReady } from './game';
 
 test.use({ ...devices['Pixel 7 landscape'] });
@@ -13,12 +14,12 @@ const dump = (store: string) => `new Promise((res) => { const r = indexedDB.open
   const tx = r.result.transaction('${store}'), s = tx.objectStore('${store}'), k = s.getAllKeys(), v = s.getAll();
   tx.oncomplete = () => { r.result.close(); res(k.result.map((key, i) => [key, v.result[i]])); }; }; })`;
 
-test('a world saved by save version 1 still loads, and is saved in the current version with block state', async ({ page }) => {
+test('a world saved by save version 1 still loads, keeps its generator, and is saved in the current version with block state', async ({ page }) => {
   const errors = await openGame(page, '?seed=777');           // creates the database
 
-  // what version 1 stored: a world record and one edited chunk (block ids only, run-length encoded) —
-  // a flat platform with a brick pillar
-  const data = new Uint8Array(CHUNK_VOL);
+  // what version 1 stored: a world record and one edited chunk (block ids only, run-length encoded, in
+  // the 64-high world of then) — a flat platform with a brick pillar
+  const data = new Uint8Array(CS * CS * OLD_H);
   for (let y = 0; y <= 20; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) data[CI(x, y, z)] = y < 20 ? STONE : GRASS;
   for (let y = 21; y <= 24; y++) data[CI(4, y, 6)] = BRICK;
   const world = {
@@ -45,13 +46,21 @@ test('a world saved by save version 1 still loads, and is saved in the current v
   for (let y = 21; y <= 24; y++) expect(await block(page, [260, y, 262])).toEqual([BRICK, 0]);
   await expect(page.locator('.slot').nth(7)).toHaveClass(/sel/);
   expect(await page.evaluate(() => window.__voxel.mode)).toBe('place');
+  // it was made by the first generator, and its unexplored chunks still come from it: the sea at 20,
+  // the same ground next to the saved chunk as ever, air above the old top of the world
+  expect(await page.evaluate(() => [window.__voxel.generator, window.__voxel.seaLevel])).toEqual([1, 20]);
+  const next = generateChunk(777, 17, 16);
+  for (const [x, y, z] of [[3, 0, 3], [5, 18, 9], [8, 19, 2], [12, 22, 12], [0, 30, 15], [7, 70, 7]]) {
+    expect(await block(page, [17 * CS + x, y, 16 * CS + z]), `block ${x},${y},${z} of chunk 17,16`).toEqual([next[CI(x, y, z)], 0]);
+  }
 
   // a torch on the pillar (facing +x), then save: the records are rewritten in the current version, with block state
   await page.evaluate(() => window.__voxel.setBlock(261, 23, 262, 12, 1));
   await page.evaluate(() => window.__voxel.save());
-  const worlds = await page.evaluate(dump('worlds')) as [string, { saveVersion: number }][];
+  const worlds = await page.evaluate(dump('worlds')) as [string, { saveVersion: number; generatorVersion: number }][];
   const chunks = await page.evaluate(dump('chunks')) as [string, { v: number; srle?: unknown }][];
-  expect(worlds.find(([k]) => k === 'v1world')![1].saveVersion).toBe(SAVE_VERSION);
+  const rec = worlds.find(([k]) => k === 'v1world')![1];
+  expect([rec.saveVersion, rec.generatorVersion]).toEqual([SAVE_VERSION, 1]);
   const saved = chunks.find(([k]) => k === 'v1world:16,16')![1];
   expect(saved.v).toBe(SAVE_VERSION);
   expect(saved.srle).toBeTruthy();

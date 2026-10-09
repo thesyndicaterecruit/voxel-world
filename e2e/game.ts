@@ -44,6 +44,10 @@ export interface Voxel {
   water(): { pending: number; ticks: number; changed: number; ms: number };
   /** Draw the water blocks or not (to time what drawing them costs) */
   showWater(on: boolean): void;
+  /** The world's sea level and generator version (gen.ts) */
+  seaLevel: number;
+  generator: number;
+  world: { topY(x: number, z: number): number };
 }
 declare global {
   interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }
@@ -91,6 +95,19 @@ export async function until(page: Page, done: () => Promise<boolean>, max = 600)
     if (await done()) return i;
   }
   throw new Error(`still waiting after ${max} frames`);
+}
+
+/**
+ * A height to build in the air at, around the player: 8 blocks above the highest block within `r`
+ * blocks (at least the sea level), below the top of the world.
+ */
+export function airY(page: Page, r = 16): Promise<number> {
+  return page.evaluate((r) => {
+    const v = window.__voxel, x0 = Math.floor(v.P[0]), z0 = Math.floor(v.P[2]);
+    let top = v.seaLevel;
+    for (let z = z0 - r; z <= z0 + r; z++) for (let x = x0 - r; x <= x0 + r; x++) top = Math.max(top, v.world.topY(x, z));
+    return Math.min(top + 8, 116);
+  }, r);
 }
 
 /** Run frames until streaming has settled: the same chunk counts 10 frames running. */

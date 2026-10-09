@@ -1,6 +1,6 @@
 import { test, expect, devices, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
-import { openGame, waitReady, play, stand, aimAt, tapToAct, block, ticks, until, settle, capture, meanColor, fingers, frameMs } from './game';
+import { openGame, waitReady, play, stand, aimAt, tapToAct, block, ticks, until, settle, capture, meanColor, fingers, frameMs, airY } from './game';
 
 // block ids (src/blocks.ts)
 const STONE = 3, SAND = 4, WATER = 10;
@@ -25,16 +25,17 @@ const waterAt = (page: Page, cells: number[][]) => page.evaluate((cells) => cell
 }), cells);
 
 /**
- * The flat beach by the sea nearest the player: sea at (x, z) (water at y 18 and 19), and sand at sea
- * level with nothing on it for 6 blocks inland (direction ax, az) and 3 to each side.
+ * The flat beach by the sea nearest the player: sea at (x, z) (water in the top two layers below sea
+ * level S), and sand at sea level (its top at S) with nothing on it for 6 blocks inland (direction
+ * ax, az) and 3 to each side.
  */
 const findShore = (page: Page) => page.evaluate(([WATER, SAND]) => {
-  const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]);
-  const beach = (x: number, z: number) => v.get(x, 19, z) === SAND && v.get(x, 20, z) === 0;
+  const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), S = v.seaLevel;
+  const beach = (x: number, z: number) => v.get(x, S - 1, z) === SAND && v.get(x, S, z) === 0;
   for (let r = 1; r < 80; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
     if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
     const x = sx + dx, z = sz + dz;
-    if (v.get(x, 19, z) !== WATER || v.get(x, 18, z) !== WATER) continue;
+    if (v.get(x, S - 1, z) !== WATER || v.get(x, S - 2, z) !== WATER) continue;
     for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       let ok = true;
       for (let i = 1; i <= 6 && ok; i++) for (let s = -3; s <= 3 && ok; s++) ok = beach(x + ax * i + az * s, z + az * i + ax * s);
@@ -49,18 +50,18 @@ test('a channel dug from the sea fills with water', async ({ page }) => {
   await play(page);
   const shore = await findShore(page);
   expect(shore).not.toBeNull();
-  const { x, z, ax, az } = shore!;
+  const { x, z, ax, az } = shore!, S = await page.evaluate(() => window.__voxel.seaLevel);
   /** Block i along the channel (0: the sea), `side` blocks off it */
-  const cell = (i: number, side = 0) => [x + ax * i + az * side, 19, z + az * i + ax * side];
+  const cell = (i: number, side = 0) => [x + ax * i + az * side, S - 1, z + az * i + ax * side];
 
   // on the beach beside where the channel goes, in break mode: dig its 5 blocks with taps, from the sea inland
   const at = cell(3, 2);
-  await stand(page, at[0] + 0.5, 20, at[2] + 0.5);
+  await stand(page, at[0] + 0.5, S, at[2] + 0.5);
   await settle(page);
   expect(await page.evaluate(() => window.__voxel.mode)).toBe('break');
   for (let i = 1; i <= 5; i++) {
     const c = cell(i);
-    expect((await aimAt(page, [c[0] + 0.5, 19.9, c[2] + 0.5]))?.slice(0, 3), `aiming at channel block ${i}`).toEqual(c);
+    expect((await aimAt(page, [c[0] + 0.5, S - 0.1, c[2] + 0.5]))?.slice(0, 3), `aiming at channel block ${i}`).toEqual(c);
     await tapToAct(page);
     expect((await block(page, c))[0]).not.toBe(SAND);
   }
@@ -77,15 +78,16 @@ test('swims across a lake and climbs out, with nothing but touches', async ({ pa
   const errors = await openGame(page, '?seed=4242');
   await play(page);
   // a lake 10 long, 5 wide and 3 deep in a stone platform up in the air, its surface a block below the ground
-  const [sx, Y, sz] = await page.evaluate(([STONE, WATER]) => {
-    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), Y = 44;
+  const air = await airY(page, 24);
+  const [sx, Y, sz] = await page.evaluate(([STONE, WATER, Y]) => {
+    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]);
     for (let x = sx - 4; x <= sx + 20; x++) for (let z = sz - 4; z <= sz + 4; z++) for (let y = Y - 5; y < Y; y++) v.setBlock(x, y, z, STONE);
     for (let x = sx + 3; x <= sx + 12; x++) for (let z = sz - 2; z <= sz + 2; z++) {
       v.setBlock(x, Y - 1, z, 0);
       for (let y = Y - 4; y <= Y - 2; y++) v.setBlock(x, y, z, WATER);
     }
     return [sx, Y, sz];
-  }, [STONE, WATER]);
+  }, [STONE, WATER, air]);
   await stand(page, sx + 0.5, Y, sz + 0.5);
   await page.evaluate(() => window.__voxel.look(-Math.PI / 2, -0.15));      // facing the lake (+x)
   await until(page, () => page.evaluate(() => window.__voxel.stream().edits === 0));
@@ -118,19 +120,19 @@ test('swims across a lake and climbs out, with nothing but touches', async ({ pa
 test('under water: blue, the surface bright overhead, darker deep down and at night', async ({ page }) => {
   const errors = await openGame(page, '?seed=4242');
   await play(page);
-  // deep sea near the spawn
+  // deep sea near the spawn: 12 blocks or more
   const sea = await page.evaluate((WATER) => {
-    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]);
+    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), S = v.seaLevel;
     for (let r = 1; r < 90; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-      let bed = 19;
+      let bed = S - 1;
       while (bed > 0 && v.get(sx + dx, bed, sz + dz) === WATER) bed--;
-      if (bed <= 8 && v.get(sx + dx, 19, sz + dz) === WATER) return [sx + dx, bed, sz + dz];
+      if (bed <= S - 12 && v.get(sx + dx, S - 1, sz + dz) === WATER) return [sx + dx, bed, sz + dz];
     }
     return null;
   }, WATER);
   expect(sea).not.toBeNull();
-  const [x, bed, z] = sea!;
+  const [x, bed, z] = sea!, S = await page.evaluate(() => window.__voxel.seaLevel);
   const view = async (y: number, t: number, name: string) => {
     await page.evaluate((t) => window.__voxel.setTime(t), t);
     await stand(page, x + 0.5, y, z + 0.5);
@@ -141,11 +143,11 @@ test('under water: blue, the surface bright overhead, darker deep down and at ni
     await screenshot(page, name);
     return { top, low, all: top.map((v, i) => (v + low[i]) / 2) };
   };
-  await stand(page, x + 0.5, 15, z + 0.5);
+  await stand(page, x + 0.5, S - 5, z + 0.5);
   await settle(page);
-  const day = await view(15, 0.5, 'underwater-day');
+  const day = await view(S - 5, 0.5, 'underwater-day');
   const deep = await view(bed + 1, 0.5, 'underwater-deep');
-  const night = await view(15, 0, 'underwater-night');
+  const night = await view(S - 5, 0, 'underwater-night');
   expect(await page.evaluate(() => window.__voxel.wet)).toBe(3);
   expect(day.all[2]).toBeGreaterThan(day.all[0] + 40);       // blue
   expect(luma(day.top)).toBeGreaterThan(luma(day.low) * 1.3); // the surface, lit, overhead
@@ -159,9 +161,9 @@ test('a big sea in view: drawing the water costs a fraction of the frame', async
   await play(page);
   const shore = await findShore(page);
   expect(shore).not.toBeNull();
-  const { x, z, ax, az } = shore!;
+  const { x, z, ax, az } = shore!, S = await page.evaluate(() => window.__voxel.seaLevel);
   // on the beach, looking out to sea
-  await stand(page, x + ax * 2 + 0.5, 20, z + az * 2 + 0.5);
+  await stand(page, x + ax * 2 + 0.5, S, z + az * 2 + 0.5);
   await page.evaluate(([ax, az]) => window.__voxel.look(Math.atan2(ax, az), -0.12), [ax, az]);
   await settle(page);
   const passes = await page.evaluate(() => window.__voxel.stream().passes);
@@ -191,13 +193,14 @@ test('water left flowing keeps flowing after the world is saved and loaded again
   const errors = await openGame(page, '?seed=4242');
   await play(page);
   // a flat stone platform up in the air with a source in the middle
-  const [sx, Y, sz] = await page.evaluate(([STONE, WATER]) => {
-    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), Y = 44;
+  const air = await airY(page);
+  const [sx, Y, sz] = await page.evaluate(([STONE, WATER, Y]) => {
+    const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]);
     for (let x = sx - 10; x <= sx + 10; x++) for (let z = sz - 10; z <= sz + 10; z++) v.setBlock(x, Y - 1, z, STONE);
     v.P[0] = sx + 0.5; v.P[1] = Y; v.P[2] = sz - 8.5; v.V.fill(0);
     v.setBlock(sx, Y, sz, WATER);
     return [sx, Y, sz];
-  }, [STONE, WATER]);
+  }, [STONE, WATER, air]);
   const ring = (d: number) => [[sx + d, Y, sz], [sx - d, Y, sz], [sx, Y, sz + d]];
   // two ticks in, it has spread 2 blocks: save right then
   await until(page, async () => (await waterAt(page, ring(2))).join() === '2,2,2', 200);

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SEA_LEVEL, W, D } from './config';
+import { W, D } from './config';
 import { mulberry } from './noise';
 import { boxesGeometry } from './meshing';
 import { radialFogVertex } from './fog';
@@ -92,9 +92,11 @@ export interface Environment {
 
 /**
  * `seed` lays out the clouds and the stars (same seed, same sky); (x, z) is where the clouds start
- * out, around the spawn point.
+ * out, around the spawn point. The sea beyond the world's edge is at `seaLevel`; the clouds float
+ * from `cloudY` up.
  */
-export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRenderer, seed: number, x: number, z: number): Environment {
+export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRenderer, seed: number, x: number, z: number,
+  seaLevel: number, cloudY: number): Environment {
   const fog = new THREE.Fog(SKY.horizon[0].getHex(), 34, 110);
   scene.fog = fog;
   let fogNear = fog.near, fogFar = fog.far, under = false;
@@ -153,7 +155,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
 	diffuseColor.rgb = mix( diffuseColor.rgb, skyColor, 0.1 + 0.75 * pow( 1.0 - facing, 4.0 ) );`);
   };
   const sea = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600).rotateX(-Math.PI / 2), seaMat);
-  sea.position.y = SEA_LEVEL - 0.125;                  // a source block's surface
+  sea.position.y = seaLevel - 0.125;                   // a source block's surface
   scene.add(sea);
 
   const cloudMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false });
@@ -165,7 +167,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       boxes.push([ox, 0, oz, ox + w, 1.2, oz + d]);
     }
     const c = new THREE.Mesh(boxesGeometry(boxes), cloudMat);
-    c.position.set(x + (rand() - 0.5) * CLOUD_BOX, 64 + rand() * 8, z + (rand() - 0.5) * CLOUD_BOX);
+    c.position.set(x + (rand() - 0.5) * CLOUD_BOX, cloudY + rand() * 8, z + (rand() - 0.5) * CLOUD_BOX);
     scene.add(c);
     clouds.push(c);
   }

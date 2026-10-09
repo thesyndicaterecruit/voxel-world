@@ -1,10 +1,13 @@
 # Voxel Island
 
 A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and
-Vite. The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of
-16×16 columns (full height). Chunks stream in and out around the player; generation and meshing run
-in Web Workers, and each chunk draws in at most two calls (opaque, cutout) plus a share of one for
-its water (translucent, drawn 4×4 chunks at a time). You walk
+Vite. The world is a 512×512×128-block archipelago generated from a seed, stored as 32×32 chunks of
+16×16 columns (full height), each made of 8 sections of 16×16×16 blocks. Chunks stream in and out
+around the player; generation, lighting and meshing (a section at a time) run in Web Workers, and
+each chunk draws in at most two calls (opaque, cutout) plus a share of one for its water
+(translucent, drawn 4×4 chunks at a time). A world keeps the generator that made it: new worlds
+have the sea at y = 48, worlds made before the world grew taller keep the first generator (sea at
+y = 20) so their ground never shifts. You walk
 around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
 torches among them. Worlds are save files in IndexedDB: edited chunks plus the player state, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
@@ -39,7 +42,7 @@ index.html           Markup for the HUD and start screen; loads src/style.css an
 src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
                      resize, frame loop, window.__voxel
-  config.ts          Chunk size, world size (chunks/blocks), height, sea level, player & physics constants, sky colours
+  config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
                      faceHidden() culling rule, HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
@@ -53,20 +56,23 @@ src/
                      pending updates for saving
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
-  gen.ts             Pure world generation: columnHeight, waterLevel (sea, lakes), layering, trees,
-                     generateChunk(seed, cx, cz), findSpawn; floodSea (old saves get the sea)
-  worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshChunk off the main thread
+  gen.ts             World generators by version (generator(v): sea level, cloud height, generateChunk(seed, cx, cz),
+                     findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2
+  gen1.ts            Generator 1, FROZEN (worlds made before generator versions): columnHeight, waterLevel (sea,
+                     lakes), layering, trees, generateChunk, findSpawn; floodSea (old saves get the sea)
+  worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshSection off the main thread
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
   streaming.ts       Chunk streaming: load/light/mesh/unload regions, job priorities, upload budget, edits (relight +
-                     re-mesh)
-  world.ts           Chunk storage (block ids, lazy per-block state, light) + World class (getBlock/getState/getLight/
-                     setBlock/isSolid/topY in world coords, seed), raycast; inWater, waterDepth, waterFlow
+                     re-mesh the sections they touch), sections' meshes spliced into one per chunk and pass
+  world.ts           Chunk storage (block ids, lazy per-block state, light, blocks per section) + World class
+                     (getBlock/getState/getLight/setBlock/isSolid/topY in world coords, seed, generator, sea level),
+                     raycast; inWater, waterDepth, waterFlow
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
-  mesher.ts          Pure chunk mesher: padded chunk blocks + light + state → typed arrays per render pass (face
-                     culling, baked face shading, AO, smooth light, tile layer; cube, torch and liquid models: water
-                     surfaces shaped by their neighbours, flat ones merged)
+  mesher.ts          Pure chunk mesher, a section at a time: padded chunk blocks + light + state → typed arrays per
+                     render pass (face culling, baked face shading, AO, smooth light, tile layer; cube, torch and
+                     liquid models: water surfaces shaped by their neighbours, flat ones merged); spliceSections
   meshing.ts         paddedCopy (chunk + 1-block border: blocks, light or state), mesher output → BufferGeometry;
                      boxesGeometry
   environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
@@ -84,13 +90,15 @@ src/
                      error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
-                     chunk borders, incremental = fresh, single and batched), mesher (water surfaces too), torch
-                     geometry, save format + migration, RLE, mipmaps, generation determinism (sea fill, lakes
-                     that hold), flowing water (spreading, falling, draining, infinite sources, chunk borders,
-                     saved updates), swimming physics (sinking, swimming up, bobbing, braking, climbing out)
+                     chunk borders, incremental = fresh, single and batched, high up), mesher (water surfaces too),
+                     sections (meshing, splicing, counts, light worked out only as high as needed, water falling
+                     through them), torch geometry, save format + migration, RLE, mipmaps, generation (generator
+                     1's fingerprints, determinism, sea fill, lakes that hold), flowing water (spreading, falling,
+                     draining, infinite sources, chunk borders, saved updates), swimming physics (sinking,
+                     swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
-                     blocks, torches, hotbar, Fancy leaves, old saves, time of day (midday/sunset/midnight
+                     blocks, torches, hotbar, Fancy leaves, old saves (keeping generator 1), time of day (midday/sunset/midnight
                      screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload)
@@ -114,44 +122,52 @@ a microtask then hands all the changes made together (one action, one tick of wa
   original single-file game loaded from a CDN. Newer releases change colour management and lighting
   defaults (r152+), which would visibly change every colour. Upgrading is a deliberate roadmap item,
   not a drive-by bump.
-- **Generation is a pure function of (seed, chunkX, chunkZ).** Every block in `gen.ts` comes from
-  hashes/noise of the seed and *world* coordinates — no `Math.random`, no shared PRNG state, no
+- **Generation is a pure function of (seed, chunkX, chunkZ).** Every block a generator makes comes
+  from hashes/noise of the seed and *world* coordinates — no `Math.random`, no shared PRNG state, no
   trig (engines may round it differently) — so a chunk is identical whichever order chunks are
   generated in, on any thread. Trees use one candidate per 6×6 cell; a chunk stamps every tree whose
-  canopy reaches into it, including trees rooted in neighbouring chunks. Any change to `gen.ts`
-  changes the terrain of every world for that seed.
+  canopy reaches into it, including trees rooted in neighbouring chunks.
+- **Generator versions** (`gen.ts`): a world record keeps the `generatorVersion` that made it, and
+  its unexplored chunks always come from that generator (`generator(v)`: also its sea level, cloud
+  height, spawn), so the ground never shifts next to what a save holds. Generator 1 (`gen1.ts`) is
+  every world made before versions existed — the first archipelago, written for a 64-high world
+  with the sea at y = 20; in today's chunks it is air above y = 64. It is **frozen**: don't change
+  anything that reaches its output (`tests/gen.test.ts` checks fingerprints of its chunks). New
+  worlds get `GENERATOR_VERSION` (2, sea level 48). Changing generator 2 changes the unexplored
+  ground of every world made with it — fine while it is new; once worlds depend on it, a change that
+  moves terrain is a new version.
 - **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
   texture changes.
 - **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
-  deep water gets darker, model 'liquid'). Generation fills the air below `SEA_LEVEL` with still
-  water (sources), and digs lakes into inland ground (at most one per 32×32 cell: a bowl filled up
-  to the lowest point of the ground around it, with a bank raised where the rim has a gap, so a lake
-  always holds its water; `waterLevel(seed, x, z)`). Block state: the low 3 bits are the level (0 a
-  source, 1–7 flowing, a step lower per block), bit 3 (`FALLING`) is water falling down;
-  `liquidHeight` gives a block's surface height (a source's is 7/8 of a block, so the sea's surface
-  sits just under a sea-level beach). The mesher shapes the surface per corner from the up to 4
-  columns sharing it (full where any of them falls or has water on top, else the average of their
-  heights with sources counting 10 times, pulled down by open cells, solid ones ignored), so
-  neighbouring water joins up; faces between water blocks are hidden, faces toward the world's edge
-  too (`environment.ts` draws the sea on past it). Flat, evenly lit tops of still water merge into
-  quads of up to 7×7 blocks (uvs are bytes; the shader repeats the tile with `fract`, sampling once
-  with `textureLod` at a mip level worked out from the unwrapped uv — no anisotropic taps, which
-  matters on weak GPUs). Tiles: still water's ripples on tops and bottoms, flowing water's streaks on sides
-  and on sloping tops (turned to run downhill) — `WATER_FRAMES` frames each at the end of
-  `TILE_PAINTERS`, played by time in the shader. The water shader reflects the sky colour
-  (`lightUniforms.skyColor`, set with the time of day) where it sees skylight, more at a glancing
-  angle; that and the angle are worked out in view space, because r128 doesn't give a
-  `MeshBasicMaterial` `cameraPosition`. The camera counts as in water (`inWater`) below a water
-  block's surface: then the fog, clear colour and `body.under` tint turn blue, darker the deeper it
-  is (`waterDepth`, down to 24 blocks: the fog also closes in from 20 to 14 blocks) and at night (the
-  CSS tint's dark layer follows `--dim`), and the water material shows back faces too
-  (`setUnderwater`): the surface from below shows the sky near overhead (Snell's window) and mirrors
-  the deep further out, fogged half as much as the rest. Out of water it stays single-sided, or a
-  pond would show its far side through its near one. Water can't be aimed at (raycasts pass through
-  it); placing a block into water replaces it, but torches refuse. The hotbar's Water places a
-  source (creative-style; buckets come with an inventory).
+  deep water gets darker, model 'liquid'). Generation fills the air below the sea level
+  (`world.seaLevel`, the generator's) with still water (sources), and digs lakes into inland ground
+  (at most one per 32×32 cell: a bowl filled up to the lowest point of the ground around it, with a
+  bank raised where the rim has a gap, so a lake always holds its water; `waterLevel(seed, x, z)`).
+  Block state: the low 3 bits are the level (0 a source, 1–7 flowing, a step lower per block), bit 3
+  (`FALLING`) is water falling down; `liquidHeight` gives a block's surface height (a source's is
+  7/8 of a block, so the sea's surface sits just under a sea-level beach). The mesher shapes the
+  surface per corner from the up to 4 columns sharing it (full where any of them falls or has water
+  on top, else the average of their heights with sources counting 10 times, pulled down by open
+  cells, solid ones ignored), so neighbouring water joins up; faces between water blocks are hidden,
+  faces toward the world's edge too (`environment.ts` draws the sea on past it). Flat, evenly lit
+  tops of still water merge into quads of up to 7×7 blocks (uvs are bytes; the shader repeats the
+  tile with `fract`, sampling once with `textureLod` at a mip level worked out from the unwrapped uv
+  — no anisotropic taps, which matters on weak GPUs). Tiles: still water's ripples on tops and
+  bottoms, flowing water's streaks on sides and on sloping tops (turned to run downhill) —
+  `WATER_FRAMES` frames each at the end of `TILE_PAINTERS`, played by time in the shader. The water
+  shader reflects the sky colour (`lightUniforms.skyColor`, set with the time of day) where it sees
+  skylight, more at a glancing angle; that and the angle are worked out in view space, because r128
+  doesn't give a `MeshBasicMaterial` `cameraPosition`. The camera counts as in water (`inWater`)
+  below a water block's surface: then the fog, clear colour and `body.under` tint turn blue, darker
+  the deeper it is (`waterDepth`, down to 24 blocks: the fog also closes in from 20 to 14 blocks)
+  and at night (the CSS tint's dark layer follows `--dim`), and the water material shows back faces
+  too (`setUnderwater`): the surface from below shows the sky near overhead (Snell's window) and
+  mirrors the deep further out, fogged half as much as the rest. Out of water it stays single-sided,
+  or a pond would show its far side through its near one. Water can't be aimed at (raycasts pass
+  through it); placing a block into water replaces it, but torches refuse. The hotbar's Water places
+  a source (creative-style; buckets come with an inventory).
 - **Swimming** (`player.ts`): `player.wet` says how deep the player is — 1 feet (0.1 up), 2 waist
   (0.9 up), 3 head (the eye) under. With the waist in, the player swims: 55% speed (80% wading with
   just the feet in), JUMP (held) swims up toward 3 blocks/s and without it they sink toward
@@ -210,6 +226,18 @@ a microtask then hands all the changes made together (one action, one tick of wa
 - **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
   scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
+- **Sections:** a chunk column is `NSEC` (8) sections of 16×16×16 blocks (`SH` layers each). CI runs
+  y last, so a section is one contiguous slice of a chunk's arrays (blocks, state, light) — the
+  storage stays one array per chunk. `chunk.count` holds the non-air blocks per section (kept by
+  `setBlock`): an empty section has no mesh, never goes to a worker and costs nothing to draw, and
+  `sectionTop` says how high a chunk's blocks go. Meshing is per section (`meshSection`, with a padded
+  copy of its layers and one above and below): a change at y re-meshes the sections holding y − 1 …
+  y + 1, in its chunk and the neighbours it borders, and the sections whose light changed. Each
+  section has its own version (`ver` / `shown` / `sent` in `streaming.ts`); one job meshes all of a
+  chunk's sections that need it. To keep draw calls down a chunk is still drawn whole: its sections'
+  meshes are kept one after another per pass (`SectionedMesh`), and `spliceSections` swaps the parts
+  of the sections that changed. Light and water work in world coordinates, so section borders mean
+  nothing to them.
 - **Per-block state:** each chunk can carry a second `Uint8Array` (`chunk.state`, same layout as
   the block ids) for things like torch facing and water level. It is `null` until some block gets a
   non-zero state — generated terrain never has any — and `world.setBlock(x, y, z, id, state)` sets
@@ -218,19 +246,22 @@ a microtask then hands all the changes made together (one action, one tick of wa
   same layout as the ids): skylight in the high nibble, block light in the low one. Never saved:
   worked out from the blocks. Rules: a block's `lightFilter` is what light loses entering it (15:
   none gets in). Skylight enters the top layer at 15 and, straight down, loses only each block's
-  filter (open air stays 15 to the ground, leaves take 1, water 2); any other way it loses
-  max(1, filter) per block. Block light starts at the emitter's `lightEmission` (torch 14) and loses
-  max(1, filter) per block every way. Light reaches at most 15 blocks, so a chunk is lit exactly
-  from its 3×3 neighbourhood: `lightChunk` in a worker, once it and its 8 neighbours are loaded.
-  After that, `streamer.blocksChanged` calls `relightMany()` on the main thread for the changes made
-  together (the two-queue flood fill: remove what depended on the old blocks, then spread back from
-  the edge; it works on a copied box 16 blocks around them, ≈0.5 ms for one block; changes more than
-  32 blocks apart are lit separately) and re-meshes the chunks whose light changed. If anything
-  within reach isn't lit yet it falls back to lighting those chunks again in workers; lighting jobs
-  carry a version and results from before an edit are thrown away. Meshing needs the chunk and its
-  8 neighbours lit. `tests/light.test.ts` checks that incremental updates, single and in batches,
-  always equal a fresh computation; in the game `__voxel.verifyLight(cx, cz)` does the same for one
-  chunk.
+  filter (open air stays 15 to the ground, leaves take 1, water 2); any other way it loses max(1,
+  filter) per block. Block light starts at the emitter's `lightEmission` (torch 14) and loses max(1,
+  filter) per block every way. Light reaches at most 15 blocks, so a chunk is lit exactly from its
+  3×3 neighbourhood: `lightChunk` in a worker, once it and its 8 neighbours are loaded. Above
+  everything built or grown it is open sky (15, no block light), so lighting only works up to 16
+  blocks above the highest block around (`topOf`; the streamer sends just those layers) and fills
+  the rest with sky — exact, and as cheap as the terrain is low. After that,
+  `streamer.blocksChanged` calls `relightMany()` on the main thread for the changes made together
+  (the two-queue flood fill: remove what depended on the old blocks, then spread back from the edge;
+  it works on a copied box 16 blocks around them, from the bottom up to 16 above the highest block
+  in it, ≈0.5 ms for one block; changes more than 32 blocks apart are lit separately) and re-meshes
+  the sections whose light changed. If anything within reach isn't lit yet it falls back to lighting
+  those chunks again in workers; lighting jobs carry a version and results from before an edit are
+  thrown away. Meshing needs the chunk and its 8 neighbours lit. `tests/light.test.ts` checks that
+  incremental updates, single and in batches, always equal a fresh computation; in the game
+  `__voxel.verifyLight(cx, cz)` does the same for one chunk.
 - **Shading** (`shading.ts`): every chunk vertex carries its colour as r = face shading × AO ×
   jitter, g = skylight, b = block light (light as level × 17). Smooth light: a vertex averages the
   light of the cells touching its corner on the face's outer side (the face's neighbour, the two
@@ -257,13 +288,14 @@ a microtask then hands all the changes made together (one action, one tick of wa
   chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
   player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
   `world`, so they work across chunk borders.
-- **Coordinates:** world (x, y, z) lives in chunk (x >> CB, z >> CB) at `data[CI(x & 15, y, z & 15)]`
-  — x fastest, then z, then y. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is
-  the feet position; the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
-- **Workers only run pure code.** `gen.ts`, `light.ts`, `mesher.ts`, `torch.ts`, `noise.ts`,
-  `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`. `meshChunk`
-  only sees a padded copy of the chunk (one block of each neighbour, see `paddedCopy`). Per-block
-  hashes use world coordinates.
+- **Coordinates:** world (x, y, z) lives in chunk (x >> CB, z >> CB) at
+  `data[CI(x & 15, y, z & 15)]` — x fastest, then z, then y — in section y >> SB. The world is `H` =
+  128 high. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is the feet position;
+  the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
+- **Workers only run pure code.** `gen.ts`, `gen1.ts`, `light.ts`, `mesher.ts`, `torch.ts`,
+  `noise.ts`, `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`.
+  `meshChunk` only sees a padded copy of the chunk (one block of each neighbour, see `paddedCopy`).
+  Per-block hashes use world coordinates.
 - **Streaming regions** (`streaming.ts`), measured from the player to each chunk's nearest point:
   meshed within `R·16` blocks (R = view distance, 3–10, default 6, saved in localStorage), lit
   within `R·16 + 24` (so a meshed chunk always has its 8 neighbours lit), loaded within `R·16 + 48`
@@ -271,10 +303,11 @@ a microtask then hands all the changes made together (one action, one tick of wa
   ready to play it streams as if R were 2, so the start area comes first. Fog ends exactly at
   `R·16`, and is *radial* (`fog.ts`), so chunks fade in instead of popping. Every fogged material
   needs `radialFog()` (or `radialFogVertex` in its own `onBeforeCompile`).
-- **Budgets:** at most 2 chunks' new or re-built meshes are added per frame while playing (8
-  behind the title card; a new mesh skips frustum culling for its first frame, so its GPU upload
-  happens then), and at most 8 normal worker jobs (load, light, mesh) start per frame. Edit
-  re-meshes skip both limits. Jobs go nearest-first, favouring chunks in view.
+- **Budgets:** at most 2 chunks' new or re-built meshes are added per frame while playing (8 behind
+  the title card; a new mesh skips frustum culling for its first frame, so its GPU upload happens
+  then), and at most 8 normal worker jobs (load, light, mesh) start per frame. Edit re-meshes skip
+  both limits. Jobs go nearest-first, favouring chunks in view. A result stays "on its way" (`sent`)
+  until it is shown, so a chunk waiting for its upload isn't sent to a worker again.
 - **Render passes:** each chunk has up to three meshes' worth of data, created only when non-empty —
   opaque, cutout (alpha-tested at 0.5, writes depth: leaves, glass, torches) and translucent
   (alpha-blended, no depth writes: water; drawn after everything else). The sea puts water in most
@@ -296,23 +329,25 @@ a microtask then hands all the changes made together (one action, one tick of wa
   Other tiles keep GL's mipmaps. New tiles go at the end of `TILE_PAINTERS`.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar slot,
-  break/place mode, the world clock); store `chunks` holds only *edited* chunks under
-  `${worldId}:${cx},${cz}` as `{ v, rle, srle?, flow? }`: the block ids run-length encoded, plus the
-  per-block state the same way when any of it is non-zero, plus the blocks with pending water
-  updates (a chunk with some is saved even if its blocks are as generated). Everything else
-  regenerates from the seed — so changing `gen.ts` changes the unedited terrain of existing saves.
-  Chunks saved before version 4 had air where the sea is; reading them runs `floodSea` (the air below
-  sea level open to the sea becomes water). `SAVE_VERSION` is 5; when
-  the stored format changes, bump it, note it in the history at the top of `saves.ts`, add a fixture
-  of the previous version to `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which
-  bring any older record up to date every time one is read (a migrated record is written back the
-  next time it is saved). New hotbar items go at the end, so saved slot numbers keep pointing at the
-  same block. The save is the streamer's chunk source: a loaded chunk reads its saved data instead of
-  being generated, and an edited chunk that streams out keeps an RLE snapshot in memory until it is
-  written. Autosave runs within 5 s of the first unsaved change (edits, or the player
-  moving/looking), and immediately on `visibilitychange → hidden`, `pagehide` and the menu's Save &
-  exit. `navigator.storage.persist()` is requested once. Without IndexedDB (some private modes) the
-  game still runs and keeps edits in memory for the session.
+  break/place mode, the world clock, generatorVersion); store `chunks` holds only *edited* chunks
+  under `${worldId}:${cx},${cz}` as `{ v, rle, srle?, flow? }`: the block ids run-length encoded,
+  plus the per-block state the same way when any of it is non-zero, plus the blocks with pending
+  water updates (a chunk with some is saved even if its blocks are as generated). Everything else
+  regenerates from the seed with the world's generator (`generatorVersion` in its record; 1 for
+  every world made before save version 6). Chunks saved before version 6 are 64 layers high: reading
+  them adds a run of air on top (their CI indices, pending water included, stay the same). Chunks
+  saved before version 4 had air where the sea is; reading them runs `floodSea` (the air below sea
+  level open to the sea becomes water). `SAVE_VERSION` is 6; when the stored format changes, bump
+  it, note it in the history at the top of `saves.ts`, add a fixture of the previous version to
+  `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which bring any older record up
+  to date every time one is read (a migrated record is written back the next time it is saved). New
+  hotbar items go at the end, so saved slot numbers keep pointing at the same block. The save is the
+  streamer's chunk source: a loaded chunk reads its saved data instead of being generated, and an
+  edited chunk that streams out keeps an RLE snapshot in memory until it is written. Autosave runs
+  within 5 s of the first unsaved change (edits, or the player moving/looking), and immediately on
+  `visibilitychange → hidden`, `pagehide` and the menu's Save & exit. `navigator.storage.persist()`
+  is requested once. Without IndexedDB (some private modes) the game still runs and keeps edits in
+  memory for the session.
 - **Switching worlds reloads the page** (`?world=<id>`, removed from the URL right away). The start
   card lists worlds by last played; `?seed=123` opens (or creates) the world "Seed 123".
 - **Mobile first.** Every feature must work on a touchscreen with no keyboard. Keep the gesture
@@ -324,14 +359,15 @@ a microtask then hands all the changes made together (one action, one tick of wa
   Match the existing terse style: short local names in hot loops, a one-line comment where intent
   isn't obvious, section banners (`/* ==== NAME ==== */`) for big blocks.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
-  `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`, `ready` (world loaded, play
-  enabled), `count()` (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible
-  counts, draw calls, worker time per lighting job, the last relight's cost), `chunk(cx, cz)` (one
-  chunk's streaming state, lit or not, triangles per pass), `light(x, y, z)` ([skylight, block
-  light]), `verifyLight(cx, cz)` (cells that differ from a fresh lighting), `time` (the world clock,
-  days) and `setTime(t)` (time of day today, 0–1), `water()` (pending updates, ticks, the last
-  tick's changes and time), `waterTick()` (run one now), `showWater(on)` (draw the water or not, to
-  time it), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
+  `seaLevel`, `generator`, `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`,
+  `ready` (world loaded, play enabled), `count()` (non-air blocks in loaded chunks), `stream()`
+  (loaded/lit/meshed/visible counts, draw calls, worker time per lighting job, the last relight's
+  cost), `chunk(cx, cz)` (one chunk's streaming state, lit or not, its non-empty sections, mesh
+  versions per section, triangles per pass), `light(x, y, z)` ([skylight, block light]),
+  `verifyLight(cx, cz)` (cells that differ from a fresh lighting), `time` (the world clock, days)
+  and `setTime(t)` (time of day today, 0–1), `water()` (pending updates, ticks, the last tick's
+  changes and time), `waterTick()` (run one now), `showWater(on)` (draw the water or not, to time
+  it), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
   `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
   `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests drive the
   game through it; `?seed=123` in the URL gives a fixed world.

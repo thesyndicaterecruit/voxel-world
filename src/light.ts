@@ -1,5 +1,5 @@
-import { CB, CS, H, CHUNK_VOL } from './config';
-import { FILTER, EMIT } from './blocks';
+import { CB, CS, H, CHUNK_VOL, SH, NSEC } from './config';
+import { AIR, FILTER, EMIT } from './blocks';
 
 /* ============================ LIGHT ============================ */
 // Two channels per block, 0–15, packed into one byte: skylight in the high nibble, block light in
@@ -16,6 +16,9 @@ import { FILTER, EMIT } from './blocks';
 // neighbours: lightChunk() lights a chunk exactly from those 3×3 chunks (in a worker). After that,
 // relight() keeps it up to date when a block changes: take out the light that depended on the old
 // block, then spread light in again from the edge of the hole (the classic two-queue flood fill).
+// Above everything that's built or grown it is open sky (skylight 15, no block light: a torch's
+// light dies out within 14 blocks), so the work only goes 16 blocks above the highest block around:
+// the sky shines into that layer just as it would from the top of the world.
 
 export const skyOf = (v: number) => v >> 4;
 export const blockOf = (v: number) => v & 15;
@@ -24,9 +27,25 @@ export const blockOf = (v: number) => v & 15;
 export const WALL = 255;
 const FILT = FILTER.slice(), EM = EMIT.slice();
 FILT[WALL] = 15;
-const W = CS, HT = H, VOL = CHUNK_VOL;           // local copies for the hot loops
+const W = CS, VOL = CHUNK_VOL, LAYER = CS * CS;
+/** Layers being lit (from y = 0): set by each entry point */
+let HT = H;
 /** Light lost entering a block with filter f: skylight falling straight down loses just the filter */
 const loss = (f: number, fall: boolean) => (fall ? f : f > 1 ? f : 1);
+/** Open sky, with no block light: the light of every cell above what is worked out */
+const SKY = 0xf0;
+/** How many layers to work out with blocks up to y < top: everything 16 above is plain sky */
+const reach = (top: number) => Math.min(H, top + 16);
+
+/** The y just above the highest non-air block in chunk data (from its section counts, when it has them) */
+export function topOf(c: { data: Uint8Array; count?: Uint16Array }): number {
+  if (c.count) {
+    for (let s = NSEC - 1; s >= 0; s--) if (c.count[s]) return (s + 1) * SH;
+    return 0;
+  }
+  for (let i = c.data.length - 1; i >= 0; i--) if (c.data[i] !== AIR) return ((i / LAYER) | 0) + 1;
+  return 0;
+}
 
 /* ---------- lighting from scratch ---------- */
 // Works on scratch arrays padded with one cell of wall all round (so neighbours need no bounds
@@ -99,22 +118,26 @@ function solve(SX: number, SZ: number): void {
 }
 
 /**
- * Light a box of SX × SZ full-height columns (layout x + SX·(z + SZ·y)), as if nothing were around
- * it (cells outside are walls). Returns the packed light in the same layout.
+ * Light a box of SX × SZ columns (layout x + SX·(z + SZ·y)), as if nothing were around it (cells
+ * outside are walls). `blocks` may hold fewer than H layers: the ones above are air. Returns the
+ * packed light of the full-height box, in the same layout.
  */
 export function computeLight(blocks: Uint8Array, SX: number, SZ: number): Uint8Array {
+  let top = Math.min(H, Math.floor(blocks.length / (SX * SZ)));
+  while (top > 0 && blocks.subarray(SX * SZ * (top - 1), SX * SZ * top).every((id) => id === AIR)) top--;
+  HT = reach(top);
   prepare(SX, SZ);
   const PX = SX + 2, PL = PX * (SZ + 2), f = F, bl = BL, sk = SK, flt = FILT, em = EM;
   for (let y = 0; y < HT; y++) for (let z = 0; z < SZ; z++) {
     const s = SX * (z + SZ * y), d = 1 + PX * (z + 1) + PL * (y + 1);
     for (let x = 0; x < SX; x++) {
-      const id = blocks[s + x], e = em[id];
+      const id = y < top ? blocks[s + x] : AIR, e = em[id];
       f[d + x] = flt[id]; bl[d + x] = e;
       if (e > 1) emitters.push(d + x);
     }
   }
   solve(SX, SZ);
-  const out = new Uint8Array(SX * SZ * HT);
+  const out = new Uint8Array(SX * SZ * H).fill(SKY, SX * SZ * HT);
   for (let y = 0; y < HT; y++) for (let z = 0; z < SZ; z++) {
     const s = 1 + PX * (z + 1) + PL * (y + 1), d = SX * (z + SZ * y);
     for (let x = 0; x < SX; x++) out[d + x] = (sk[s + x] << 4) | bl[s + x];
@@ -123,20 +146,25 @@ export function computeLight(blocks: Uint8Array, SX: number, SZ: number): Uint8A
 }
 
 /**
- * Light of one chunk, from the blocks of it and its 8 neighbours: `blocks9` holds 9 chunks' data
- * (CI layout), chunk k at offset k·CHUNK_VOL being the neighbour at dx = k % 3 − 1, dz = ⌊k / 3⌋ − 1.
- * Bit k of `present` says whether that chunk exists (missing ones, beyond the world edge, are walls).
+ * Light of one chunk, from the blocks of it and its 8 neighbours: `blocks9` holds the lowest `height`
+ * layers of 9 chunks' data (CI layout), chunk k at offset k·`height`·CS² being the neighbour at
+ * dx = k % 3 − 1, dz = ⌊k / 3⌋ − 1; everything above them must be air. Bit k of `present` says whether
+ * that chunk exists (missing ones, beyond the world edge, are walls).
  */
-export function lightChunk(blocks9: Uint8Array, present: number): Uint8Array {
-  const S = W * 3, PX = S + 2, PL = PX * PX;
+export function lightChunk(blocks9: Uint8Array, present: number, height = H): Uint8Array {
+  const S = W * 3, PX = S + 2, PL = PX * PX, cv = height * LAYER;
+  let top = 0;
+  for (let k = 0; k < 9; k++) if ((present >> k) & 1) top = Math.max(top, topOf({ data: blocks9.subarray(k * cv, (k + 1) * cv) }));
+  HT = reach(top);
   prepare(S, S);
   const f = F, bl = BL, sk = SK, flt = FILT, em = EM;
   for (let k = 0; k < 9; k++) {
     if (!((present >> k) & 1)) continue;           // stays wall
-    const ox = 1 + (k % 3) * W, oz = 1 + ((k / 3) | 0) * W, base = k * VOL;
-    // chunk rows (CI layout: x, then z, then y) go to padded rows
+    const ox = 1 + (k % 3) * W, oz = 1 + ((k / 3) | 0) * W, base = k * cv;
+    // chunk rows (CI layout: x, then z, then y) go to padded rows; above `height` it is air
     for (let y = 0, s = base; y < HT; y++) for (let z = 0; z < W; z++, s += W) {
       const d = ox + PX * (oz + z) + PL * (y + 1);
+      if (y >= height) { f.fill(flt[AIR], d, d + W); bl.fill(0, d, d + W); continue; }
       for (let x = 0; x < W; x++) {
         const id = blocks9[s + x], e = em[id];
         f[d + x] = flt[id]; bl[d + x] = e;
@@ -145,7 +173,7 @@ export function lightChunk(blocks9: Uint8Array, present: number): Uint8Array {
     }
   }
   solve(S, S);
-  const out = new Uint8Array(VOL);
+  const out = new Uint8Array(VOL).fill(SKY, HT * LAYER);
   for (let y = 0, d = 0; y < HT; y++) for (let z = 0; z < W; z++, d += W) {
     const s = 1 + W + PX * (1 + W + z) + PL * (y + 1);
     for (let x = 0; x < W; x++) out[d + x] = (sk[s + x] << 4) | bl[s + x];
@@ -159,16 +187,18 @@ export function lightChunk(blocks9: Uint8Array, present: number): Uint8Array {
  * light isn't kept (beyond the world, chunks not lit yet), which it treats as walls.
  */
 export interface LightWorld {
-  chunk(cx: number, cz: number): { data: Uint8Array; light: Uint8Array | null } | undefined;
+  /** `count`: non-air blocks per section, when kept (saves looking for the highest block) */
+  chunk(cx: number, cz: number): { data: Uint8Array; light: Uint8Array | null; count?: Uint16Array } | undefined;
 }
 
-/** Key of a cell in relight's results: x and z below 512, y below 64 */
+/** Key of a cell in relight's results: x and z below 512, y below 16384 */
 export const cellKey = (x: number, y: number, z: number) => x | (z << 9) | (y << 18);
 export const keyX = (k: number) => k & 511, keyY = (k: number) => k >>> 18, keyZ = (k: number) => (k >> 9) & 511;
 
 // relightMany() works in a box around the changed blocks: light changes at most 14 blocks from
-// them sideways, so 16 blocks each way, full height, hold every cell that can change plus the cells
-// around those. Copied in, padded with walls like computeLight's arrays (which grow as needed).
+// them sideways, so 16 blocks each way, from the bottom of the world to 16 above the highest block
+// around, hold every cell that can change plus the cells around those. Copied in, padded with walls
+// like computeLight's arrays (which grow as needed).
 const BR = 16;
 let bF = new Uint8Array(0), bE = new Uint8Array(0), bL = new Uint8Array(0), stamp = new Uint32Array(0);
 const RQ: number[][] = Array.from({ length: 16 }, () => []);
@@ -202,6 +232,14 @@ export function relightMany(w: LightWorld, edits: number[]): number[] {
   }
   if (!seeds.length) return [];
   const bx = x0 - BR, bz = z0 - BR, SX = x1 - x0 + 1 + 2 * BR, SZ = z1 - z0 + 1 + 2 * BR;
+  // how high to go: 16 above the highest block in the box (or the highest change)
+  let hi = 0;
+  for (const e of seeds) hi = Math.max(hi, edits[e + 1] + 1);
+  for (let cz = bz >> CB; cz <= (bz + SZ - 1) >> CB; cz++) for (let cx = bx >> CB; cx <= (bx + SX - 1) >> CB; cx++) {
+    const c = w.chunk(cx, cz);
+    if (c && c.light) hi = Math.max(hi, topOf(c));
+  }
+  HT = reach(hi);
   const PX = SX + 2, PL = PX * (SZ + 2), N = PL * (HT + 2);
   if (bF.length < N) { bF = new Uint8Array(N); bE = new Uint8Array(N); bL = new Uint8Array(N); stamp = new Uint32Array(N); gen = 0; }
   const F = bF, E = bE, B = bL, step = [1, -1, PX, -PX, PL, -PL];   // 5: straight down

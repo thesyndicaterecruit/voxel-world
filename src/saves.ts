@@ -1,7 +1,8 @@
-import { NCX } from './config';
+import { NCX, CHUNK_VOL, OLD_H, CS } from './config';
 import { openDB, type DB } from './db';
 import { rleEncode, rleDecode } from './rle';
-import { floodSea } from './gen';
+import { floodSea } from './gen1';
+import { GENERATOR_VERSION } from './gen';
 import type { Chunk } from './world';
 import type { Mode } from './ui';
 
@@ -25,8 +26,12 @@ import type { Mode } from './ui';
 //      (floodSea in gen.ts) when they are read. World records are unchanged apart from the version.
 //   5  chunks { v: 5, rle, srle?, flow? }: `flow` lists the blocks (CI indices) whose water updates
 //      were still pending (water.ts), omitted when there are none. Earlier chunks have none.
+//   6  the world is 128 blocks high (it was OLD_H = 64): chunks hold 128 layers, and older ones get
+//      air above when read (their CI indices, `flow` included, stay the same). World records gain
+//      `generatorVersion` (gen.ts), the generator their unexplored chunks come from: every world made
+//      before has 1 (gen1.ts, with the sea at y = 20), so its ground never shifts.
 
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 /** When a new world's clock starts: day 1, a little after sunrise (0.25 = 6:00) */
 export const NEW_WORLD_TIME = 0.3;
 const DB_NAME = 'voxel-island', DB_VERSION = 1;
@@ -48,9 +53,11 @@ export interface WorldRecord {
   mode: Mode;
   /** Days since the world began: the fraction is the time of day (0 midnight, 0.5 noon) */
   time: number;
+  /** Which generator makes the world's unexplored chunks (gen.ts): 1 for worlds made before save version 6 */
+  generatorVersion: number;
 }
-/** A world record as stored by any version (older ones have no `time`). */
-export type StoredWorld = Omit<WorldRecord, 'time'> & { time?: number };
+/** A world record as stored by any version (older ones have no `time` or `generatorVersion`). */
+export type StoredWorld = Omit<WorldRecord, 'time' | 'generatorVersion'> & { time?: number; generatorVersion?: number };
 /**
  * A saved chunk: block ids, and the per-block state when any of it is non-zero (both RLE); the blocks
  * with pending water updates, if any.
@@ -65,9 +72,19 @@ export interface ChunkAt { seed: number; cx: number; cz: number }
 export function migrateWorld(w: StoredWorld): WorldRecord {
   if (w.saveVersion > SAVE_VERSION) throw new Error(`world saved by a newer version (${w.saveVersion})`);
   if (w.saveVersion === SAVE_VERSION) return w as WorldRecord;
-  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning; 3 → 4, 4 → 5: unchanged
-  return { ...w, time: w.time ?? NEW_WORLD_TIME, saveVersion: SAVE_VERSION };
+  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning; 3 → 4, 4 → 5: unchanged;
+  // 5 → 6: the first generator
+  return { ...w, time: w.time ?? NEW_WORLD_TIME, generatorVersion: w.generatorVersion ?? 1, saveVersion: SAVE_VERSION };
 }
+
+/** Air from OLD_H up to the top of today's chunks, as one RLE run: appended to a chunk saved before version 6 */
+const RAISE = rleEncode(new Uint8Array(CHUNK_VOL - CS * CS * OLD_H));
+const raise = (rle: Uint8Array) => {
+  const out = new Uint8Array(rle.length + RAISE.length);
+  out.set(rle);
+  out.set(RAISE, rle.length);
+  return out;
+};
 
 /**
  * Bring a stored chunk record up to date. Records from before version 4 get the sea (see the
@@ -76,13 +93,17 @@ export function migrateWorld(w: StoredWorld): WorldRecord {
 export function migrateChunk(r: ChunkRecord, at?: ChunkAt): ChunkRecord {
   if (r.v > SAVE_VERSION) throw new Error(`chunk saved by a newer version (${r.v})`);
   if (r.v === SAVE_VERSION) return r;
-  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged; 3 → 4: the sea; 4 → 5: no pending water
-  let rle = r.rle;
+  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged; 3 → 4: the sea; 4 → 5: no pending water;
+  // 5 → 6: air on top (chunks and their state); flow indices stay as they are
+  let rle: Uint8Array = raise(r.rle);
   if (r.v < 4 && at) {
     const data = rleDecode(rle);
     if (floodSea(data, at.seed, at.cx, at.cz)) rle = rleEncode(data);
   }
-  return r.srle ? { v: SAVE_VERSION, rle, srle: r.srle } : { v: SAVE_VERSION, rle };   // no flow before 5
+  const out: ChunkRecord = { v: SAVE_VERSION, rle };
+  if (r.srle) out.srle = raise(r.srle);
+  if (r.flow) out.flow = r.flow;
+  return out;
 }
 
 /** Encode a chunk for saving, with the blocks that have pending water updates (`flow`). */
@@ -135,7 +156,7 @@ export async function createWorld(name: string, seed: number): Promise<WorldReco
   const w: WorldRecord = {
     id: now.toString(36) + Math.floor(Math.random() * 1e6).toString(36),
     name, seed, createdAt: now, lastPlayed: now, saveVersion: SAVE_VERSION, player: null, slot: 0, mode: 'break',
-    time: NEW_WORLD_TIME,
+    time: NEW_WORLD_TIME, generatorVersion: GENERATOR_VERSION,
   };
   if (db) await db.write(['worlds'], (tx) => tx.objectStore('worlds').put(w));
   return w;
