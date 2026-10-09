@@ -77,8 +77,9 @@ def(GLASS,   'Glass',   T_GLASS,     T_GLASS,      T_GLASS,
 def(TORCH,   'Torch',   T_TORCH,     T_TORCH,      T_TORCH,
   { solid: false, opaque: false, renderPass: 'cutout', lightEmission: 14, lightFilter: 0, model: 'torch', jit: 0, particle: T_PLANKS });
 
-// New items go at the end, so hotbar slots saved by older versions keep pointing at the same block
-export const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, GLASS, TORCH];
+// New items go at the end, so hotbar slots saved by older versions keep pointing at the same block.
+// Water places a source block (creative-style, until buckets come with an inventory).
+export const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, GLASS, TORCH, WATER];
 
 // Tiles with no "up" direction get a random rotation per face, which hides tiling repetition
 export const ROT = new Set([T_GRASS_TOP, T_DIRT, T_STONE, T_SAND, T_LEAVES, T_BEDROCK, T_LEAVES_CUT]);

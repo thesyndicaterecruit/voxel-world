@@ -30,7 +30,7 @@ npm run test:e2e   # build, then the browser tests (Playwright, e2e/), a few min
 Unit tests run in CI before every deploy (`deploy.yml`); the browser tests run in their own workflow
 (`e2e.yml`) on every push and don't hold up the deploy. Still play the change to check it (desktop:
 WASD/arrows, Shift sprint, Space jump, mouse drag on the right half to look, click/F to act, Q/E
-switch mode, 1–9 and 0 pick a hotbar slot, mouse wheel over the hotbar scrolls it).
+switch mode, 1–9, 0 and − pick a hotbar slot, mouse wheel over the hotbar scrolls it).
 
 ## Structure
 
@@ -48,7 +48,9 @@ src/
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
                      time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
-  light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relight() after an edit
+  light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relightMany() after edits
+  water.ts           Flowing water (main thread): ticks, updates only where something disturbed it, the flow rules,
+                     pending updates for saving
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
   gen.ts             Pure world generation: columnHeight, waterLevel (sea, lakes), layering, trees,
@@ -92,11 +94,13 @@ vitest.config.ts, playwright.config.ts
 ```
 
 Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update()` (only once the chunks
-under the player are loaded) → camera → `streamer.update()` (apply finished meshes, unload, start
-worker jobs) → `updateTarget` → particles → environment → render. Edits go `world.setBlock` →
-`world.onChange` → `streamer.blockChanged`, which relights around the block on the spot and
-re-meshes the touched chunks (neighbours too, for borders) and every chunk whose light changed,
-ahead of everything else.
+under the player are loaded) → `water.update()` (a tick every 0.2 s) → camera → `streamer.update()`
+(apply finished meshes, unload, start worker jobs, rebuild water groups) → `updateTarget` →
+particles → environment → render. Edits go `world.setBlock` → `world.onChange`, which tells the
+water (`water.blockChanged`: schedule the water in and next to the block) and collects the change;
+a microtask then hands all the changes made together (one action, one tick of water) to
+`streamer.blocksChanged`, which relights around them on the spot and re-meshes the touched chunks
+(neighbours too, for borders) and every chunk whose light changed, ahead of everything else.
 
 ## Conventions
 
@@ -139,7 +143,20 @@ ahead of everything else.
   overhead (Snell's window) and mirrors the deep further out, fogged half as much as the rest. Out
   of water it stays single-sided, or a pond would show its far side through its near one. Water
   can't be aimed at (raycasts pass through it); placing a block into water replaces it, but
-  torches refuse. Water doesn't flow yet; the player walks on the seabed as if it were dry.
+  torches refuse. The hotbar's Water places a source (creative-style; buckets come with an
+  inventory). The player walks on the seabed as if it were dry (swimming: see below).
+- **Flowing water** (`water.ts`, main thread): water moves in ticks 0.2 s apart and only where
+  something disturbed it — `world.onChange` schedules the water in and next to every changed block,
+  a tick updates at most `MAX_UPDATES` (128) scheduled blocks, and what they change schedules its
+  own neighbours for the next tick, so the untouched sea costs nothing. Rules: water falls first
+  (into air, or a torch it washes away, as full-height falling water; water with water on top is
+  falling); on the ground it spreads one level weaker per block, 7 blocks from a source, toward the
+  nearest drop within 4 blocks if any (a breadth-first look), else every open way; flowing water
+  landing on more water doesn't spread on top of it; a flowing block takes the level its strongest
+  neighbour feeds it, or dries up (a stream drains when its source goes, and finds another way
+  round a block put in it); two sources beside a flowing block on solid ground or a source make it
+  a source; sources never change by themselves. Updates whose chunks (5 blocks around) aren't
+  loaded wait. Pending updates are saved with their chunk (`pendingIn` / `restore`).
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`Streamer`, `WorkerPool`,
   `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
@@ -171,7 +188,7 @@ ahead of everything else.
   `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as opaque
   cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
   Switching re-meshes the chunks with leaves and their neighbours as normal jobs.
-- **Hotbar:** 10 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
+- **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
   scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
 - **Per-block state:** each chunk can carry a second `Uint8Array` (`chunk.state`, same layout as
@@ -186,13 +203,15 @@ ahead of everything else.
   max(1, filter) per block. Block light starts at the emitter's `lightEmission` (torch 14) and loses
   max(1, filter) per block every way. Light reaches at most 15 blocks, so a chunk is lit exactly
   from its 3×3 neighbourhood: `lightChunk` in a worker, once it and its 8 neighbours are loaded.
-  After that, `streamer.blockChanged` calls `relight()` on the main thread (the two-queue flood fill:
-  remove what depended on the old block, then spread back from the edge; it works on a copied box
-  16 blocks around the block, ≈0.5 ms) and re-meshes the chunks whose light changed. If anything
+  After that, `streamer.blocksChanged` calls `relightMany()` on the main thread for the changes made
+  together (the two-queue flood fill: remove what depended on the old blocks, then spread back from
+  the edge; it works on a copied box 16 blocks around them, ≈0.5 ms for one block; changes more than
+  32 blocks apart are lit separately) and re-meshes the chunks whose light changed. If anything
   within reach isn't lit yet it falls back to lighting those chunks again in workers; lighting jobs
   carry a version and results from before an edit are thrown away. Meshing needs the chunk and its
-  8 neighbours lit. `tests/light.test.ts` checks that incremental updates always equal a fresh
-  computation; in the game `__voxel.verifyLight(cx, cz)` does the same for one chunk.
+  8 neighbours lit. `tests/light.test.ts` checks that incremental updates, single and in batches,
+  always equal a fresh computation; in the game `__voxel.verifyLight(cx, cz)` does the same for one
+  chunk.
 - **Shading** (`shading.ts`): every chunk vertex carries its colour as r = face shading × AO ×
   jitter, g = skylight, b = block light (light as level × 17). Smooth light: a vertex averages the
   light of the cells touching its corner on the face's outer side (the face's neighbour, the two
@@ -259,11 +278,12 @@ ahead of everything else.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar slot,
   break/place mode, the world clock); store `chunks` holds only *edited* chunks under
-  `${worldId}:${cx},${cz}` as `{ v, rle, srle? }`: the block ids run-length encoded, plus the
-  per-block state the same way when any of it is non-zero. Everything else regenerates from the seed
-  — so changing `gen.ts` changes the unedited terrain of existing saves. Chunks saved before version 4
-  had air where the sea is; reading them runs `floodSea` (the air below sea level open to the sea
-  becomes water). `SAVE_VERSION` is 4; when
+  `${worldId}:${cx},${cz}` as `{ v, rle, srle?, flow? }`: the block ids run-length encoded, plus the
+  per-block state the same way when any of it is non-zero, plus the blocks with pending water
+  updates (a chunk with some is saved even if its blocks are as generated). Everything else
+  regenerates from the seed — so changing `gen.ts` changes the unedited terrain of existing saves.
+  Chunks saved before version 4 had air where the sea is; reading them runs `floodSea` (the air below
+  sea level open to the sea becomes water). `SAVE_VERSION` is 5; when
   the stored format changes, bump it, note it in the history at the top of `saves.ts`, add a fixture
   of the previous version to `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which
   bring any older record up to date every time one is read (a migrated record is written back the
@@ -290,7 +310,8 @@ ahead of everything else.
   time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
   or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
   (cells that differ from a fresh lighting), `time` (the world clock, days) and `setTime(t)` (time of
-  day today, 0–1), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle),
+  day today, 0–1), `water()` (pending updates, ticks, the last tick's changes and time) and
+  `waterTick()` (run one now), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle),
   `getState`, `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and
   its id), `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests
   drive the game through it; `?seed=123` in the URL gives a fixed world.

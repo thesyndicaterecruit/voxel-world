@@ -1,6 +1,7 @@
 import { test, expect, devices } from '@playwright/test';
 import { CHUNK_VOL, CI } from '../src/config';
 import { rleEncode } from '../src/rle';
+import { SAVE_VERSION } from '../src/saves';
 import { openGame, play, ticks, block, waitReady } from './game';
 
 test.use({ ...devices['Pixel 7 landscape'] });
@@ -50,9 +51,9 @@ test('a world saved by save version 1 still loads, and is saved in the current v
   await page.evaluate(() => window.__voxel.save());
   const worlds = await page.evaluate(dump('worlds')) as [string, { saveVersion: number }][];
   const chunks = await page.evaluate(dump('chunks')) as [string, { v: number; srle?: unknown }][];
-  expect(worlds.find(([k]) => k === 'v1world')![1].saveVersion).toBe(4);
+  expect(worlds.find(([k]) => k === 'v1world')![1].saveVersion).toBe(SAVE_VERSION);
   const saved = chunks.find(([k]) => k === 'v1world:16,16')![1];
-  expect(saved.v).toBe(4);
+  expect(saved.v).toBe(SAVE_VERSION);
   expect(saved.srle).toBeTruthy();
 
   await page.reload();

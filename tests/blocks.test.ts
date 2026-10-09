@@ -42,7 +42,7 @@ describe('block registry', () => {
 
   it('keeps the first 8 hotbar slots, so slot numbers in old saves still mean the same block', () => {
     expect(HOTBAR.slice(0, 8)).toEqual([GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK]);
-    expect(HOTBAR.slice(8)).toEqual([GLASS, TORCH]);
+    expect(HOTBAR.slice(8)).toEqual([GLASS, TORCH, WATER]);
   });
 
   it('has lookup tables that match the registry', () => {

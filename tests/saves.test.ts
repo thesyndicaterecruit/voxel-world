@@ -42,6 +42,15 @@ describe('chunk save format', () => {
     expect(back.state).toEqual(state);
   });
 
+  it('round-trips the blocks with pending water updates, and has no list when there are none', () => {
+    const data = terrain(8), flow = Uint16Array.from([CI(1, 20, 2), CI(1, 19, 2), CI(15, 3, 0)]);
+    const rec = encodeChunk(data, null, flow);
+    expect(Array.from(rec.flow!)).toEqual(Array.from(flow));
+    expect(Array.from(decodeChunk(structuredClone(rec)).flow!)).toEqual(Array.from(flow));
+    expect(encodeChunk(data, null, new Uint16Array(0)).flow).toBeUndefined();
+    expect(decodeChunk(encodeChunk(data, null)).flow).toBeNull();
+  });
+
   it('round-trips a wall torch with its facing', () => {
     const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
     data[CI(3, 30, 4)] = PLANKS;
@@ -55,7 +64,7 @@ describe('chunk save format', () => {
     for (const state of [null, new Uint8Array(CHUNK_VOL)]) {
       const rec = encodeChunk(data, state);
       expect(rec.srle).toBeUndefined();
-      expect(decodeChunk(rec)).toEqual({ data, state: null });
+      expect(decodeChunk(rec)).toEqual({ data, state: null, flow: null });
     }
   });
 
@@ -165,5 +174,20 @@ describe('migration from save version 3', () => {
     // a record migrated with its place has the sea in it; without it, nothing is added
     expect(rleDecode(migrateChunk(v3Chunk, at).rle)).toEqual(data);
     expect(migrateChunk(v3Chunk).rle).toEqual(v3Chunk.rle);
+  });
+});
+
+describe('migration from save version 4', () => {
+  // version 4: chunks with no pending water updates; world records like version 3's
+  const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
+  data[CI(5, 19, 5)] = WATER; state[CI(5, 19, 5)] = 3;
+  const v4Chunk: ChunkRecord = { v: 4, rle: rleEncode(data), srle: rleEncode(state) };
+
+  it('reads its chunks as they were, with nothing left to flow', () => {
+    const back = decodeChunk(v4Chunk, { seed: 4242, cx: 0, cz: 0 });
+    expect(back.data).toEqual(data);
+    expect(back.state).toEqual(state);
+    expect(back.flow).toBeNull();
+    expect(migrateChunk(v4Chunk)).toEqual({ v: SAVE_VERSION, rle: v4Chunk.rle, srle: v4Chunk.srle });
   });
 });

@@ -199,8 +199,8 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
     if (!isPlaying()) return;
     if (e.code === 'Escape' || e.code === 'KeyM') showMenu(!menuOpen());
     if (menuOpen()) return;
-    if (/^Digit[0-9]$/.test(e.code)) {           // 1–9, then 0 for the tenth slot
-      const i = (+e.code.slice(5) + 9) % 10;
+    if (/^Digit[0-9]$/.test(e.code) || e.code === 'Minus') {   // 1–9, then 0 and − for the tenth and eleventh slots
+      const i = e.code === 'Minus' ? 10 : (+e.code.slice(5) + 9) % 10;
       if (i < HOTBAR.length) { selectSlot(i); setMode('place'); }
     }
     if (e.code === 'KeyQ' || e.code === 'KeyE') setMode(hud.mode === 'break' ? 'place' : 'break');

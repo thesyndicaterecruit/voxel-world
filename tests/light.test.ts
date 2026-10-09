@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H, CHUNK_VOL, CI } from '../src/config';
 import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS } from '../src/blocks';
-import { computeLight, lightChunk, relight, skyOf, blockOf, cellKey, keyX, type LightWorld } from '../src/light';
+import { computeLight, lightChunk, relight, relightMany, skyOf, blockOf, cellKey, keyX, type LightWorld } from '../src/light';
 
 /** A small world of chunks: SX × SZ full-height columns (multiples of CS), nothing around it */
 function testWorld(SX: number, SZ: number) {
@@ -41,6 +41,18 @@ function testWorld(SX: number, SZ: number) {
       const c = chunk(x, z), old = c.data[ci(x, y, z)];
       c.data[ci(x, y, z)] = id;
       return relight(w, x, y, z, old, id);
+    },
+    /** Change several blocks ([x, y, z, id] each), then relight them in one go; returns the changed cells */
+    editMany(list: number[][]) {
+      const edits: number[] = [];
+      for (const [x, y, z, id] of list) {
+        const c = chunk(x, z), i = ci(x, y, z);
+        edits.push(x, y, z, c.data[i], id);
+        c.data[i] = id;
+      }
+      // a block changed twice counts from what it was first to what it is now
+      for (let e = 0; e < edits.length; e += 5) edits[e + 4] = chunk(edits[e], edits[e + 2]).data[ci(edits[e], edits[e + 1], edits[e + 2])];
+      return relightMany(w, edits);
     },
     sky: (x: number, y: number, z: number) => skyOf(lv(x, y, z)),
     blk: (x: number, y: number, z: number) => blockOf(lv(x, y, z)),
@@ -227,6 +239,36 @@ describe('incremental updates match a fresh computation', () => {
       // it reports exactly the cells whose light changed
       const diff: number[] = [];
       now.forEach((v, i) => { if (v !== before[i]) diff.push(cellKey(i % 32, Math.floor(i / 1024), Math.floor(i / 32) % 32)); });
+      expect(changed.slice().sort((a, b) => a - b)).toEqual(diff.sort((a, b) => a - b));
+    }
+  });
+
+  it('after every batch of many random edits relit together (water spreading, a wall going up)', () => {
+    let seed = 11;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const ids = [AIR, AIR, STONE, TORCH, GLASS, LEAVES, WATER, WATER, PLANKS];
+    const t = ground(48, 32);
+    for (let k = 0; k < 40; k++) {
+      const x = Math.floor(rand() * 46), z = Math.floor(rand() * 30), y = 10 + Math.floor(rand() * 8);
+      t.fill(x, y, z, x + 2, y, z + 2, STONE);
+    }
+    t.lightAll();
+    for (let k = 0; k < 120; k++) {
+      // up to 30 edits, either clustered (like flowing water) or anywhere, some cells twice
+      const n = 1 + Math.floor(rand() * 30), cx = Math.floor(rand() * 48), cz = Math.floor(rand() * 32), near = rand() < 0.6, list: number[][] = [];
+      for (let j = 0; j < n; j++) {
+        const x = near ? Math.min(47, Math.max(0, cx + Math.floor(rand() * 9) - 4)) : Math.floor(rand() * 48);
+        const z = near ? Math.min(31, Math.max(0, cz + Math.floor(rand() * 9) - 4)) : Math.floor(rand() * 32);
+        list.push([x, 6 + Math.floor(rand() * 16), z, ids[Math.floor(rand() * ids.length)]]);
+      }
+      const before = t.light().slice(), changed = t.editMany(list);
+      const fresh = t.fresh(), now = t.light();
+      if (!fresh.every((v, i) => v === now[i])) {
+        const i = fresh.findIndex((v, j) => v !== now[j]);
+        throw new Error(`batch ${k}: cell ${i % 48},${Math.floor(i / (48 * 32))},${Math.floor(i / 48) % 32} is ${now[i].toString(16)}, should be ${fresh[i].toString(16)}`);
+      }
+      const diff: number[] = [];
+      now.forEach((v, i) => { if (v !== before[i]) diff.push(cellKey(i % 48, Math.floor(i / (48 * 32)), Math.floor(i / 48) % 32)); });
       expect(changed.slice().sort((a, b) => a - b)).toEqual(diff.sort((a, b) => a - b));
     }
   });

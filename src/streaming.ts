@@ -4,7 +4,7 @@ import { world, type Chunk } from './world';
 import { LEAVES } from './blocks';
 import { FP, PAD_VOL, type MeshData, type PassMesh } from './mesher';
 import { paddedCopy, chunkGeometry, groupGeometry } from './meshing';
-import { relight, lightChunk, keyX, keyZ } from './light';
+import { relightMany, lightChunk, cellKey, keyX, keyZ } from './light';
 import type { WorkerPool } from './workers';
 
 /* ============================ CHUNK STREAMING ============================ */
@@ -22,8 +22,8 @@ import type { WorkerPool } from './workers';
 // per job, adds at most UPLOADS_PER_FRAME chunks' meshes a frame (more behind the title card, where
 // a slow frame doesn't matter), and lets edits jump the queue. While the world is first loading,
 // it streams as if the view distance were FIRST_R, so what's needed to start comes first.
-// An edit is relit right away on the main thread (relight in light.ts), and the chunks whose light
-// changed are re-meshed with it.
+// Edits are relit on the main thread (relightMany in light.ts: the changes made together, e.g. by
+// one tick of flowing water, in one go), and the chunks whose light changed are re-meshed with them.
 //
 // A chunk has up to three meshes, one per render pass (only those that aren't empty): opaque,
 // cutout (alpha-tested, writes depth) and translucent (blended, drawn after everything else, back to
@@ -73,8 +73,11 @@ interface Slot {
 interface Ready { ci: number; epoch: number; version: number; urgent: boolean; data: MeshData }
 
 export interface ChunkSource {
-  /** Edited contents of chunk (cx, cz) kept from earlier, or null to generate it from the seed. */
-  load?(cx: number, cz: number): Promise<{ data: Uint8Array; state: Uint8Array | null }> | null;
+  /**
+   * Edited contents of chunk (cx, cz) kept from earlier, or null to generate it from the seed; `flow`:
+   * water updates that were still pending in it (see water.ts).
+   */
+  load?(cx: number, cz: number): Promise<{ data: Uint8Array; state: Uint8Array | null; flow?: Uint16Array | null }> | null;
   /** Called with a chunk that is about to be dropped from memory (keep it if it was edited). */
   unload?(c: Chunk): void;
 }
@@ -89,11 +92,11 @@ export interface Streamer {
   /** Once per frame, before rendering: order the chunks' translucent meshes back to front from the camera. */
   sortTranslucent(camera: THREE.Vector3): void;
   /**
-   * The block at (x, y, z) was `old` and has just changed (world.onChange): relight around it and
-   * re-mesh what it touches — its chunk and neighbours on a border, and every chunk whose light
-   * changed — ahead of everything else.
+   * Blocks have just changed (world.onChange): `changes` holds x, y, z and the block that was there
+   * for each. Relight around them and re-mesh what they touch — their chunks and neighbours on a
+   * border, and every chunk whose light changed — ahead of everything else.
    */
-  blockChanged(x: number, y: number, z: number, old: number): void;
+  blocksChanged(changes: number[]): void;
   setRenderDistance(r: number): void;
   /** Mesh leaves as opaque cubes ("Fancy leaves" off); re-meshes the chunks it changes. */
   setOpaqueLeaves(on: boolean): void;
@@ -115,6 +118,36 @@ export interface Streamer {
    */
   stats(): { loaded: number; lit: number; meshed: number; visible: number; passes: number[]; queued: number; edits: number;
     lightMs: number; relightMs: number; relit: number };
+}
+
+/**
+ * Split edits (x, y, z, old, new each) into groups whose light can be worked out separately: edits in
+ * 32×32 cells that touch (diagonally too) go together, so edits in different groups are more than
+ * 32 blocks apart and can't affect each other's light (it reaches 15 blocks).
+ */
+function clusters(edits: number[]): number[][] {
+  const cells = new Map<number, number[]>();
+  for (let e = 0; e < edits.length; e += 5) {
+    const k = (edits[e] >> 5) + (edits[e + 2] >> 5) * 64;
+    let c = cells.get(k);
+    if (!c) cells.set(k, (c = []));
+    c.push(edits[e], edits[e + 1], edits[e + 2], edits[e + 3], edits[e + 4]);
+  }
+  const out: number[][] = [];
+  for (const start of cells.keys()) {
+    if (!cells.has(start)) continue;
+    const group: number[] = [], todo = [start];
+    while (todo.length) {
+      const k = todo.pop()!, c = cells.get(k);
+      if (!c) continue;
+      cells.delete(k);
+      for (const v of c) group.push(v);
+      const kx = k % 64, kz = (k / 64) | 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) if (cells.has(kx + dx + (kz + dz) * 64)) todo.push(kx + dx + (kz + dz) * 64);
+    }
+    out.push(group);
+  }
+  return out;
 }
 
 /** `materials` are the chunk materials per render pass: opaque, cutout, translucent. */
@@ -148,15 +181,15 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
   function dispatchLoad(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = ++s.epoch;
     s.state = LOADING;
-    const done = (data: Uint8Array, state: Uint8Array | null, edited: boolean) => {
+    const done = (data: Uint8Array, state: Uint8Array | null, edited: boolean, flow: Uint16Array | null = null) => {
       if (s.epoch !== epoch || s.state !== LOADING) return;   // unloaded meanwhile
-      world.setChunk(cx, cz, data, state, edited);
+      world.setChunk(cx, cz, data, state, edited, flow);
       s.state = LOADED; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
       s.lightVer = 0; s.lightSent = -1; s.relit = false;
     };
     const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, cx, cz }, [], (res) => { if (res.type === 'gen') done(res.data, null, false); });
     const saved = source.load ? source.load(cx, cz) : null;
-    if (saved) saved.then((c) => done(c.data, c.state, true), gen);
+    if (saved) saved.then((c) => done(c.data, c.state, true, c.flow ?? null), gen);
     else gen();
   }
 
@@ -374,39 +407,58 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       }
     },
 
-    blockChanged(x, y, z, old) {
-      const cx = x >> CB, cz = z >> CB;
-      // lighting jobs started before this used the old block: their results will be redone
-      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-        const X = cx + dx, Z = cz + dz;
-        if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) slots[X + Z * NCX].lightVer++;
-      }
-      const t0 = performance.now();
-      if (neighboursLit(cx, cz)) {
-        // everything the change can light or darken (≤ 15 blocks) is lit: relight right here, then
-        // re-mesh every chunk that has a changed cell in it or next to its border
-        const changed = relight(world, x, y, z, old, world.getBlock(x, y, z)), meshD = R * CS;
-        const marks = new Set<number>();
-        for (const k of changed) {
-          const kx = keyX(k), kz = keyZ(k);
-          for (let Z = (kz - 1) >> CB; Z <= (kz + 1) >> CB; Z++) for (let X = (kx - 1) >> CB; X <= (kx + 1) >> CB; X++) {
-            if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) marks.add(X + Z * NCX);
-          }
-        }
-        for (const ci of marks) if (hasMesh(slots[ci]) || slots[ci].dist <= meshD) touch(ci);
-        relitCells = changed.length;
-      } else {
-        // some of it isn't lit yet (just loaded): light the lit chunks around it again from scratch
+    blocksChanged(changes) {
+      // each block once, from what it was first to what it is now
+      const first = new Set<number>(), edits: number[] = [], near = new Set<number>();
+      for (let i = 0; i < changes.length; i += 4) {
+        const x = changes[i], y = changes[i + 1], z = changes[i + 2], k = cellKey(x, y, z);
+        if (first.has(k)) continue;
+        first.add(k);
+        edits.push(x, y, z, changes[i + 3], world.getBlock(x, y, z));
         for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-          const c = world.chunk(cx + dx, cz + dz);
-          if (c && c.light) { c.light = null; slots[c.cx + c.cz * NCX].relit = true; }
+          const X = (x >> CB) + dx, Z = (z >> CB) + dz;
+          if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) near.add(X + Z * NCX);
         }
-        relitCells = -1;
       }
+      // lighting jobs started before this used the old blocks: their results will be redone
+      for (const ci of near) slots[ci].lightVer++;
+      const t0 = performance.now(), meshD = R * CS, marks = new Set<number>();
+      relitCells = 0;
+      for (const group of clusters(edits)) {
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+        for (let e = 0; e < group.length; e += 5) {
+          x0 = Math.min(x0, group[e]); x1 = Math.max(x1, group[e]); z0 = Math.min(z0, group[e + 2]); z1 = Math.max(z1, group[e + 2]);
+        }
+        // everything the changes can light or darken (≤ 15 blocks) is lit: relight right here
+        let lit = true;
+        for (let Z = (z0 - 16) >> CB; Z <= (z1 + 16) >> CB && lit; Z++) for (let X = (x0 - 16) >> CB; X <= (x1 + 16) >> CB; X++) {
+          const c = world.chunk(X, Z);
+          if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ && !(c && c.light)) { lit = false; break; }
+        }
+        if (lit) {
+          // then re-mesh every chunk that has a changed cell in it or next to its border
+          const changed = relightMany(world, group);
+          for (const k of changed) {
+            const kx = keyX(k), kz = keyZ(k);
+            for (let Z = (kz - 1) >> CB; Z <= (kz + 1) >> CB; Z++) for (let X = (kx - 1) >> CB; X <= (kx + 1) >> CB; X++) {
+              if (X >= 0 && X < NCX && Z >= 0 && Z < NCZ) marks.add(X + Z * NCX);
+            }
+          }
+          if (relitCells >= 0) relitCells += changed.length;
+        } else {
+          // some of it isn't lit yet (just loaded): light the lit chunks around it again from scratch
+          for (let e = 0; e < group.length; e += 5) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+            const c = world.chunk((group[e] >> CB) + dx, (group[e + 2] >> CB) + dz);
+            if (c && c.light) { c.light = null; slots[c.cx + c.cz * NCX].relit = true; }
+          }
+          relitCells = -1;
+        }
+      }
+      for (const ci of marks) if (hasMesh(slots[ci]) || slots[ci].dist <= meshD) touch(ci);
       relightMs = performance.now() - t0;
-      // the block itself: its chunk, and the chunks it borders
-      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-        const X = x + dx, Z = z + dz;
+      // the blocks themselves: their chunks, and the chunks they border
+      for (let e = 0; e < edits.length; e += 5) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const X = edits[e] + dx, Z = edits[e + 2] + dz;
         if (inWorld(X, Z)) touch((X >> CB) + (Z >> CB) * NCX);
       }
     },

@@ -9,6 +9,7 @@ import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
+import { createWater } from './water';
 import { P, V, player, spawn, update, collides, aim } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
@@ -95,13 +96,26 @@ async function boot(): Promise<void> {
   /** The world clock: days since the world began (the fraction is the time of day), saved with it */
   let days = record.time;
   const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
-    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days } : null));
+    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days } : null),
+    (cx, cz) => water.pendingIn(cx, cz));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
   const streamer = createStreamer(scene, chunkMaterials, pool, save);
-  world.onChange = (x, y, z, old) => { streamer.blockChanged(x, y, z, old); save.touch(x >> CB, z >> CB); };
   const env = createEnvironment(scene, renderer, seed, home.x, home.z);
   const fx = createEffects(scene, textures);
+  // flowing water: torches it reaches pop off; a chunk with water updates pending has something to save
+  const water = createWater(world, { onWash: (x, y, z, id) => fx.burst(x, y, z, id), onPending: (cx, cz) => save.touch(cx, cz) });
+  // block changes: the water around them moves, and all the changes made together (one action, one
+  // tick of water) are relit and re-meshed in one go, right after
+  const changes: number[] = [];
+  let flushing = false;
+  world.onChange = (x, y, z, old) => {
+    changes.push(x, y, z, old);
+    save.touch(x >> CB, z >> CB);
+    water.blockChanged(x, y, z, old);
+    if (!flushing) { flushing = true; queueMicrotask(() => { flushing = false; streamer.blocksChanged(changes.splice(0)); }); }
+  };
+  world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); };
 
   // view distance: how far chunks are streamed, and where the fog ends
   const setRenderDistance = (r: number) => { streamer.setRenderDistance(r); env.setFog(r * CS * 0.35, r * CS); };
@@ -147,7 +161,7 @@ async function boot(): Promise<void> {
   });
 
   const interaction = createInteraction(fx);
-  initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].tex[0]]; });
+  initHotbar(canvases, (i) => { const b = B[HOTBAR[i]]; fx.ghostMat.map = textures[b.model === 'liquid' ? b.icon : b.tex[0]]; });
 
   // autosave: within 5 s of a change, and right away when the app is hidden, closed or exited
   let quitting = false;
@@ -195,6 +209,7 @@ async function boot(): Promise<void> {
     if (playing) {
       // physics waits until the chunks under the player are loaded (unloaded chunks are solid)
       if (streamer.areaLoaded(P[0], P[2])) update(dt, readControls());
+      if (!menuOpen()) water.update(dt);
       camera.position.set(P[0], P[1] + EYE, P[2]);
       camera.rotation.set(player.pitch, player.yaw, 0);
       // moving or looking around counts as a change worth saving
@@ -254,6 +269,7 @@ async function boot(): Promise<void> {
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
     verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
+    water: () => water.stats(), waterTick: () => water.tick(),
     get time() { return days; },
     setTime: (t: number) => { days = Math.floor(days) + t; },
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,

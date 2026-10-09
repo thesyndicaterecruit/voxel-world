@@ -34,14 +34,17 @@ export class World {
   seed = 0;
   /** Told about every block change made through setBlock, with the block that was there before. */
   onChange: ((x: number, y: number, z: number, old: number) => void) | null = null;
+  /** Told about every chunk put in place (setChunk), with the water updates still pending in it when it was saved. */
+  onLoad: ((c: Chunk, flow: Uint16Array | null) => void) | null = null;
 
   chunk(cx: number, cz: number): Chunk | undefined {
     return cx >= 0 && cx < NCX && cz >= 0 && cz < NCZ ? this.chunks[cx + cz * NCX] : undefined;
   }
-  /** Install chunk data and state (used directly, not copied). */
-  setChunk(cx: number, cz: number, data: Uint8Array, state: Uint8Array | null = null, edited = false): Chunk {
+  /** Install chunk data and state (used directly, not copied); `flow`: its pending water updates, if it had any. */
+  setChunk(cx: number, cz: number, data: Uint8Array, state: Uint8Array | null = null, edited = false, flow: Uint16Array | null = null): Chunk {
     const c: Chunk = { cx, cz, data, state, edited, light: null };
     this.chunks[cx + cz * NCX] = c;
+    if (this.onLoad) this.onLoad(c, flow);
     return c;
   }
   removeChunk(cx: number, cz: number): void { this.chunks[cx + cz * NCX] = undefined; }
