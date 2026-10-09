@@ -6,7 +6,8 @@ canvas{position:fixed;top:0;left:0;display:block;touch-action:none;outline:none}
 
 /* ---------- underwater tint (body.under is set by environment.ts) ---------- */
 #tint{position:fixed;top:0;left:0;right:0;bottom:0;z-index:1;pointer-events:none;display:none;
-  background:radial-gradient(ellipse at center,rgba(26,92,170,.3),rgba(10,46,100,.55))}
+  background:radial-gradient(ellipse at center,rgba(26,92,170,.3),rgba(10,46,100,.55)),
+    linear-gradient(rgba(2,8,20,calc(var(--dim,0)*.6)),rgba(2,8,20,calc(var(--dim,0)*.6)))}
 body.under #tint{display:block}
 
 /* ---------- in-game HUD ---------- */

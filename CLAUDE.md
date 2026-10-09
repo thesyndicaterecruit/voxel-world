@@ -60,7 +60,7 @@ src/
   streaming.ts       Chunk streaming: load/light/mesh/unload regions, job priorities, upload budget, edits (relight +
                      re-mesh)
   world.ts           Chunk storage (block ids, lazy per-block state, light) + World class (getBlock/getState/getLight/
-                     setBlock/isSolid/topY in world coords, seed), raycast, inWater
+                     setBlock/isSolid/topY in world coords, seed), raycast; inWater, waterDepth, waterFlow
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
@@ -72,9 +72,11 @@ src/
   environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
                      around the camera, all following the time of day (setTime); fog + underwater look; daylight,
                      sky tint and the sky colour water reflects
-  effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles
-                     (the last two lit like the spot they're at)
-  player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
+  effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
+                     splashes (the last three lit like the spot they're at)
+  player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics, swimming,
+                     auto-jump, aim(); playerEvents (splash)
+  audio.ts           Sound hooks (playSound), silent until the game has audio
   interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
@@ -138,13 +140,26 @@ a microtask then hands all the changes made together (one action, one tick of wa
   (`lightUniforms.skyColor`, set with the time of day) where it sees skylight, more at a glancing
   angle; that and the angle are worked out in view space, because r128 doesn't give a
   `MeshBasicMaterial` `cameraPosition`. The camera counts as in water (`inWater`) below a water
-  block's surface: then the fog, clear colour and `body.under` tint turn blue, and the water
-  material shows back faces too (`setUnderwater`): the surface from below shows the sky near
-  overhead (Snell's window) and mirrors the deep further out, fogged half as much as the rest. Out
-  of water it stays single-sided, or a pond would show its far side through its near one. Water
-  can't be aimed at (raycasts pass through it); placing a block into water replaces it, but
-  torches refuse. The hotbar's Water places a source (creative-style; buckets come with an
-  inventory). The player walks on the seabed as if it were dry (swimming: see below).
+  block's surface: then the fog, clear colour and `body.under` tint turn blue, darker the deeper it
+  is (`waterDepth`, down to 24 blocks: the fog also closes in from 20 to 14 blocks) and at night (the
+  CSS tint's dark layer follows `--dim`), and the water material shows back faces too
+  (`setUnderwater`): the surface from below shows the sky near overhead (Snell's window) and mirrors
+  the deep further out, fogged half as much as the rest. Out of water it stays single-sided, or a
+  pond would show its far side through its near one. Water can't be aimed at (raycasts pass through
+  it); placing a block into water replaces it, but torches refuse. The hotbar's Water places a
+  source (creative-style; buckets come with an inventory).
+- **Swimming** (`player.ts`): `player.wet` says how deep the player is — 1 feet (0.1 up), 2 waist
+  (0.9 up), 3 head (the eye) under. With the waist in, the player swims: 55% speed (80% wading with
+  just the feet in), JUMP (held) swims up toward 3 blocks/s and without it they sink toward
+  −1 block/s, a fall is braked hard (already with the feet in, to −4 blocks/s), and there is no
+  auto-jump (wading keeps it). Holding JUMP at the surface bobs: the waist rises out, gravity takes
+  over, it dips back in — the head stays above water. Pushing into a ledge with JUMP held while the
+  feet are in water lifts the player at 9.5 blocks/s, enough to clear a block above the water (the
+  way out of a lake on a touchscreen: joystick forward + JUMP). Flowing water carries the player
+  along its `waterFlow` at 1.2 blocks/s. Hitting the water faster than 6 blocks/s fires
+  `playerEvents.splash` (main.ts: `fx.splash` and the silent `playSound('splash')` hook).
+  `player.breath` counts seconds of air (`BREATH` 15) down with the head under water and back up
+  above it; nothing uses it until there is health.
 - **Flowing water** (`water.ts`, main thread): water moves in ticks 0.2 s apart and only where
   something disturbed it — `world.onChange` schedules the water in and next to every changed block,
   a tick updates at most `MAX_UPDATES` (128) scheduled blocks, and what they change schedules its
@@ -305,7 +320,7 @@ a microtask then hands all the changes made together (one action, one tick of wa
   Match the existing terse style: short local names in hot loops, a one-line comment where intent
   isn't obvious, section banners (`/* ==== NAME ==== */`) for big blocks.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
-  `yaw`, `pitch`, `mode`, `onGround`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
+  `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
   (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible counts, draw calls, worker
   time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
   or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
@@ -334,12 +349,14 @@ Ideas, roughly in priority order. Nothing here is committed to.
 2. **Saves:** rename worlds, export/import a world as a file, guard against two tabs writing the same
    world.
 3. **PWA:** web app manifest + service worker for home-screen install and offline play.
-4. **Water:** real water blocks below `SEA_LEVEL` (replacing the single surface), with swimming physics.
+4. **Health:** hearts, fall damage, and drowning: `player.breath` already counts the seconds of air
+   left under water (15), but nothing shows or uses it yet.
 5. **Faster meshing:** greedy meshing (fewer vertices), smarter job cancellation when the player
    moves fast.
-6. **More content:** more block types (water, flowers, ores), a block-picker inventory instead of an
-   ever longer hotbar.
-7. **Audio:** break/place/footstep sounds generated with Web Audio (keeps the no-assets approach).
+6. **More content:** more block types (flowers, ores), a block-picker inventory instead of an ever
+   longer hotbar, buckets (water is a creative-style hotbar item for now).
+7. **Audio:** break/place/footstep/splash sounds generated with Web Audio (keeps the no-assets
+   approach); `playSound` in `audio.ts` is already called where a splash should sound.
 8. **Settings:** look sensitivity, invert-Y, FOV, render-quality toggle.
 9. **Three.js upgrade:** move to a current release and retune colours (`outputColorSpace`, texture
    `colorSpace`) so the look matches the r128 version.

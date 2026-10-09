@@ -1,5 +1,5 @@
 import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
-import { AIR, WATER, SOLID, TARGETABLE, MODEL, liquidHeight } from './blocks';
+import { AIR, WATER, SOLID, TARGETABLE, MODEL, LEVEL, FALLING, liquidHeight } from './blocks';
 import { torchBox } from './torch';
 
 /* ============================ CHUNKS ============================ */
@@ -114,6 +114,36 @@ export function inWater(x: number, y: number, z: number): boolean {
   const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
   if (world.getBlock(bx, by, bz) !== WATER) return false;
   return y - by < liquidHeight(world.getState(bx, by, bz), world.getBlock(bx, by + 1, bz) === WATER);
+}
+
+/** How far point (x, y, z) is below the surface of the water it is in, in blocks; −1 if it isn't in water. */
+export function waterDepth(x: number, y: number, z: number): number {
+  if (!inWater(x, y, z)) return -1;
+  const bx = Math.floor(x), bz = Math.floor(z);
+  let top = Math.floor(y);
+  while (top + 1 < H && world.getBlock(bx, top + 1, bz) === WATER) top++;
+  return top + liquidHeight(world.getState(bx, top, bz)) - y;
+}
+
+const flow = [0, 0];
+/**
+ * Which way the water in block (x, y, z) runs: a unit vector [x, z] downhill toward weaker water or
+ * open air, [0, 0] where it is still (a source, falling water, not water). The array is reused.
+ */
+export function waterFlow(x: number, y: number, z: number): number[] {
+  flow[0] = flow[1] = 0;
+  if (world.getBlock(x, y, z) !== WATER) return flow;
+  const st = world.getState(x, y, z);
+  if (st & FALLING || !(st & LEVEL)) return flow;
+  const h = liquidHeight(st);
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const nb = world.getBlock(x + dx, y, z + dz);
+    const drop = nb === WATER ? h - liquidHeight(world.getState(x + dx, y, z + dz)) : SOLID[nb] ? 0 : h;
+    if (drop > 0) { flow[0] += dx * drop; flow[1] += dz * drop; }
+  }
+  const l = Math.hypot(flow[0], flow[1]);
+  if (l > 1e-6) { flow[0] /= l; flow[1] /= l; }
+  return flow;
 }
 
 /* ===================== RAYCAST (voxel DDA) ===================== */

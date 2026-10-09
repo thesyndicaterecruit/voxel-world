@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { B, SOLID, MODEL, T_DIRT, T_GRASS_SIDE } from './blocks';
+import { B, SOLID, MODEL, T_DIRT, T_GRASS_SIDE, T_WATER } from './blocks';
 import { boxesGeometry } from './meshing';
 import { TEX } from './mesher';
 import { TORCH_MODELS, type TorchQuad } from './torch';
-import { world } from './world';
+import { world, inWater } from './world';
 import { radialFog } from './fog';
 import { lightColor } from './shading';
 
@@ -20,6 +20,8 @@ export interface Effects {
   showGhost(x: number, y: number, z: number, id: number, state: number): void;
   /** Spray of little cubes textured like block `id` from the block at (x, y, z). */
   burst(x: number, y: number, z: number, id: number): void;
+  /** Drops thrown up where something hits the water at (x, y, z) at `speed` blocks a second. */
+  splash(x: number, y: number, z: number, speed: number): void;
   updateParticles(dt: number): void;
 }
 
@@ -38,7 +40,8 @@ function modelGeometry(quads: TorchQuad[]): THREE.BufferGeometry {
   return g;
 }
 
-interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number }
+/** A flying bit; `drop`: a splash drop, gone when it falls back into the water */
+interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number; drop: boolean }
 
 export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects {
   // the outline is thin beams along the 12 edges of a box, built once per box (a cube, the torch boxes)
@@ -72,7 +75,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     const m = new THREE.Mesh(pGeo, radialFog(new THREE.MeshBasicMaterial({ map: tex[T_DIRT], alphaTest: 0.5 })));
     m.visible = false;
     scene.add(m);
-    parts.push({ m, v: [0, 0, 0], life: 0, max: 1 });
+    parts.push({ m, v: [0, 0, 0], life: 0, max: 1, drop: false });
   }
 
   const lit = new THREE.Color();
@@ -90,15 +93,35 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
       p.m.material.color.copy(lit).multiplyScalar(k);
       p.m.scale.setScalar(1);
       p.m.visible = true;
+      p.drop = false;
       if (++n >= 12) break;
+    }
+  }
+  function splash(x: number, y: number, z: number, speed: number): void {
+    lightColor(world.getLight(Math.floor(x), Math.floor(y + 0.5), Math.floor(z)), lit);
+    const up = Math.min(1.6, speed / 10), count = Math.min(14, 4 + Math.round(speed / 2));
+    let n = 0;
+    for (const p of parts) {
+      if (p.life > 0) continue;
+      const a = Math.random() * Math.PI * 2, r = 0.2 + Math.random() * 0.3, out = 1 + Math.random() * 1.5;
+      p.m.position.set(x + Math.cos(a) * r, y, z + Math.sin(a) * r);
+      p.v[0] = Math.cos(a) * out; p.v[1] = (2.5 + Math.random() * 2.5) * up; p.v[2] = Math.sin(a) * out;
+      p.life = p.max = 0.35 + Math.random() * 0.3;
+      p.m.material.map = tex[T_WATER];
+      p.m.material.color.copy(lit).multiplyScalar(1.1 + Math.random() * 0.3);
+      p.m.scale.setScalar(0.7);
+      p.m.visible = true;
+      p.drop = true;
+      if (++n >= count) break;
     }
   }
   function updateParticles(dt: number): void {
     for (const p of parts) {
       if (p.life <= 0) continue;
       p.life -= dt;
-      if (p.life <= 0) { p.m.visible = false; continue; }
       const q = p.m.position;
+      if (p.drop && p.v[1] < 0 && inWater(q.x, q.y, q.z)) p.life = 0;   // back into the water
+      if (p.life <= 0) { p.m.visible = false; continue; }
       p.v[1] -= 20 * dt;
       q.x += p.v[0] * dt; q.z += p.v[2] * dt;
       const ny = q.y + p.v[1] * dt;
@@ -121,5 +144,5 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     lightColor(world.getLight(x, y, z), ghostMat.color);
   }
 
-  return { outline, ghost, ghostMat, showOutline, showGhost, burst, updateParticles };
+  return { outline, ghost, ghostMat, showOutline, showGhost, burst, splash, updateParticles };
 }

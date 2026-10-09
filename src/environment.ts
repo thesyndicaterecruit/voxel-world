@@ -12,8 +12,9 @@ import { lightUniforms } from './shading';
 // 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
 // The sea inside the world is water blocks (chunk meshes); beyond the world's edge a flat sea
 // carries on to the horizon.
-// Under water: short blue fog, blue background, and a CSS tint over the view (body.under)
-const UNDER = new THREE.Color(0x1f5f94), UNDER_NIGHT = new THREE.Color(0x07182c), UNDER_NEAR = -4, UNDER_FAR = 20;
+// Under water: short blue fog, blue background, and a CSS tint over the view (body.under), all darker
+// the deeper the camera is (down to DEEP blocks) and at night
+const UNDER = new THREE.Color(0x1f5f94), UNDER_NIGHT = new THREE.Color(0x07182c), UNDER_NEAR = -4, UNDER_FAR = 20, DEEP = 24;
 // Clouds live in a box around the camera and wrap around it as it moves
 const CLOUD_BOX = 320;
 /** The sun's path is tilted this far toward −z (north of overhead at noon) */
@@ -78,8 +79,11 @@ function moonTexture(): THREE.Texture {
 }
 
 export interface Environment {
-  /** Drift the clouds, keep sky, sun and sea centred on the camera, switch the underwater look (`under`: the camera is in water). */
-  update(dt: number, camera: THREE.Camera, under: boolean): void;
+  /**
+   * Drift the clouds, keep sky, sun and sea centred on the camera, switch the underwater look:
+   * `depth` is how far the camera is below the water's surface (−1: not in water).
+   */
+  update(dt: number, camera: THREE.Camera, depth: number): void;
   /** Fog for normal (above-water) viewing: terrain fades from `near` to fully hidden at `far`. */
   setFog(near: number, far: number): void;
   /** Time of day, 0–1 (0 midnight, 0.5 noon): moves the sun, recolours everything, sets the light uniforms. */
@@ -169,18 +173,22 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   const tint = document.body.classList;
 
   const sunDir = new THREE.Vector3(0, 1, 0), horizon = new THREE.Color(), underCol = new THREE.Color();
-  let day = 1;
+  let day = 1, deep = 0, dim = -1;
   /** c = by-day colour blended toward night by `day`, then toward the sunrise/sunset one by `dusk` */
   const blend = (out: THREE.Color, set: THREE.Color[], dusk: number) =>
     out.copy(set[2]).lerp(set[0], day).lerp(set[1], dusk);
   const applyFog = () => {
-    const c = under ? underCol.copy(UNDER_NIGHT).lerp(UNDER, day) : horizon;
+    const c = under ? underCol.copy(UNDER_NIGHT).lerp(UNDER, day).multiplyScalar(1 - 0.65 * deep) : horizon;
     fog.color.copy(c);
     renderer.setClearColor(c);
+    // the CSS tint darkens with depth and at night too
+    const d = under ? +(1 - (0.35 + 0.65 * day) * (1 - 0.65 * deep)).toFixed(2) : 0;
+    if (d !== dim) { dim = d; document.body.style.setProperty('--dim', String(d)); }
   };
 
   const env: Environment = {
-    update(dt, camera, u) {
+    update(dt, camera, depth) {
+      const u = depth >= 0;
       const cam = camera.position;
       for (const c of clouds) {
         c.position.x = wrap(c.position.x + dt * 0.9, cam.x);
@@ -198,6 +206,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       sea.visible = !u && Math.min(cam.x, cam.z, W - cam.x, D - cam.z) < fogFar + 8;
       starU.scale.value = renderer.getPixelRatio();
 
+      const entered = u && !under;
       if (u !== under) {
         under = u;
         fog.near = u ? UNDER_NEAR : fogNear;
@@ -205,6 +214,13 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
         sky.visible = stars.visible = !u;
         for (const c of clouds) c.visible = !u;
         tint.toggle('under', u);
+        applyFog();
+      }
+      // deeper is darker and murkier
+      const dp = u ? THREE.MathUtils.smoothstep(depth, 0, DEEP) : 0;
+      if (u && (entered || Math.abs(dp - deep) > 0.004)) {
+        deep = dp;
+        fog.far = UNDER_FAR - 6 * deep;
         applyFog();
       }
     },

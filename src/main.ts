@@ -3,14 +3,15 @@ import { CB, CS, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
 import { createTextures, setUnderwater } from './textures';
-import { world, inWater } from './world';
+import { world, waterDepth } from './world';
 import { columnHeight, findSpawn } from './gen';
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
 import { createWater } from './water';
-import { P, V, player, spawn, update, collides, aim } from './player';
+import { P, V, player, playerEvents, spawn, update, collides, aim } from './player';
+import { playSound } from './audio';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
@@ -116,6 +117,8 @@ async function boot(): Promise<void> {
     if (!flushing) { flushing = true; queueMicrotask(() => { flushing = false; streamer.blocksChanged(changes.splice(0)); }); }
   };
   world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); };
+  // hitting the water fast throws up a splash
+  playerEvents.splash = (x, y, z, speed) => { fx.splash(x, y, z, speed); playSound('splash', Math.min(1, speed / 20)); };
 
   // view distance: how far chunks are streamed, and where the fog ends
   const setRenderDistance = (r: number) => { streamer.setRenderDistance(r); env.setFog(r * CS * 0.35, r * CS); };
@@ -242,9 +245,9 @@ async function boot(): Promise<void> {
     if (menuOpen()) setClock(days);
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
-    const under = inWater(camera.position.x, camera.position.y, camera.position.z);
-    env.update(dt, camera, under);
-    setUnderwater(chunkMaterials[2], under);
+    const depth = waterDepth(camera.position.x, camera.position.y, camera.position.z);
+    env.update(dt, camera, depth);
+    setUnderwater(chunkMaterials[2], depth >= 0);
     streamer.sortTranslucent(camera.position);
     renderer.render(scene, camera);
 
@@ -265,6 +268,7 @@ async function boot(): Promise<void> {
     act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
+    get wet() { return player.wet; }, get breath() { return player.breath; },
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
