@@ -12,7 +12,7 @@ const dump = (store: string) => `new Promise((res) => { const r = indexedDB.open
   const tx = r.result.transaction('${store}'), s = tx.objectStore('${store}'), k = s.getAllKeys(), v = s.getAll();
   tx.oncomplete = () => { r.result.close(); res(k.result.map((key, i) => [key, v.result[i]])); }; }; })`;
 
-test('a world saved by save version 1 still loads, and is saved as version 2 with block state', async ({ page }) => {
+test('a world saved by save version 1 still loads, and is saved in the current version with block state', async ({ page }) => {
   const errors = await openGame(page, '?seed=777');           // creates the database
 
   // what version 1 stored: a world record and one edited chunk (block ids only, run-length encoded) —
@@ -45,14 +45,14 @@ test('a world saved by save version 1 still loads, and is saved as version 2 wit
   await expect(page.locator('.slot').nth(7)).toHaveClass(/sel/);
   expect(await page.evaluate(() => window.__voxel.mode)).toBe('place');
 
-  // a torch on the pillar (facing +x), then save: the records become version 2, with block state
+  // a torch on the pillar (facing +x), then save: the records are rewritten in the current version, with block state
   await page.evaluate(() => window.__voxel.setBlock(261, 23, 262, 12, 1));
   await page.evaluate(() => window.__voxel.save());
   const worlds = await page.evaluate(dump('worlds')) as [string, { saveVersion: number }][];
   const chunks = await page.evaluate(dump('chunks')) as [string, { v: number; srle?: unknown }][];
-  expect(worlds.find(([k]) => k === 'v1world')![1].saveVersion).toBe(2);
+  expect(worlds.find(([k]) => k === 'v1world')![1].saveVersion).toBe(3);
   const saved = chunks.find(([k]) => k === 'v1world:16,16')![1];
-  expect(saved.v).toBe(2);
+  expect(saved.v).toBe(3);
   expect(saved.srle).toBeTruthy();
 
   await page.reload();

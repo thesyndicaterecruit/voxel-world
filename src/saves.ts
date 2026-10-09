@@ -17,8 +17,12 @@ import type { Mode } from './ui';
 //   2  chunks { v: 2, rle, srle? } — plus the per-block state (torch facing, water level, …) as a
 //      second RLE stream, omitted while every state byte is 0. World records are unchanged; the
 //      hotbar grew, but new items go at the end so saved slot numbers still point at the same block.
+//   3  world records gain `time` (days since the world began; the fraction is the time of day).
+//      Older worlds start at NEW_WORLD_TIME. Chunks are unchanged apart from the version.
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
+/** When a new world's clock starts: day 1, a little after sunrise (0.25 = 6:00) */
+export const NEW_WORLD_TIME = 0.3;
 const DB_NAME = 'voxel-island', DB_VERSION = 1;
 /** Autosave runs at most this long after the first unsaved change. */
 const AUTOSAVE_MS = 5000;
@@ -36,24 +40,30 @@ export interface WorldRecord {
   /** Selected hotbar slot */
   slot: number;
   mode: Mode;
+  /** Days since the world began: the fraction is the time of day (0 midnight, 0.5 noon) */
+  time: number;
 }
+/** A world record as stored by any version (older ones have no `time`). */
+export type StoredWorld = Omit<WorldRecord, 'time'> & { time?: number };
 /** A saved chunk: block ids, and the per-block state when any of it is non-zero (both RLE). */
 export interface ChunkRecord { v: number; rle: Uint8Array; srle?: Uint8Array }
 /** A chunk's contents in memory. */
 export interface ChunkData { data: Uint8Array; state: Uint8Array | null }
 
 /** Bring a stored world record (any saveVersion up to SAVE_VERSION) up to date. */
-export function migrateWorld(w: WorldRecord): WorldRecord {
+export function migrateWorld(w: StoredWorld): WorldRecord {
   if (w.saveVersion > SAVE_VERSION) throw new Error(`world saved by a newer version (${w.saveVersion})`);
-  // 1 → 2: nothing in the world record itself changed
-  return w.saveVersion === SAVE_VERSION ? w : { ...w, saveVersion: SAVE_VERSION };
+  if (w.saveVersion === SAVE_VERSION) return w as WorldRecord;
+  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning
+  return { ...w, time: NEW_WORLD_TIME, saveVersion: SAVE_VERSION };
 }
 
 /** Bring a stored chunk record up to date. */
 export function migrateChunk(r: ChunkRecord): ChunkRecord {
   if (r.v > SAVE_VERSION) throw new Error(`chunk saved by a newer version (${r.v})`);
-  // 1 → 2: no state stream yet, i.e. every state byte is 0
-  return r.v === SAVE_VERSION ? r : { v: SAVE_VERSION, rle: r.rle };
+  if (r.v === SAVE_VERSION) return r;
+  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged
+  return r.srle ? { v: SAVE_VERSION, rle: r.rle, srle: r.srle } : { v: SAVE_VERSION, rle: r.rle };
 }
 
 /** Encode a chunk for saving. */
@@ -96,7 +106,7 @@ export async function openSaves(): Promise<boolean> {
 /** Saved worlds, most recently played first. */
 export async function listWorlds(): Promise<WorldRecord[]> {
   if (!db) return [];
-  const all = await db.getAll<WorldRecord>('worlds');
+  const all = await db.getAll<StoredWorld>('worlds');
   return all.filter((w) => w.saveVersion <= SAVE_VERSION).map(migrateWorld).sort((a, b) => b.lastPlayed - a.lastPlayed);
 }
 
@@ -105,6 +115,7 @@ export async function createWorld(name: string, seed: number): Promise<WorldReco
   const w: WorldRecord = {
     id: now.toString(36) + Math.floor(Math.random() * 1e6).toString(36),
     name, seed, createdAt: now, lastPlayed: now, saveVersion: SAVE_VERSION, player: null, slot: 0, mode: 'break',
+    time: NEW_WORLD_TIME,
   };
   if (db) await db.write(['worlds'], (tx) => tx.objectStore('worlds').put(w));
   return w;
@@ -137,8 +148,8 @@ export interface WorldSave {
  * `getState` reports the current player state for each save (null: not playing yet, keep the
  * stored one). `getChunk` returns the loaded chunk, if any.
  */
-export async function openWorld(stored: WorldRecord, getChunk: (cx: number, cz: number) => Chunk | undefined,
-  getState: () => Pick<WorldRecord, 'player' | 'slot' | 'mode'> | null): Promise<WorldSave> {
+export async function openWorld(stored: StoredWorld, getChunk: (cx: number, cz: number) => Chunk | undefined,
+  getState: () => Pick<WorldRecord, 'player' | 'slot' | 'mode' | 'time'> | null): Promise<WorldSave> {
   const record = migrateWorld(stored), id = record.id;
   // chunks with saved edits
   const saved = new Set<number>();

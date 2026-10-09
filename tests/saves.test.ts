@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CHUNK_VOL, CI } from '../src/config';
 import { STONE, PLANKS, TORCH } from '../src/blocks';
 import { rleEncode, rleDecode } from '../src/rle';
-import { SAVE_VERSION, migrateWorld, migrateChunk, encodeChunk, decodeChunk, type WorldRecord, type ChunkRecord } from '../src/saves';
+import { SAVE_VERSION, NEW_WORLD_TIME, migrateWorld, migrateChunk, encodeChunk, decodeChunk, type StoredWorld, type ChunkRecord } from '../src/saves';
 
 /** Deterministic pseudo-random bytes */
 function rand(seed: number) {
@@ -69,17 +69,18 @@ describe('chunk save format', () => {
 
 describe('migration from save version 1', () => {
   // A world record as version 1 wrote it
-  const v1World: WorldRecord = {
+  const v1World: StoredWorld = {
     id: 'mf3k2q8x1', name: 'Seed 777', seed: 777, createdAt: 1757000000000, lastPlayed: 1757000500000,
     saveVersion: 1, player: { x: 256.5, y: 31, z: 250.2, yaw: 1.2, pitch: -0.3 }, slot: 7, mode: 'place',
   };
   // A chunk as version 1 stored it: { v: 1, rle } — stone for y < 4, one planks block, air above
   const v1Chunk: ChunkRecord = { v: 1, rle: Uint8Array.from([0x80, 0x08, 3, 1, 6, 0xff, 0x77, 0]) };
 
-  it('brings a world record up to date and keeps everything in it', () => {
+  it('brings a world record up to date and keeps everything in it; the clock starts in the morning', () => {
     const w = migrateWorld(structuredClone(v1World));
     expect(w.saveVersion).toBe(SAVE_VERSION);
-    expect({ ...w, saveVersion: 1 }).toEqual(v1World);
+    expect(w.time).toBe(NEW_WORLD_TIME);
+    expect({ ...w, saveVersion: 1, time: undefined }).toEqual({ ...v1World, time: undefined });
   });
 
   it('decodes a version 1 chunk: the same blocks, no block state', () => {
@@ -94,7 +95,7 @@ describe('migration from save version 1', () => {
   });
 
   it('leaves up-to-date records alone', () => {
-    const w = { ...v1World, saveVersion: SAVE_VERSION }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
+    const w = { ...v1World, saveVersion: SAVE_VERSION, time: 3.6 }, c = encodeChunk(new Uint8Array(CHUNK_VOL), null);
     expect(migrateWorld(w)).toBe(w);
     expect(migrateChunk(c)).toBe(c);
   });
@@ -102,5 +103,29 @@ describe('migration from save version 1', () => {
   it('refuses records from a newer version instead of misreading them', () => {
     expect(() => migrateWorld({ ...v1World, saveVersion: SAVE_VERSION + 1 })).toThrow();
     expect(() => decodeChunk({ ...v1Chunk, v: SAVE_VERSION + 1 })).toThrow();
+  });
+});
+
+describe('migration from save version 2', () => {
+  // version 2: no clock in the world record; chunks with a block-state stream
+  const v2World: StoredWorld = {
+    id: 'mg2a91k3p', name: 'Island 2', seed: 4242, createdAt: 1759000000000, lastPlayed: 1759900000000,
+    saveVersion: 2, player: { x: 271.5, y: 33, z: 248.5, yaw: -0.6, pitch: 0.1 }, slot: 9, mode: 'place',
+  };
+  const data = new Uint8Array(CHUNK_VOL), state = new Uint8Array(CHUNK_VOL);
+  data[CI(3, 30, 4)] = PLANKS; data[CI(4, 30, 4)] = TORCH; state[CI(4, 30, 4)] = 1;
+  const v2Chunk: ChunkRecord = { v: 2, rle: rleEncode(data), srle: rleEncode(state) };
+
+  it('gives the world a clock, starting in the morning, and keeps the rest', () => {
+    const w = migrateWorld(structuredClone(v2World));
+    expect([w.saveVersion, w.time]).toEqual([SAVE_VERSION, NEW_WORLD_TIME]);
+    expect({ ...w, saveVersion: 2, time: undefined }).toEqual({ ...v2World, time: undefined });
+  });
+
+  it('reads its chunks with their block state', () => {
+    const back = decodeChunk(v2Chunk);
+    expect(back.data).toEqual(data);
+    expect(back.state).toEqual(state);
+    expect(migrateChunk(v2Chunk)).toEqual({ v: SAVE_VERSION, rle: v2Chunk.rle, srle: v2Chunk.srle });
   });
 });

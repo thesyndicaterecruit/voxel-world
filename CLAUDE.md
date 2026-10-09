@@ -63,14 +63,16 @@ src/
   mesher.ts          Pure chunk mesher: padded chunk blocks + light → typed arrays per render pass (face culling,
                      baked face shading, AO, smooth light, tile layer; cube, torch and liquid models)
   meshing.ts         paddedCopy (chunk + 1-block border, blocks or light), mesher output → BufferGeometry; boxesGeometry
-  environment.ts     Sky dome, sun, water surface, clouds around the camera, fog + underwater look
+  environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, water surface, clouds around the camera,
+                     all following the time of day (setTime); fog + underwater look; daylight and sky tint
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles
                      (the last two lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
   interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
-                     Brightness, save & exit), fullscreen, start screen + world list, error display
+                     Brightness, Day length, Always day, clock, save & exit), fullscreen, start screen + world list,
+                     error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
                      chunk borders, incremental = fresh), mesher, torch geometry, save format + migration, RLE,
@@ -123,8 +125,8 @@ ahead of everything else.
   opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared face:
   glass, water), `jit` (brightness variation), `icon` (hotbar tile), `particle` (tile of the bits
   that fly off when it breaks) and optional `fastTex` (tiles when meshed as an opaque cube: leaves
-  with Fancy leaves off). `lightEmission` is groundwork that nothing reads until lighting lands;
-  `lightFilter` already decides which cubes darken AO corners. Hot loops use the `Uint8Array` tables
+  with Fancy leaves off). `lightEmission` and `lightFilter` drive the light (see Light);
+  `lightFilter` also decides which cubes darken AO corners. Hot loops use the `Uint8Array` tables
   (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
   `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes. AO
@@ -176,6 +178,16 @@ ahead of everything else.
   world should follow the light: `lightColor(world.getLight(…), color)` gives the same colour on the
   CPU (break particles, the placement ghost). In full skylight by day the result equals the old unlit
   look.
+- **Day and night:** the world clock counts days since the world began (`WorldRecord.time`, saved
+  with the world; the fraction is the time of day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset;
+  new worlds start at 0.3). It runs while playing, not on the title screen or with the menu open: a
+  day takes the Day length setting (5–60 real minutes, default 20), and Always day holds it at noon
+  (both saved in localStorage). Every frame `env.setTime(t)` moves the sun (its path tilted toward
+  −z) and the moon opposite, recolours the sky shader (horizon/zenith gradient, a warm glow around a
+  low sun), fog and clear colour, the sea and the clouds (blending day, sunrise/sunset and night
+  colours), fades the stars in (a fixed point field turned with the sky, one rotation per frame), and
+  sets the light uniforms: `daylight` from 1 down to 0.38 (moonlight) and a warm or cool `skyTint`.
+  The sun and moon hide below the horizon. Nothing re-meshes as time passes.
 - **Block access goes through `world`.** `getBlock` reads air outside the world and in unloaded
   chunks; `isSolid` (collision) reads *solid* there, so the world edge is an invisible wall and the
   player can never fall into terrain that isn't loaded. Raycasts, particles and placing all use
@@ -216,20 +228,20 @@ ahead of everything else.
   Other tiles keep GL's mipmaps. New tiles go at the end of `TILE_PAINTERS`.
 - **Save files** (`saves.ts`, IndexedDB `voxel-island`): store `worlds` holds one `WorldRecord` per
   world (id, name, seed, createdAt, lastPlayed, saveVersion, player position/yaw/pitch, hotbar slot,
-  break/place mode); store `chunks` holds only *edited* chunks under `${worldId}:${cx},${cz}` as
-  `{ v, rle, srle? }`: the block ids run-length encoded, plus the per-block state the same way when
-  any of it is non-zero. Everything else regenerates from the seed — so changing `gen.ts` changes the
-  unedited terrain of existing saves. `SAVE_VERSION` is 2; when the stored format changes, bump it,
-  note it in the history at the top of `saves.ts`, add a fixture of the previous version to
-  `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which bring any older record up
-  to date every time one is read (a migrated record is written back the next time it is saved). New
-  hotbar items go at the end, so saved slot numbers keep pointing at the same block. The save is the
-  streamer's chunk source: a loaded chunk reads its saved data instead of being generated, and an
-  edited chunk that streams out keeps an RLE snapshot in memory until it is written. Autosave runs
-  within 5 s of the first unsaved change (edits, or the player moving/looking), and immediately on
-  `visibilitychange → hidden`, `pagehide` and the menu's Save & exit. `navigator.storage.persist()`
-  is requested once. Without IndexedDB (some private modes) the game still runs and keeps edits in
-  memory for the session.
+  break/place mode, the world clock); store `chunks` holds only *edited* chunks under
+  `${worldId}:${cx},${cz}` as `{ v, rle, srle? }`: the block ids run-length encoded, plus the
+  per-block state the same way when any of it is non-zero. Everything else regenerates from the seed
+  — so changing `gen.ts` changes the unedited terrain of existing saves. `SAVE_VERSION` is 3; when
+  the stored format changes, bump it, note it in the history at the top of `saves.ts`, add a fixture
+  of the previous version to `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which
+  bring any older record up to date every time one is read (a migrated record is written back the
+  next time it is saved). New hotbar items go at the end, so saved slot numbers keep pointing at the
+  same block. The save is the streamer's chunk source: a loaded chunk reads its saved data instead of
+  being generated, and an edited chunk that streams out keeps an RLE snapshot in memory until it is
+  written. Autosave runs within 5 s of the first unsaved change (edits, or the player
+  moving/looking), and immediately on `visibilitychange → hidden`, `pagehide` and the menu's Save &
+  exit. `navigator.storage.persist()` is requested once. Without IndexedDB (some private modes) the
+  game still runs and keeps edits in memory for the session.
 - **Switching worlds reloads the page** (`?world=<id>`, removed from the URL right away). The start
   card lists worlds by last played; `?seed=123` opens (or creates) the world "Seed 123".
 - **Mobile first.** Every feature must work on a touchscreen with no keyboard. Keep the gesture
@@ -245,11 +257,11 @@ ahead of everything else.
   (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible counts, draw calls, worker
   time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
   or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
-  (cells that differ from a fresh lighting), `setDaylight(d)` (skylight strength, 1 = day),
-  `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
-  `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
-  `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests drive the
-  game through it; `?seed=123` in the URL gives a fixed world.
+  (cells that differ from a fresh lighting), `time` (the world clock, days) and `setTime(t)` (time of
+  day today, 0–1), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle),
+  `getState`, `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and
+  its id), `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests
+  drive the game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames
@@ -270,10 +282,9 @@ Ideas, roughly in priority order. Nothing here is committed to.
 4. **Water:** real water blocks below `SEA_LEVEL` (replacing the single surface), with swimming physics.
 5. **Faster meshing:** greedy meshing (fewer vertices), smarter job cancellation when the player
    moves fast.
-6. **Day/night cycle:** animated sky colours, sun movement, fog colour tied to time of day.
-7. **More content:** more block types (water, flowers, ores), a block-picker inventory instead of an
+6. **More content:** more block types (water, flowers, ores), a block-picker inventory instead of an
    ever longer hotbar.
-8. **Audio:** break/place/footstep sounds generated with Web Audio (keeps the no-assets approach).
-9. **Settings:** look sensitivity, invert-Y, FOV, render-quality toggle.
-10. **Three.js upgrade:** move to a current release and retune colours (`outputColorSpace`, texture
-    `colorSpace`) so the look matches the r128 version.
+7. **Audio:** break/place/footstep sounds generated with Web Audio (keeps the no-assets approach).
+8. **Settings:** look sensitivity, invert-Y, FOV, render-quality toggle.
+9. **Three.js upgrade:** move to a current release and retune colours (`outputColorSpace`, texture
+   `colorSpace`) so the look matches the r128 version.

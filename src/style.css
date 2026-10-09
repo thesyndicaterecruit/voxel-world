@@ -72,6 +72,7 @@ h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
 .stepper{display:flex;align-items:center;gap:10px}
 .val{min-width:22px;text-align:center;font-size:18px;font-weight:800;color:#fff}
 .val.wide{min-width:76px;font-size:13px;letter-spacing:.08em}
+.val.clock{min-height:44px;display:flex;align-items:center;font-size:15px;letter-spacing:.06em}
 .sbtn,.mbtn{display:flex;align-items:center;justify-content:center;border-radius:10px;background:rgba(255,255,255,.14);
   font-weight:800;color:#fff;cursor:pointer;transition:transform .08s}
 .sbtn{width:44px;height:44px;font-size:24px}

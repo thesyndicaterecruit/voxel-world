@@ -22,6 +22,9 @@ export const els = {
   newWorld: $('newWorld') as HTMLButtonElement,
   leavesBtn: $('leavesBtn'),
   br: $('br'),
+  dl: $('dl'),
+  dayBtn: $('dayBtn'),
+  clock: $('clock'),
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -119,18 +122,44 @@ export function setFancyLeaves(on: boolean, notify = true): void {
   if (notify) onFancyLeaves(on);
 }
 export const toggleFancyLeaves = () => setFancyLeaves(!fancyLeaves);
-let brightness = 1, brightnessNames: string[] = [], onBrightness: (i: number) => void = () => {};
-/** Wire the menu's Brightness stepper: step `i` of `names`; `apply` is told about every change. */
-export function initBrightness(i: number, names: string[], apply: (i: number) => void): void {
-  brightness = i; brightnessNames = names; onBrightness = apply;
-  els.br.textContent = names[i];
+/** A menu stepper through named steps, shown in `el`: init() with the start step, the names and a
+ *  function told about every change; step(±1). */
+function namedStepper(el: HTMLElement) {
+  let i = 0, names: string[] = [], apply: (i: number) => void = () => {};
+  return {
+    init(start: number, list: string[], f: (i: number) => void): void { i = start; names = list; apply = f; el.textContent = names[i]; },
+    step(delta: number): void {
+      const j = Math.max(0, Math.min(names.length - 1, i + delta));
+      if (j === i) return;
+      i = j;
+      el.textContent = names[i];
+      apply(i);
+    },
+  };
 }
-export function stepBrightness(delta: number): void {
-  const i = Math.max(0, Math.min(brightnessNames.length - 1, brightness + delta));
-  if (i === brightness) return;
-  brightness = i;
-  els.br.textContent = brightnessNames[i];
-  onBrightness(i);
+const brightness = namedStepper(els.br), dayLength = namedStepper(els.dl);
+/** Menu: Brightness and Day length steppers */
+export const initBrightness = brightness.init, stepBrightness = brightness.step;
+export const initDayLength = dayLength.init, stepDayLength = dayLength.step;
+let alwaysDay = false, onAlwaysDay: (on: boolean) => void = () => {};
+/** Wire the menu's Always day toggle. `apply` is told about every change. */
+export function initAlwaysDay(on: boolean, apply: (on: boolean) => void): void {
+  onAlwaysDay = apply;
+  setAlwaysDay(on, false);
+}
+export function setAlwaysDay(on: boolean, notify = true): void {
+  alwaysDay = on;
+  els.dayBtn.textContent = on ? 'ON' : 'OFF';
+  els.dayBtn.classList.toggle('off', !on);
+  els.dayBtn.setAttribute('aria-pressed', String(on));
+  if (notify) onAlwaysDay(on);
+}
+export const toggleAlwaysDay = () => setAlwaysDay(!alwaysDay);
+/** The menu's clock: day number and time of the world clock (days since it began). */
+export function setClock(days: number): void {
+  const m = Math.floor((days % 1) * 1440), t = days % 1;
+  const text = `${t > 0.25 && t < 0.75 ? '☀' : '☾'} DAY ${Math.floor(days) + 1} · ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  if (els.clock.textContent !== text) els.clock.textContent = text;
 }
 export const menuOpen = () => document.body.classList.contains('menu');
 export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); }

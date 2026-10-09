@@ -12,14 +12,17 @@ import { createEffects } from './effects';
 import { P, V, player, spawn, update, collides, aim } from './player';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initStartScreen, selectSlot, setFancyLeaves, setMode, setNote,
-  showError, showWorlds, toast } from './ui';
+import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
+  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen } from './ui';
 import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
 /** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
 const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves', BRIGHT_KEY = 'voxel-island.brightness';
+const DAY_KEY = 'voxel-island.dayLength', ALWAYS_DAY_KEY = 'voxel-island.alwaysDay';
+/** Day length setting: real minutes for a whole day */
+const DAY_MINUTES = [5, 10, 20, 40, 60], DEFAULT_DAY = 2;
 
 function savedRenderDistance(): number {
   try {
@@ -89,8 +92,10 @@ async function boot(): Promise<void> {
   camera.rotation.order = 'YXZ';
 
   let playing = false, ready = false;
+  /** The world clock: days since the world began (the fraction is the time of day), saved with it */
+  let days = record.time;
   const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
-    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode } : null));
+    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days } : null));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
   const streamer = createStreamer(scene, chunkMaterials, pool, save);
@@ -123,6 +128,22 @@ async function boot(): Promise<void> {
   initBrightness(bright, BRIGHTNESS.map((b) => b.name), (i) => {
     setBrightness(i);
     try { localStorage.setItem(BRIGHT_KEY, String(i)); } catch (e) { /* storage unavailable */ }
+  });
+
+  // Day length and Always day (which holds the sun at noon)
+  let dayMin = DAY_MINUTES[DEFAULT_DAY], alwaysDay = false;
+  try {
+    const v = localStorage.getItem(DAY_KEY);
+    if (v !== null && DAY_MINUTES.includes(+v)) dayMin = +v;
+    alwaysDay = localStorage.getItem(ALWAYS_DAY_KEY) === '1';
+  } catch (e) { /* storage unavailable */ }
+  initDayLength(DAY_MINUTES.indexOf(dayMin), DAY_MINUTES.map((m) => `${m} MIN`), (i) => {
+    dayMin = DAY_MINUTES[i];
+    try { localStorage.setItem(DAY_KEY, String(dayMin)); } catch (e) { /* storage unavailable */ }
+  });
+  initAlwaysDay(alwaysDay, (on) => {
+    alwaysDay = on;
+    try { localStorage.setItem(ALWAYS_DAY_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
   });
 
   const interaction = createInteraction(fx);
@@ -200,6 +221,10 @@ async function boot(): Promise<void> {
       initStartScreen(() => { playing = true; save.requestSave(); });
     }
     lightUniforms.time.value = now / 1000;           // torch flicker
+    // the clock runs while playing (not while the menu is open); Always day holds it at noon
+    if (playing && !menuOpen()) days = alwaysDay ? Math.floor(days) + 0.5 : days + dt / (dayMin * 60);
+    env.setTime(days % 1);
+    if (menuOpen()) setClock(days);
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     env.update(dt, camera);
@@ -227,7 +252,8 @@ async function boot(): Promise<void> {
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
     verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
-    setDaylight: (d: number) => { lightUniforms.daylight.value = d; },
+    get time() { return days; },
+    setTime: (t: number) => { days = Math.floor(days) + t; },
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
     look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
     target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },

@@ -44,7 +44,7 @@
         <div class="opt">
           <span class="lab">Fancy leaves</span>
           <div class="sbtn tog" id="leavesBtn" data-act="leaves" role="button" aria-pressed="true">ON</div>
-          <p class="hint">Off: solid leaves, faster on weak phones</p>
+          <p class="hint">Off is faster on weak phones</p>
         </div>
         <div class="opt">
           <span class="lab">Brightness</span>
@@ -54,6 +54,25 @@
             <div class="sbtn" data-act="br+" role="button" aria-label="Brighter">+</div>
           </div>
           <p class="hint">How dark nights and caves get</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Day length</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="dl-" role="button" aria-label="Shorter">&minus;</div>
+            <span id="dl" class="val wide">20 MIN</span>
+            <div class="sbtn" data-act="dl+" role="button" aria-label="Longer">+</div>
+          </div>
+          <p class="hint">Real minutes for a whole day</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Always day</span>
+          <div class="sbtn tog off" id="dayBtn" data-act="aday" role="button" aria-pressed="false">OFF</div>
+          <p class="hint">Keeps the sun at noon</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Time</span>
+          <span id="clock" class="val clock">DAY 1 · 07:12</span>
+          <p class="hint">Saved with the world</p>
         </div>
       </div>
       <div class="mbtns">
