@@ -78,10 +78,12 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      chunk borders, incremental = fresh), mesher, torch geometry, save format + migration, RLE,
                      mipmaps, generation determinism
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
-                     aiming, taps, pixel captures); see-through blocks, torches, hotbar, Fancy leaves, old saves
+                     aiming, taps, joystick, pixel captures, frame timing); see-through blocks, torches, hotbar,
+                     Fancy leaves, old saves, time of day (midday/sunset/midnight screenshots, torchlight, frame
+                     time at night)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
-.github/workflows/e2e.yml      Browser tests on every push
+.github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact
 ```
 
 Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update()` (only once the chunks
@@ -265,8 +267,10 @@ ahead of everything else.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames
-  (`until`), never in wall time, and read pixels with `capture` (the 3D view, without the HUD). Every
-  browser test checks that the console stayed free of errors and warnings.
+  (`until`), never in wall time, and read pixels with `capture` (the 3D view, without the HUD).
+  `frameMs` times frames with the real clock, GPU included; compare timings within one run (taking
+  turns), never against fixed numbers. Every browser test checks that the console stayed free of
+  errors and warnings.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
 

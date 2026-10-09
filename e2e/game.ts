@@ -9,6 +9,7 @@ import { expect, type Page } from '@playwright/test';
 function deterministic(): void {
   let t = 1000, seed = 42;
   const q: FrameRequestCallback[] = [];
+  (window as unknown as { __realNow: () => number }).__realNow = performance.now.bind(performance);   // for timing
   Math.random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
   performance.now = () => t;
   window.requestAnimationFrame = (f) => { q.push(f); return q.length; };
@@ -26,14 +27,19 @@ export interface Voxel {
   look(yaw: number, pitch: number): void;
   target(): { x: number; y: number; z: number; nx: number; ny: number; nz: number; id: number } | null;
   count(): number;
-  stream(): { passes: number[] };
-  chunk(cx: number, cz: number): { tris: number[] };
+  stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number };
+  chunk(cx: number, cz: number): { tris: number[]; meshed: number };
   setFancyLeaves(on: boolean): void;
   save(): Promise<void>;
   worldId: string;
+  light(x: number, y: number, z: number): number[];
+  verifyLight(cx: number, cz: number): number;
+  /** World clock in days; setTime(t) sets today's time of day (0 midnight, 0.5 noon) */
+  time: number;
+  setTime(t: number): void;
 }
 declare global {
-  interface Window { __voxel: Voxel; __tick(n: number): void; __shots: Record<string, Uint8ClampedArray> }
+  interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }
 }
 
 /**
@@ -114,17 +120,64 @@ export async function tapToAct(page: Page): Promise<void> {
 export const block = (page: Page, [x, y, z]: number[]) =>
   page.evaluate(([x, y, z]) => [window.__voxel.get(x, y, z), window.__voxel.getState(x, y, z)], [x, y, z]);
 
-/** Render a frame and keep the pixels of the middle of the 3D view (no HUD) under `name`. */
-export function capture(page: Page, name: string): Promise<void> {
-  return page.evaluate((name) => {
+/**
+ * Render a frame and keep the pixels of part of the 3D view (no HUD) under `name`: by default the
+ * middle; `box` is [left, top, right, bottom] as fractions of the view.
+ */
+export function capture(page: Page, name: string, box = [0.36, 0.3, 0.64, 0.7]): Promise<void> {
+  return page.evaluate(([name, box]) => {
     window.__tick(1);                                   // read back in the same task as the render
-    const c = document.querySelector('canvas')!, w = Math.floor(c.width * 0.28), h = Math.floor(c.height * 0.4);
+    const c = document.querySelector('canvas')!, x = Math.floor(c.width * box[0]), y = Math.floor(c.height * box[1]);
+    const w = Math.floor(c.width * box[2]) - x, h = Math.floor(c.height * box[3]) - y;
     const t = document.createElement('canvas');
     t.width = w; t.height = h;
     const g = t.getContext('2d')!;
-    g.drawImage(c, Math.floor(c.width * 0.36), Math.floor(c.height * 0.3), w, h, 0, 0, w, h);
+    g.drawImage(c, x, y, w, h, 0, 0, w, h);
     window.__shots = { ...window.__shots, [name]: g.getImageData(0, 0, w, h).data };
+  }, [name, box] as const);
+}
+
+/** Average colour (0–255 per channel) of a capture. */
+export function meanColor(page: Page, name: string): Promise<number[]> {
+  return page.evaluate((name) => {
+    const A = window.__shots[name], sum = [0, 0, 0];
+    for (let i = 0; i < A.length; i += 4) { sum[0] += A[i]; sum[1] += A[i + 1]; sum[2] += A[i + 2]; }
+    return sum.map((v) => v / (A.length / 4));
   }, name);
+}
+
+/**
+ * Hold the joystick pushed `dx`, `dy` px from where the thumb went down (negative dy: forward), with
+ * a real touch; returns a function that lets go.
+ */
+export async function holdJoystick(page: Page, dx: number, dy: number): Promise<() => Promise<void>> {
+  const { height } = page.viewportSize()!, cdp = await page.context().newCDPSession(page);
+  const x = 110, y = height - 110;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 7 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + dx, y: y + dy, id: 7 }] });
+  return async () => {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await cdp.detach();
+  };
+}
+
+/**
+ * Run n frames, timing each with the real clock (ms), drawing included (reading a pixel back waits
+ * for the GPU to finish the frame); returns the median.
+ */
+export function frameMs(page: Page, n: number): Promise<number> {
+  return page.evaluate(async (n) => {
+    const t: number[] = [], gl = document.querySelector('canvas')!.getContext('webgl2')!, px = new Uint8Array(4);
+    for (let i = 0; i < n; i++) {
+      const a = window.__realNow();
+      window.__tick(1);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      t.push(window.__realNow() - a);
+      await new Promise((r) => setTimeout(r, 4));       // let worker results in
+    }
+    t.sort((a, b) => a - b);
+    return t[t.length >> 1];
+  }, n);
 }
 
 /** Share of pixels that differ clearly between two captures. */
