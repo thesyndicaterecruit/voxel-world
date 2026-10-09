@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { CB, CS, NCX, NCZ, CHUNK_VOL, inWorld } from './config';
 import { world, type Chunk } from './world';
 import { LEAVES } from './blocks';
-import { FP, PAD_VOL, type MeshData } from './mesher';
-import { paddedCopy, chunkGeometry } from './meshing';
+import { FP, PAD_VOL, type MeshData, type PassMesh } from './mesher';
+import { paddedCopy, chunkGeometry, groupGeometry } from './meshing';
 import { relight, lightChunk, keyX, keyZ } from './light';
 import type { WorkerPool } from './workers';
 
@@ -26,15 +26,20 @@ import type { WorkerPool } from './workers';
 // changed are re-meshed with it.
 //
 // A chunk has up to three meshes, one per render pass (only those that aren't empty): opaque,
-// cutout (alpha-tested, writes depth) and translucent (blended, drawn after everything else, chunks
-// back to front — see sortTranslucent).
+// cutout (alpha-tested, writes depth) and translucent (blended, drawn after everything else, back to
+// front — see sortTranslucent). The translucent pass is water: the sea puts some in most chunks, so
+// it is drawn a group of WG×WG chunks at a time (one draw call for all of them), rebuilt whenever
+// one of them changes or crosses into or out of the view distance.
 
 export const RENDER_DISTANCE = { def: 6, min: 3, max: 10 };
 const LIGHT_MARGIN = 24, LOAD_MARGIN = 48, KEEP_MARGIN = 72;
 const UPLOADS_PER_FRAME = 2, UPLOADS_TITLE = 8, FIRST_R = 2;
 /** Most normal jobs started per frame (bounds the main-thread copying) */
 const DISPATCH_PER_FRAME = 8;
-const PASSES = 3, TRANSLUCENT = 2;
+/** Opaque and cutout meshes per chunk; the translucent pass goes to the chunk's group */
+const OWN_PASSES = 2, TRANSLUCENT = 2;
+/** Water groups: WG × WG chunks */
+const WG = 4, NGX = NCX / WG;
 
 const NONE = 0, LOADING = 1, LOADED = 2;
 interface Slot {
@@ -55,8 +60,12 @@ interface Slot {
   lightSent: number;
   /** Being lit again after an edit (its light was dropped): hurry, and re-mesh it and its neighbours after */
   relit: boolean;
-  /** One mesh per render pass, null where the pass is empty */
+  /** Opaque and cutout meshes, null where the pass is empty */
   meshes: (THREE.Mesh | null)[];
+  /** The translucent pass (drawn by the chunk's water group), null where empty */
+  water: PassMesh | null;
+  /** Within the view distance, so its water is drawn */
+  wvis: boolean;
   /** Nearest distance from the streaming centre in blocks, refreshed every frame */
   dist: number;
   score: number;
@@ -112,8 +121,11 @@ export interface Streamer {
 export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], pool: WorkerPool, source: ChunkSource = {}): Streamer {
   const slots: Slot[] = Array.from({ length: NCX * NCZ }, () => ({
     state: NONE, epoch: 0, version: 0, meshed: -1, sent: -1, urgent: false, lightVer: 0, lightSent: -1, relit: false,
-    meshes: [null, null, null], dist: Infinity, score: 0,
+    meshes: [null, null], water: null, wvis: false, dist: Infinity, score: 0,
   }));
+  /** Water groups: one mesh for the water of WG × WG chunks, rebuilt when `dirty` */
+  const groups = Array.from({ length: NGX * (NCZ / WG) }, () => ({ mesh: null as THREE.Mesh | null, dirty: false }));
+  const groupOf = (ci: number) => ((ci % NCX) / WG | 0) + (((ci / NCX) | 0) / WG | 0) * NGX;
   let R = RENDER_DISTANCE.def, opaqueLeaves = true;
   const ready: Ready[] = [], urgentQ: number[] = [], pads: Uint8Array[] = [], blocks9: Uint8Array[] = [];
   let fresh: THREE.Mesh[] = [];                 // meshes added last frame (frustum culling off once)
@@ -130,7 +142,7 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
   };
   const neighboursLoaded = (cx: number, cz: number) => around(cx, cz, (_c, s) => s.state === LOADED);
   const neighboursLit = (cx: number, cz: number) => around(cx, cz, (c) => !!c && !!c.light);
-  const hasMesh = (s: Slot) => s.meshes[0] !== null || s.meshes[1] !== null || s.meshes[2] !== null;
+  const hasMesh = (s: Slot) => s.meshes[0] !== null || s.meshes[1] !== null || s.water !== null;
   const meshable = (ci: number) => slots[ci].state === LOADED && neighboursLit(ci % NCX, (ci / NCX) | 0);
 
   function dispatchLoad(ci: number): void {
@@ -180,15 +192,18 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
 
   function dispatchMesh(ci: number, urgent: boolean): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, epoch = s.epoch, version = s.version;
-    const pad = pads.pop() || new Uint8Array(PAD_VOL), light = pads.pop() || new Uint8Array(PAD_VOL), c = world.chunk(cx, cz);
+    const pad = pads.pop() || new Uint8Array(PAD_VOL), light = pads.pop() || new Uint8Array(PAD_VOL);
     paddedCopy(world, cx, cz, pad);
-    paddedCopy(world, cx, cz, light, true);
-    const state = c && c.state ? c.state.slice() : null;
+    paddedCopy(world, cx, cz, light, 'light');
+    // per-block state (torch facing, water levels) when any of the 3×3 chunks has some
+    let state: Uint8Array | null = null;
+    if (!around(cx, cz, (c) => !c || !c.state)) paddedCopy(world, cx, cz, (state = pads.pop() || new Uint8Array(PAD_VOL)), 'state');
     s.sent = version;
     pool.run({ type: 'mesh', id: 0, seed: world.seed, cx, cz, pad, light, state, opaqueLeaves },
       state ? [pad.buffer, light.buffer, state.buffer] : [pad.buffer, light.buffer], (res) => {
         if (res.type !== 'mesh') return;
         pads.push(res.pad, res.light);
+        if (res.state) pads.push(res.state);
         if (s.sent === version) s.sent = -1;
         if (s.epoch === epoch) ready.push({ ci, epoch, version, urgent, data: res.mesh });
       });
@@ -220,7 +235,8 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
     s.meshed = r.version;
     if (r.version === s.version) s.urgent = false;
     const cx = r.ci % NCX, cz = (r.ci / NCX) | 0;
-    for (let p = 0; p < PASSES; p++) {
+    setWater(r.ci, r.data[TRANSLUCENT]);
+    for (let p = 0; p < OWN_PASSES; p++) {
       const data = r.data[p], m = s.meshes[p];
       if (!data) { if (m) disposeMesh(s, p); continue; }
       const geo = chunkGeometry(data);
@@ -244,13 +260,45 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
     m.geometry.dispose();
     s.meshes[p] = null;
   }
-  const disposeAll = (s: Slot) => { for (let p = 0; p < PASSES; p++) disposeMesh(s, p); };
+  const disposeAll = (ci: number) => { for (let p = 0; p < OWN_PASSES; p++) disposeMesh(slots[ci], p); setWater(ci, null); };
+  function setWater(ci: number, data: PassMesh | null): void {
+    if (!data && !slots[ci].water) return;
+    slots[ci].water = data;
+    groups[groupOf(ci)].dirty = true;
+  }
+
+  /** Put together a water group's mesh from its chunks' water (the ones within the view distance). */
+  function rebuildGroup(gi: number): void {
+    const g = groups[gi], gx = gi % NGX, gz = (gi / NGX) | 0, parts: [PassMesh, number, number][] = [];
+    g.dirty = false;
+    for (let dz = 0; dz < WG; dz++) for (let dx = 0; dx < WG; dx++) {
+      const s = slots[gx * WG + dx + (gz * WG + dz) * NCX];
+      if (s.water && s.wvis) parts.push([s.water, dx * CS, dz * CS]);
+    }
+    if (g.mesh) {
+      g.mesh.geometry.dispose();
+      if (!parts.length) { scene.remove(g.mesh); g.mesh = null; }
+    }
+    if (!parts.length) return;
+    const geo = groupGeometry(parts);
+    if (g.mesh) g.mesh.geometry = geo;
+    else {
+      g.mesh = new THREE.Mesh(geo, materials[TRANSLUCENT]);
+      g.mesh.position.set(gx * WG * CS, 0, gz * WG * CS);
+      g.mesh.scale.setScalar(1 / FP);
+      g.mesh.matrixAutoUpdate = false;
+      g.mesh.updateMatrix();
+      scene.add(g.mesh);
+    }
+    g.mesh.frustumCulled = false;                    // upload it this frame
+    fresh.push(g.mesh);
+  }
 
   function unload(ci: number): void {
     const s = slots[ci], cx = ci % NCX, cz = (ci / NCX) | 0, c = world.chunk(cx, cz);
     if (c && source.unload) source.unload(c);
     world.removeChunk(cx, cz);
-    disposeAll(s);
+    disposeAll(ci);
     s.state = NONE; s.epoch++; s.version = 0; s.meshed = -1; s.sent = -1; s.urgent = false;
     s.lightVer = 0; s.lightSent = -1; s.relit = false;
   }
@@ -286,9 +334,10 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         const d = s.dist = Math.sqrt(dx * dx + dz * dz);
         if (s.state !== NONE && d > keepD) { unload(ci); continue; }
         if (hasMesh(s)) {
-          if (d > lightD) { disposeAll(s); s.meshed = -1; }
+          if (d > lightD) { disposeAll(ci); s.meshed = -1; }
           else for (const m of s.meshes) if (m) m.visible = d <= meshD;
         }
+        if (s.wvis !== d <= meshD) { s.wvis = d <= meshD; if (s.water) groups[groupOf(ci)].dirty = true; }
         // priority: nearest first, chunks in front of the camera before those behind
         const cx = x0 + CS / 2 - px, cz = z0 + CS / 2 - pz, cl = Math.sqrt(cx * cx + cz * cz);
         s.score = d < CS ? d * 0.5 : d * (1 - 0.45 * (cl > 1e-3 ? (cx * ux + cz * uz) / cl : 0));
@@ -312,14 +361,15 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         else if (!world.chunk(ci % NCX, (ci / NCX) | 0)!.light) dispatchLight(ci);
         else dispatchMesh(ci, false);
       }
+      for (let gi = 0; gi < groups.length; gi++) if (groups[gi].dirty) rebuildGroup(gi);
     },
 
     sortTranslucent(cam) {
-      // three draws transparent objects by renderOrder first: farther chunks get lower numbers
-      for (let ci = 0; ci < slots.length; ci++) {
-        const m = slots[ci].meshes[TRANSLUCENT];
+      // three draws transparent objects by renderOrder first: farther water groups get lower numbers
+      for (let gi = 0; gi < groups.length; gi++) {
+        const m = groups[gi].mesh;
         if (!m) continue;
-        const dx = (ci % NCX) * CS + CS / 2 - cam.x, dz = ((ci / NCX) | 0) * CS + CS / 2 - cam.z;
+        const dx = ((gi % NGX) + 0.5) * WG * CS - cam.x, dz = (((gi / NGX) | 0) + 0.5) * WG * CS - cam.z;
         m.renderOrder = -Math.sqrt(dx * dx + dz * dz);
       }
     },
@@ -411,7 +461,7 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
     debugChunk(cx, cz) {
       const s = slots[cx + cz * NCX], c = world.chunk(cx, cz);
       return { state: s.state, lit: !!c && !!c.light, version: s.version, meshed: s.meshed,
-        tris: s.meshes.map((m) => (m && m.geometry.index ? m.geometry.index.count / 3 : 0)) };
+        tris: [...s.meshes.map((m) => (m && m.geometry.index ? m.geometry.index.count / 3 : 0)), s.water ? s.water.index.length / 3 : 0] };
     },
 
     stats() {
@@ -421,8 +471,9 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
         if (s.state === LOADED) loaded++;
         if (hasMesh(s)) {
           meshed++;
-          if (s.meshes.some((m) => m && m.visible)) visible++;
+          if (s.meshes.some((m) => m && m.visible) || (s.water && s.wvis)) visible++;
           s.meshes.forEach((m, p) => { if (m) passes[p]++; });
+          if (s.water) passes[TRANSLUCENT]++;
         }
         if (s.urgent) edits++;
       }

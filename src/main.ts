@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { CB, CS, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
-import { createTextures } from './textures';
-import { world } from './world';
+import { createTextures, setUnderwater } from './textures';
+import { world, inWater } from './world';
 import { columnHeight, findSpawn } from './gen';
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
@@ -227,7 +227,9 @@ async function boot(): Promise<void> {
     if (menuOpen()) setClock(days);
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
-    env.update(dt, camera);
+    const under = inWater(camera.position.x, camera.position.y, camera.position.z);
+    env.update(dt, camera, under);
+    setUnderwater(chunkMaterials[2], under);
     streamer.sortTranslucent(camera.position);
     renderer.render(scene, camera);
 

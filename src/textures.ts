@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
-import { B } from './blocks';
+import { B, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES } from './blocks';
 import { TEX } from './mesher';
 import { coverageMips, bleedColors } from './mipmaps';
 import { lightUniforms, LIGHT_VERTEX_PARS, LIGHT_VERTEX } from './shading';
@@ -205,10 +205,31 @@ const torch: Painter = (put, each) => {
   }
 };
 
+/* ---------- animated water: WATER_FRAMES tiles each, played by the chunk shader ---------- */
+const P_SEA = pal(0x1d5899, 0x2464a7, 0x2b70b4, 0x337cc0, 0x3d88ca, 0x4a96d4, 0x6aaee0);
+/** Still water, frame f of the loop: soft ripples, waves that tile across the tile and come round with the frames */
+const stillWater = (f: number): Painter => (put, each) => {
+  const k = (2 * Math.PI) / TS, t = (2 * Math.PI * f) / WATER_FRAMES;
+  each((x, y) => {
+    const v = 0.5 + 0.17 * Math.sin(k * (x + 2 * y) + t) + 0.13 * Math.sin(k * (3 * x - y) - 2 * t + 1.3) +
+      0.09 * Math.sin(k * (2 * x + 3 * y) + t + 2.1) + 0.12 * (tn(x, y, 8, 8, 40) - 0.5);
+    put(x, y, pick(P_SEA, v), 1, v > 0.8 ? 205 : 172);
+  });
+};
+/** Flowing water, frame f: streaks running down the tile (toward −v), 2 texels further each frame */
+const flowWater = (f: number): Painter => (put, each) => {
+  each((x, y) => {
+    const yy = y - (TS * f) / WATER_FRAMES;          // the pattern moves down the canvas
+    const v = 0.5 * tn(x, yy, 2, 16, 41) + 0.3 * tn(x, yy, 4, 8, 42) + 0.2 * tn(x, yy, 8, 4, 43);
+    put(x, y, pick(P_SEA, 0.1 + v), 1, v > 0.72 ? 205 : 178);
+  });
+};
+const frames = (paint: (f: number) => Painter) => Array.from({ length: WATER_FRAMES }, (_, f) => paint(f));
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
 const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
-  glass, leavesCut, torch];
+  glass, leavesCut, torch, ...frames(stillWater), ...frames(flowWater)];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
@@ -224,27 +245,96 @@ export interface Textures {
   chunkMaterials: THREE.MeshBasicMaterial[];
 }
 
+/* ---------- the water's shader code (translucent pass) ---------- */
+const WATER_VERTEX_PARS = `
+uniform vec3 skyColor;
+varying vec3 vView;
+varying vec3 vUp;
+varying vec3 vSkyRefl;
+// animated water tiles play their frames: ripples at 8 a second, streaks at 16 (a block a second)
+float waterFrame( float l ) {
+	if ( l < ${T_WATER_STILL - 0.5} ) return l;
+	return l + mod( floor( time * ( l > ${T_WATER_FLOW - 0.5} ? 16.0 : 8.0 ) ), ${WATER_FRAMES}.0 );
+}`;
+/**
+ * The view-space position, "up" in view space on top faces (the ones with face shading 1; zero on
+ * the sides of falling and flowing water, which reflect nothing), and the sky the surface can see
+ * (skylight): worked out in view space, where the eye is at the origin (r128 gives a basic material
+ * no cameraPosition).
+ */
+const WATER_VERTEX = `
+	vView = mvPosition.xyz;
+	vUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) * step( 0.99, color.r );
+	vSkyRefl = skyColor * color.g * color.g;`;
+/**
+ * The surface reflects the sky, more at a glancing angle (fresnel). Back faces only show with the
+ * camera in water (setUnderwater): seen from below, the sky shows through near overhead (Snell's
+ * window) and further out the surface mirrors the deep (the fog colour).
+ */
+const WATER_FRAGMENT = `
+	float top = dot( vUp, vUp ), facing = abs( dot( normalize( vView ), vUp ) );
+	if ( gl_FrontFacing ) {
+		float fres = pow( 1.0 - facing, 4.0 ) * top;
+		diffuseColor.rgb = mix( diffuseColor.rgb, vSkyRefl, 0.1 * top + 0.75 * fres );
+		diffuseColor.a = mix( diffuseColor.a, 1.0, fres );
+	} else {
+#ifdef USE_FOG
+		diffuseColor.rgb = mix( fogColor * 1.4 + 0.03, diffuseColor.rgb * 0.5 + vSkyRefl, smoothstep( 0.55, 0.8, facing ) * top );
+#endif
+		diffuseColor.a = 0.9;
+	}`;
+/**
+ * A merged water surface repeats its tile (see mesher.ts): sample at fract(uv), with the mip level
+ * worked out from the unwrapped uv so it stays smooth across the seams. One plain trilinear lookup
+ * (textureLod): rippling water needs no anisotropic filtering, and it is much cheaper on weak GPUs.
+ */
+const WATER_MAP = `
+	vec2 tx = vTile.xy * ${TEX}.0, gx = dFdx( tx ), gy = dFdy( tx );
+	diffuseColor *= textureLod( tiles, vec3( fract( vTile.xy ), vTile.z ), 0.5 * log2( max( dot( gx, gx ), dot( gy, gy ) ) ) );`;
+/** Fog, except that the surface seen from below glows through the murk from twice as far */
+const WATER_FOG = `
+#ifdef USE_FOG
+	float fogFactor = smoothstep( fogNear, fogFar, gl_FrontFacing ? fogDepth : fogDepth * 0.5 );
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+#endif`;
+
 /**
  * Chunk material for render pass `pass`: 0 opaque (alpha ignored), 1 cutout (alpha-tested at 0.5,
- * writes depth), 2 translucent (alpha-blended, no depth writes, drawn after the rest). The vertex
- * colour carries shading (r) and light (g sky, b block): see shading.ts.
+ * writes depth), 2 translucent (water: alpha-blended, no depth writes, drawn after the rest,
+ * animated, reflecting the sky; see setUnderwater). The vertex colour carries shading (r) and light
+ * (g sky, b block): see shading.ts.
  */
 function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE.MeshBasicMaterial {
-  const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: pass === 2, depthWrite: pass !== 2 });
+  const water = pass === 2;
+  const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: water, depthWrite: !water });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray } });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, layer );`)
-      .replace('#include <project_vertex>', `#include <project_vertex>${LIGHT_VERTEX}`);
+      .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}${water ? WATER_VERTEX_PARS : ''}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, ${water ? 'waterFrame( layer )' : 'layer'} );`)
+      .replace('#include <project_vertex>', `#include <project_vertex>${LIGHT_VERTEX}${water ? WATER_VERTEX : ''}`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;\nvarying vec3 vLight;')
-      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : 'diffuseColor *= texture( tiles, vTile );')
-      .replace('#include <color_fragment>', 'diffuseColor.rgb *= vColor.r * vLight;');
+      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;\nvarying vec3 vLight;' +
+        (water ? '\nvarying vec3 vView;\nvarying vec3 vUp;\nvarying vec3 vSkyRefl;' : ''))
+      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : water ? WATER_MAP :
+        'diffuseColor *= texture( tiles, vTile );')
+      .replace('#include <color_fragment>', 'diffuseColor.rgb *= vColor.r * vLight;' + (water ? WATER_FRAGMENT : ''))
+      .replace('#include <fog_fragment>', water ? WATER_FOG : '#include <fog_fragment>');
     radialFogVertex(sh);
   };
   m.customProgramCacheKey = () => 'tiles' + pass;
   return m;
+}
+
+/**
+ * Water's faces point out of it. With the camera in water its back faces show too (the surface seen
+ * from below); out of it they don't, or a pond would show its far side through its near one.
+ */
+export function setUnderwater(waterMaterial: THREE.Material, under: boolean): void {
+  const side = under ? THREE.DoubleSide : THREE.FrontSide;
+  if (waterMaterial.side === side) return;
+  waterMaterial.side = side;
+  waterMaterial.needsUpdate = true;
 }
 
 /** Paint every tile and wrap it in textures + the chunk materials. Call exactly once. */

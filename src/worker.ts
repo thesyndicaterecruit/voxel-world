@@ -21,7 +21,8 @@ ctx.onmessage = (e) => {
   } else {
     const mesh = meshChunk(m.pad, m.light, m.state, m.cx * CS, m.cz * CS, m.seed, m.opaqueLeaves);
     const transfer: Transferable[] = [m.pad.buffer, m.light.buffer];
+    if (m.state) transfer.push(m.state.buffer);
     for (const p of mesh) if (p) transfer.push(p.pos.buffer, p.col.buffer, p.uv.buffer, p.layer.buffer, p.index.buffer);
-    ctx.postMessage({ type: 'mesh', id: m.id, cx: m.cx, cz: m.cz, mesh, pad: m.pad, light: m.light }, transfer);
+    ctx.postMessage({ type: 'mesh', id: m.id, cx: m.cx, cz: m.cz, mesh, pad: m.pad, light: m.light, state: m.state }, transfer);
   }
 };

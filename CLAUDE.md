@@ -3,12 +3,13 @@
 A small, mobile-first voxel sandbox (think pocket Minecraft) built with Three.js, TypeScript and
 Vite. The world is a 512×512×64-block archipelago generated from a seed, stored as 32×32 chunks of
 16×16 columns (full height). Chunks stream in and out around the player; generation and meshing run
-in Web Workers, and each chunk draws in at most three calls (opaque, cutout, translucent). You walk
+in Web Workers, and each chunk draws in at most two calls (opaque, cutout) plus a share of one for
+its water (translucent, drawn 4×4 chunks at a time). You walk
 around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
 torches among them. Worlds are save files in IndexedDB: edited chunks plus the player state, picked
-from a list on the start card. Mid-range Android phones in Chrome are the target. All textures are
-painted procedurally at startup — there are no image assets and no runtime network requests. WebGL 2
-is required (texture arrays).
+from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
+Chrome are the target. All textures are painted procedurally at startup — there are no image assets
+and no runtime network requests. WebGL 2 is required (texture arrays).
 
 Every push is built and deployed to GitHub Pages by `.github/workflows/deploy.yml`:
 https://thesyndicaterecruit.github.io/voxel-world/
@@ -42,29 +43,33 @@ src/
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
                      faceHidden() culling rule, HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
-  textures.ts        Procedural 32×32 pixel-art tile painters → canvases, CanvasTextures, RGBA tile texture array,
-                     chunk materials per render pass
+  textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
+                     RGBA tile texture array, chunk materials per render pass (the water shader), setUnderwater
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
                      time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
   light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relight() after an edit
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
-  gen.ts             Pure world generation: columnHeight, layering, trees, generateChunk(seed, cx, cz), findSpawn
+  gen.ts             Pure world generation: columnHeight, waterLevel (sea, lakes), layering, trees,
+                     generateChunk(seed, cx, cz), findSpawn; floodSea (old saves get the sea)
   worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshChunk off the main thread
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
   streaming.ts       Chunk streaming: load/light/mesh/unload regions, job priorities, upload budget, edits (relight +
                      re-mesh)
   world.ts           Chunk storage (block ids, lazy per-block state, light) + World class (getBlock/getState/getLight/
-                     setBlock/isSolid/topY in world coords, seed), raycast
+                     setBlock/isSolid/topY in world coords, seed), raycast, inWater
   saves.ts           Save files: worlds list/create/delete, the open world's chunk source + autosave
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
-  mesher.ts          Pure chunk mesher: padded chunk blocks + light → typed arrays per render pass (face culling,
-                     baked face shading, AO, smooth light, tile layer; cube, torch and liquid models)
-  meshing.ts         paddedCopy (chunk + 1-block border, blocks or light), mesher output → BufferGeometry; boxesGeometry
-  environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, water surface, clouds around the camera,
-                     all following the time of day (setTime); fog + underwater look; daylight and sky tint
+  mesher.ts          Pure chunk mesher: padded chunk blocks + light + state → typed arrays per render pass (face
+                     culling, baked face shading, AO, smooth light, tile layer; cube, torch and liquid models: water
+                     surfaces shaped by their neighbours, flat ones merged)
+  meshing.ts         paddedCopy (chunk + 1-block border: blocks, light or state), mesher output → BufferGeometry;
+                     boxesGeometry
+  environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
+                     around the camera, all following the time of day (setTime); fog + underwater look; daylight,
+                     sky tint and the sky colour water reflects
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles
                      (the last two lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch), AABB collision, movement physics, auto-jump, aim()
@@ -109,12 +114,32 @@ ahead of everything else.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
   texture changes.
-- **Water (for now):** the sea is a single translucent surface at `WATER_Y` (just under
-  `SEA_LEVEL`) covering the whole world — it follows the camera — and the view turns blue (fog,
-  clear colour, `body.under` CSS tint) when the camera is below it. The player walks on the seabed
-  as if it were dry. A `WATER` block exists in the registry (translucent, liquid model, level in its
-  block state) but the world doesn't generate it and it isn't in the hotbar yet (place it with
-  `__voxel.setBlock`); real water and swimming come in a later milestone.
+- **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
+  deep water gets darker, model 'liquid'). Generation fills the air below `SEA_LEVEL` with still
+  water (sources), and digs lakes into inland ground (at most one per 32×32 cell: a bowl filled up
+  to the lowest point of the ground around it, with a bank raised where the rim has a gap, so a lake
+  always holds its water; `waterLevel(seed, x, z)`). Block state: the low 3 bits are the level (0 a
+  source, 1–7 flowing, a step lower per block), bit 3 (`FALLING`) is water falling down;
+  `liquidHeight` gives a block's surface height (a source's is 7/8 of a block, so the sea's surface
+  sits just under a sea-level beach). The mesher shapes the surface per corner from the up to 4
+  columns sharing it (full where any of them falls or has water on top, else the average of their
+  heights with sources counting 10 times, pulled down by open cells, solid ones ignored), so
+  neighbouring water joins up; faces between water blocks are hidden, faces toward the world's edge
+  too (`environment.ts` draws the sea on past it). Flat, evenly lit tops of still water merge into
+  quads of up to 7×7 blocks (uvs are bytes; the shader repeats the tile with `fract`, sampling once
+  with `textureLod` at a mip level worked out from the unwrapped uv — no anisotropic taps, which
+  matters on weak GPUs). Tiles: still water's ripples on tops and bottoms, flowing water's streaks on sides
+  and on sloping tops (turned to run downhill) — `WATER_FRAMES` frames each at the end of
+  `TILE_PAINTERS`, played by time in the shader. The water shader reflects the sky colour
+  (`lightUniforms.skyColor`, set with the time of day) where it sees skylight, more at a glancing
+  angle; that and the angle are worked out in view space, because r128 doesn't give a
+  `MeshBasicMaterial` `cameraPosition`. The camera counts as in water (`inWater`) below a water
+  block's surface: then the fog, clear colour and `body.under` tint turn blue, and the water
+  material shows back faces too (`setUnderwater`): the surface from below shows the sky near
+  overhead (Snell's window) and mirrors the deep further out, fogged half as much as the rest. Out
+  of water it stays single-sided, or a pond would show its far side through its near one. Water
+  can't be aimed at (raycasts pass through it); placing a block into water replaces it, but
+  torches refuse. Water doesn't flow yet; the player walks on the seabed as if it were dry.
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`Streamer`, `WorkerPool`,
   `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
@@ -212,11 +237,14 @@ ahead of everything else.
   behind the title card; a new mesh skips frustum culling for its first frame, so its GPU upload
   happens then), and at most 8 normal worker jobs (load, light, mesh) start per frame. Edit
   re-meshes skip both limits. Jobs go nearest-first, favouring chunks in view.
-- **Render passes:** each chunk has up to three meshes, created only when non-empty — opaque,
-  cutout (alpha-tested at 0.5, writes depth: leaves, glass, torches) and translucent (alpha-blended,
-  no depth writes: water; drawn after everything else, and `streamer.sortTranslucent` orders the
-  chunks back to front each frame through `renderOrder`). A block's faces go into its registry
-  `renderPass` (leaves into the opaque one when meshed as opaque cubes).
+- **Render passes:** each chunk has up to three meshes' worth of data, created only when non-empty —
+  opaque, cutout (alpha-tested at 0.5, writes depth: leaves, glass, torches) and translucent
+  (alpha-blended, no depth writes: water; drawn after everything else). The sea puts water in most
+  chunks, so the translucent pass is drawn per group of 4×4 chunks (`groupGeometry`: one draw call
+  for all 16), rebuilt when one of them changes or crosses into or out of the view distance;
+  `streamer.sortTranslucent` orders the groups back to front each frame through `renderOrder`. A
+  block's faces go into its registry `renderPass` (leaves into the opaque one when meshed as opaque
+  cubes).
 - **One draw call per pass:** every tile is a layer of `tileArray` (an RGBA `DataTexture2DArray`,
   r128's name for `DataArrayTexture`), the tile is a per-vertex `layer` attribute, and the three
   `chunkMaterials` are `MeshBasicMaterial`s patched in `onBeforeCompile` to sample the array (the
@@ -233,7 +261,9 @@ ahead of everything else.
   break/place mode, the world clock); store `chunks` holds only *edited* chunks under
   `${worldId}:${cx},${cz}` as `{ v, rle, srle? }`: the block ids run-length encoded, plus the
   per-block state the same way when any of it is non-zero. Everything else regenerates from the seed
-  — so changing `gen.ts` changes the unedited terrain of existing saves. `SAVE_VERSION` is 3; when
+  — so changing `gen.ts` changes the unedited terrain of existing saves. Chunks saved before version 4
+  had air where the sea is; reading them runs `floodSea` (the air below sea level open to the sea
+  becomes water). `SAVE_VERSION` is 4; when
   the stored format changes, bump it, note it in the history at the top of `saves.ts`, add a fixture
   of the previous version to `tests/saves.test.ts`, and extend `migrateWorld` / `migrateChunk`, which
   bring any older record up to date every time one is read (a migrated record is written back the

@@ -21,8 +21,10 @@ export const lightUniforms = {
   lightFloor: { value: 0.06 },
   /** Brightness setting: 0 the plain curve, 1 lifted all the way */
   lift: { value: 0.35 },
-  /** Seconds, for the torch flicker */
+  /** Seconds, for the torch flicker and the water's animation */
   time: { value: 0 },
+  /** The sky colour water reflects (set with the time of day, see environment.ts) */
+  skyColor: { value: new THREE.Color(0.75, 0.86, 0.96) },
 };
 
 /** The Brightness setting's steps */

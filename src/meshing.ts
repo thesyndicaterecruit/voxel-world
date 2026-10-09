@@ -1,17 +1,17 @@
 import * as THREE from 'three';
 import { CS, H, CI } from './config';
 import type { World } from './world';
-import { FACES, PI, type PassMesh } from './mesher';
+import { FACES, PI, FP, type PassMesh } from './mesher';
 
 /**
  * Copy chunk (cx, cz) plus a one-block border from its 8 neighbours into `out` (PI layout): their
- * block ids, or with `light` their light. Missing neighbours and columns outside the world are
- * air, lit by the open sky.
+ * block ids, their light, or their per-block state. Missing neighbours and columns outside the world
+ * are air, lit by the open sky.
  */
-export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array, light = false): void {
-  out.fill(light ? 0xf0 : 0);
+export function paddedCopy(w: World, cx: number, cz: number, out: Uint8Array, what: 'blocks' | 'light' | 'state' = 'blocks'): void {
+  out.fill(what === 'light' ? 0xf0 : 0);
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-    const c = w.chunk(cx + dx, cz + dz), d = c && (light ? c.light : c.data);
+    const c = w.chunk(cx + dx, cz + dz), d = c && (what === 'light' ? c.light : what === 'state' ? c.state : c.data);
     if (!d) continue;
     // local range copied from this neighbour, and where it lands in the padded volume
     const lx0 = dx < 0 ? CS - 1 : 0, lx1 = dx > 0 ? 1 : CS, lz0 = dz < 0 ? CS - 1 : 0, lz1 = dz > 0 ? 1 : CS;
@@ -37,6 +37,28 @@ export function chunkGeometry(m: PassMesh): THREE.BufferGeometry {
   geo.setIndex(new THREE.BufferAttribute(m.index, 1));
   geo.computeBoundingSphere();
   return geo;
+}
+
+/**
+ * Several chunks' meshes of one pass as one geometry (water is drawn a group of chunks at a time):
+ * part [mesh, dx, dz] sits dx, dz blocks from the group's origin (positions stay below 65536/FP).
+ */
+export function groupGeometry(parts: [PassMesh, number, number][]): THREE.BufferGeometry {
+  let nv = 0, ni = 0;
+  for (const [m] of parts) { nv += m.pos.length / 3; ni += m.index.length; }
+  const pos = new Uint16Array(nv * 3), col = new Uint8Array(nv * 3), uv = new Uint8Array(nv * 2), layer = new Uint8Array(nv);
+  const index = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let v = 0, i = 0;
+  for (const [m, dx, dz] of parts) {
+    const n = m.pos.length / 3;
+    for (let k = 0; k < n; k++) {
+      pos[(v + k) * 3] = m.pos[k * 3] + dx * FP; pos[(v + k) * 3 + 1] = m.pos[k * 3 + 1]; pos[(v + k) * 3 + 2] = m.pos[k * 3 + 2] + dz * FP;
+    }
+    col.set(m.col, v * 3); uv.set(m.uv, v * 2); layer.set(m.layer, v);
+    for (let k = 0; k < m.index.length; k++) index[i + k] = m.index[k] + v;
+    v += n; i += m.index.length;
+  }
+  return chunkGeometry({ pos, col, uv, layer, index });
 }
 
 /** Many axis-aligned boxes [x0,y0,z0,x1,y1,z1] in one vertex-coloured geometry (outline, clouds). */

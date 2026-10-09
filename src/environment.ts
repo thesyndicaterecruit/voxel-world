@@ -1,15 +1,17 @@
 import * as THREE from 'three';
-import { WATER_Y } from './config';
+import { SEA_LEVEL, W, D } from './config';
 import { mulberry } from './noise';
 import { boxesGeometry } from './meshing';
-import { radialFog } from './fog';
+import { radialFogVertex } from './fog';
 import { lightUniforms } from './shading';
 
-/* ======================= SKY, SUN, MOON, STARS, WATER, CLOUDS ======================= */
+/* ======================= SKY, SUN, MOON, STARS, SEA, CLOUDS ======================= */
 // Everything here follows the time of day (setTime): where the sun and moon are, the sky gradient
-// and the glow around a low sun, fog, water and cloud colours, the stars, and the light uniforms
-// the chunk shader reads (daylight, sky tint). Time of day t: 0 midnight, 0.25 sunrise, 0.5 noon,
-// 0.75 sunset.
+// and the glow around a low sun, fog, sea and cloud colours, the stars, and the light uniforms
+// the chunk shader reads (daylight, sky tint, the sky colour water reflects). Time of day t:
+// 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
+// The sea inside the world is water blocks (chunk meshes); beyond the world's edge a flat sea
+// carries on to the horizon.
 // Under water: short blue fog, blue background, and a CSS tint over the view (body.under)
 const UNDER = new THREE.Color(0x1f5f94), UNDER_NIGHT = new THREE.Color(0x07182c), UNDER_NEAR = -4, UNDER_FAR = 20;
 // Clouds live in a box around the camera and wrap around it as it moves
@@ -76,8 +78,8 @@ function moonTexture(): THREE.Texture {
 }
 
 export interface Environment {
-  /** Drift the clouds, keep sky, sun and water centred on the camera, switch the underwater look. */
-  update(dt: number, camera: THREE.Camera): void;
+  /** Drift the clouds, keep sky, sun and sea centred on the camera, switch the underwater look (`under`: the camera is in water). */
+  update(dt: number, camera: THREE.Camera, under: boolean): void;
   /** Fog for normal (above-water) viewing: terrain fades from `near` to fully hidden at `far`. */
   setFog(near: number, far: number): void;
   /** Time of day, 0–1 (0 midnight, 0.5 noon): moves the sun, recolours everything, sets the light uniforms. */
@@ -132,13 +134,23 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   /** The axis the sky turns around (normal to the sun's path) */
   const axis = new THREE.Vector3(0, Math.sin(TILT), Math.cos(TILT));
 
-  // one water surface over the whole world (it follows the camera, so it never ends); seen from
-  // both sides, and slightly see-through so shallow seabeds show
-  const waterGeo = new THREE.PlaneGeometry(1600, 1600).rotateX(-Math.PI / 2);
-  const waterMat = radialFog(new THREE.MeshBasicMaterial({ color: SKY.water[0], side: THREE.DoubleSide, transparent: true, opacity: 0.82 }));
-  const water = new THREE.Mesh(waterGeo, waterMat);
-  water.position.y = WATER_Y;
-  scene.add(water);
+  // the sea beyond the world's edge: a plane at the sea's surface that follows the camera, cut out
+  // over the world (which has its own water), reflecting the sky like the water blocks do
+  const seaMat = new THREE.MeshBasicMaterial({ color: SKY.water[0] });
+  seaMat.onBeforeCompile = (sh) => {
+    sh.uniforms.skyColor = lightUniforms.skyColor;
+    radialFogVertex(sh);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWorld;\nvarying vec3 vView;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n\tvWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\n\tvView = mvPosition.xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vWorld;\nvarying vec3 vView;\nuniform vec3 skyColor;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+	if ( vWorld.x > 0.0 && vWorld.x < ${W}.0 && vWorld.z > 0.0 && vWorld.z < ${D}.0 ) discard;
+	float facing = abs( dot( normalize( cross( dFdx( vView ), dFdy( vView ) ) ), normalize( vView ) ) );
+	diffuseColor.rgb = mix( diffuseColor.rgb, skyColor, 0.1 + 0.75 * pow( 1.0 - facing, 4.0 ) );`);
+  };
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600).rotateX(-Math.PI / 2), seaMat);
+  sea.position.y = SEA_LEVEL - 0.125;                  // a source block's surface
+  scene.add(sea);
 
   const cloudMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false });
   const clouds: THREE.Mesh[] = [];
@@ -168,7 +180,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   };
 
   const env: Environment = {
-    update(dt, camera) {
+    update(dt, camera, u) {
       const cam = camera.position;
       for (const c of clouds) {
         c.position.x = wrap(c.position.x + dt * 0.9, cam.x);
@@ -180,11 +192,12 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       sun.lookAt(cam);
       moon.position.copy(cam).addScaledVector(sunDir, -210);
       moon.lookAt(cam);
-      water.position.x = cam.x;
-      water.position.z = cam.z;
+      sea.position.x = cam.x;
+      sea.position.z = cam.z;
+      // only near the edge, where it isn't all fogged out
+      sea.visible = !u && Math.min(cam.x, cam.z, W - cam.x, D - cam.z) < fogFar + 8;
       starU.scale.value = renderer.getPixelRatio();
 
-      const u = cam.y < WATER_Y;
       if (u !== under) {
         under = u;
         fog.near = u ? UNDER_NEAR : fogNear;
@@ -210,7 +223,9 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       skyU.horizon.value.copy(horizon);
       skyU.glow.value.setRGB(0.55, 0.25, 0.08).multiplyScalar(dusk);
       skyU.sunDir.value.copy(sunDir);
-      blend(waterMat.color, SKY.water, dusk * 0.5);
+      blend(seaMat.color, SKY.water, dusk * 0.5);
+      // what water reflects: the sky low down, where a glancing look across it meets it
+      lightUniforms.skyColor.value.copy(horizon).lerp(skyU.zenith.value, 0.25);
       blend(cloudMat.color, SKY.cloud, dusk);
       sunMat.color.copy(SKY.sun[0]).lerp(SKY.sun[1], Math.min(1, dusk * 1.4));
       moonMat.opacity = 1 - day * 0.85;

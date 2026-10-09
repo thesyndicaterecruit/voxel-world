@@ -1,6 +1,7 @@
 import { NCX } from './config';
 import { openDB, type DB } from './db';
 import { rleEncode, rleDecode } from './rle';
+import { floodSea } from './gen';
 import type { Chunk } from './world';
 import type { Mode } from './ui';
 
@@ -19,8 +20,11 @@ import type { Mode } from './ui';
 //      hotbar grew, but new items go at the end so saved slot numbers still point at the same block.
 //   3  world records gain `time` (days since the world began; the fraction is the time of day).
 //      Older worlds start at NEW_WORLD_TIME. Chunks are unchanged apart from the version.
+//   4  the sea is water blocks (before, one surface was drawn over the world, which held air below
+//      it): chunks saved earlier get water in the air below sea level that is open to the sea
+//      (floodSea in gen.ts) when they are read. World records are unchanged apart from the version.
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 /** When a new world's clock starts: day 1, a little after sunrise (0.25 = 6:00) */
 export const NEW_WORLD_TIME = 0.3;
 const DB_NAME = 'voxel-island', DB_VERSION = 1;
@@ -49,21 +53,31 @@ export type StoredWorld = Omit<WorldRecord, 'time'> & { time?: number };
 export interface ChunkRecord { v: number; rle: Uint8Array; srle?: Uint8Array }
 /** A chunk's contents in memory. */
 export interface ChunkData { data: Uint8Array; state: Uint8Array | null }
+/** Which world (seed) and chunk a record belongs to: migrating chunks from before version 4 needs it. */
+export interface ChunkAt { seed: number; cx: number; cz: number }
 
 /** Bring a stored world record (any saveVersion up to SAVE_VERSION) up to date. */
 export function migrateWorld(w: StoredWorld): WorldRecord {
   if (w.saveVersion > SAVE_VERSION) throw new Error(`world saved by a newer version (${w.saveVersion})`);
   if (w.saveVersion === SAVE_VERSION) return w as WorldRecord;
-  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning
-  return { ...w, time: NEW_WORLD_TIME, saveVersion: SAVE_VERSION };
+  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning; 3 → 4: unchanged
+  return { ...w, time: w.time ?? NEW_WORLD_TIME, saveVersion: SAVE_VERSION };
 }
 
-/** Bring a stored chunk record up to date. */
-export function migrateChunk(r: ChunkRecord): ChunkRecord {
+/**
+ * Bring a stored chunk record up to date. Records from before version 4 get the sea (see the
+ * history) when `at` says where they are.
+ */
+export function migrateChunk(r: ChunkRecord, at?: ChunkAt): ChunkRecord {
   if (r.v > SAVE_VERSION) throw new Error(`chunk saved by a newer version (${r.v})`);
   if (r.v === SAVE_VERSION) return r;
-  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged
-  return r.srle ? { v: SAVE_VERSION, rle: r.rle, srle: r.srle } : { v: SAVE_VERSION, rle: r.rle };
+  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged; 3 → 4: the sea
+  let rle = r.rle;
+  if (r.v < 4 && at) {
+    const data = rleDecode(rle);
+    if (floodSea(data, at.seed, at.cx, at.cz)) rle = rleEncode(data);
+  }
+  return r.srle ? { v: SAVE_VERSION, rle, srle: r.srle } : { v: SAVE_VERSION, rle };
 }
 
 /** Encode a chunk for saving. */
@@ -73,9 +87,9 @@ export function encodeChunk(data: Uint8Array, state: Uint8Array | null): ChunkRe
   return r;
 }
 
-/** Decode a saved chunk (of any version); throws if it is corrupt. */
-export function decodeChunk(stored: ChunkRecord): ChunkData {
-  const r = migrateChunk(stored);
+/** Decode a saved chunk (of any version; `at`: see migrateChunk); throws if it is corrupt. */
+export function decodeChunk(stored: ChunkRecord, at?: ChunkAt): ChunkData {
+  const r = migrateChunk(stored, at);
   return { data: rleDecode(r.rle), state: r.srle ? rleDecode(r.srle) : null };
 }
 
@@ -206,7 +220,7 @@ export async function openWorld(stored: StoredWorld, getChunk: (cx: number, cz: 
       if (!db || !saved.has(ci)) return null;
       return db.get<ChunkRecord>('chunks', chunkKey(id, cx, cz)).then((r) => {
         if (!r) throw new Error('missing chunk');
-        return decodeChunk(r);
+        return decodeChunk(r, { seed: record.seed, cx, cz });
       });
     },
     unload(c) {

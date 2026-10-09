@@ -1,5 +1,5 @@
 import { H } from './config';
-import { AIR, BEDROCK, GRASS, DIRT, HOTBAR, REPLACEABLE, SOLID, OPAQUE, MODEL, TORCH } from './blocks';
+import { AIR, BEDROCK, GRASS, DIRT, WATER, HOTBAR, REPLACEABLE, SOLID, OPAQUE, MODEL, TORCH } from './blocks';
 import { world, type Hit } from './world';
 import { P, V, aim, collides, overlapsPlayer } from './player';
 import { hud, toast } from './ui';
@@ -27,6 +27,7 @@ function placement(h: Hit, id: number): { x: number; y: number; z: number; state
   const x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
   if (!world.isLoaded(x, z) || y < 0 || y >= H || !REPLACEABLE[world.getBlock(x, y, z)]) return null;
   if (!isTorch(id)) return { x, y, z, state: 0 };
+  if (world.getBlock(x, y, z) === WATER) return "Torches don't burn under water";
   // torches stand on top of a block or lean out of its side, and need a solid cube to hold them
   const state = torchStateFor(h.nx, h.ny, h.nz), support = world.getBlock(h.x, h.y, h.z);
   if (state < 0) return 'Torches go on top of blocks or on walls';

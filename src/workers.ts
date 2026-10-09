@@ -12,9 +12,9 @@ export type WorkerRequest =
    */
   | { type: 'light'; id: number; cx: number; cz: number; blocks: Uint8Array; present: number }
   /**
-   * `pad` and `light` are the chunk's blocks and light plus a one-block border (see paddedCopy);
-   * they come back with the result for reuse. `state` is a copy of the chunk's per-block state, if
-   * it has any.
+   * `pad`, `light` and `state` are the chunk's blocks, light and per-block state plus a one-block
+   * border (see paddedCopy; state is null when none of those chunks has any); they come back with
+   * the result for reuse.
    */
   | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; pad: Uint8Array; light: Uint8Array; state: Uint8Array | null;
       opaqueLeaves: boolean };
@@ -22,7 +22,7 @@ export type WorkerResponse =
   | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array }
   /** `ms`: how long the lighting took in the worker */
   | { type: 'light'; id: number; cx: number; cz: number; light: Uint8Array; blocks: Uint8Array; ms: number }
-  | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array; light: Uint8Array };
+  | { type: 'mesh'; id: number; cx: number; cz: number; mesh: MeshData; pad: Uint8Array; light: Uint8Array; state: Uint8Array | null };
 
 /** Jobs in flight per worker: enough to keep a worker busy while its last result travels back. */
 const MAX_INFLIGHT = 2;

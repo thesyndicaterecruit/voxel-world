@@ -1,5 +1,5 @@
 import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, inWorld } from './config';
-import { AIR, SOLID, TARGETABLE, MODEL } from './blocks';
+import { AIR, WATER, SOLID, TARGETABLE, MODEL, liquidHeight } from './blocks';
 import { torchBox } from './torch';
 
 /* ============================ CHUNKS ============================ */
@@ -105,6 +105,13 @@ export class World {
 }
 
 export const world = new World();
+
+/** Is point (x, y, z) in water: inside a water block, below its surface? */
+export function inWater(x: number, y: number, z: number): boolean {
+  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+  if (world.getBlock(bx, by, bz) !== WATER) return false;
+  return y - by < liquidHeight(world.getState(bx, by, bz), world.getBlock(bx, by + 1, bz) === WATER);
+}
 
 /* ===================== RAYCAST (voxel DDA) ===================== */
 export interface Hit { x: number; y: number; z: number; nx: number; ny: number; nz: number }

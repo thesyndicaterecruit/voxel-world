@@ -8,10 +8,9 @@ export const CHUNK_VOL = CS * CS * H;
 export const CI = (lx: number, y: number, lz: number) => lx + CS * (lz + CS * y);
 /** Is column (x, z) inside the world? */
 export const inWorld = (x: number, z: number) => x >= 0 && x < W && z >= 0 && z < D;
-// Blocks below y = SEA_LEVEL are under water. The water surface sits just below the top of a
-// sea-level beach (y = SEA_LEVEL) so the two never z-fight.
+// The sea: generation fills the air below y = SEA_LEVEL with water. A source block's surface is 1/8 of
+// a block below its top, so the sea's surface sits just below a sea-level beach (y = SEA_LEVEL).
 export const SEA_LEVEL = 20;
-export const WATER_Y = SEA_LEVEL - 0.12;
 
 // Player half-width, height, eye height
 export const PR = 0.3, PH = 1.8, EYE = 1.62;

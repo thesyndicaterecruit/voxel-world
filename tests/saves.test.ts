@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CHUNK_VOL, CI } from '../src/config';
-import { STONE, PLANKS, TORCH } from '../src/blocks';
+import { CHUNK_VOL, CI, SEA_LEVEL } from '../src/config';
+import { AIR, STONE, PLANKS, TORCH, WATER, GLASS } from '../src/blocks';
+import { generateChunk } from '../src/gen';
 import { rleEncode, rleDecode } from '../src/rle';
 import { SAVE_VERSION, NEW_WORLD_TIME, migrateWorld, migrateChunk, encodeChunk, decodeChunk, type StoredWorld, type ChunkRecord } from '../src/saves';
 
@@ -127,5 +128,42 @@ describe('migration from save version 2', () => {
     expect(back.data).toEqual(data);
     expect(back.state).toEqual(state);
     expect(migrateChunk(v2Chunk)).toEqual({ v: SAVE_VERSION, rle: v2Chunk.rle, srle: v2Chunk.srle });
+  });
+});
+
+describe('migration from save version 3', () => {
+  const v3World: StoredWorld = {
+    id: 'mh7q2b0zc', name: 'Island 3', seed: 4242, createdAt: 1760000000000, lastPlayed: 1760000900000,
+    saveVersion: 3, player: { x: 256.5, y: 30, z: 256.5, yaw: 0.3, pitch: -0.2 }, slot: 2, mode: 'break', time: 3.6,
+  };
+  /**
+   * An ocean chunk as version 3 kept it: air where the sea is (the sea was a surface drawn over the
+   * world), with a glass room shut off on the seabed
+   */
+  const at = { seed: 4242, cx: 0, cz: 0 }, sea = generateChunk(4242, 0, 0);
+  const old = sea.map((b) => (b === WATER ? AIR : b));
+  for (let y = 4; y <= 8; y++) for (let z = 4; z <= 8; z++) for (let x = 4; x <= 8; x++) {
+    old[CI(x, y, z)] = x === 4 || x === 8 || y === 4 || y === 8 || z === 4 || z === 8 ? GLASS : AIR;
+  }
+  const v3Chunk: ChunkRecord = { v: 3, rle: rleEncode(old) };
+
+  it('keeps the world record as it was, clock and all', () => {
+    const w = migrateWorld(structuredClone(v3World));
+    expect(w.saveVersion).toBe(SAVE_VERSION);
+    expect({ ...w, saveVersion: 3 }).toEqual(v3World);
+  });
+
+  it('fills the sea back in when its chunks are read, but not the shut-off room', () => {
+    const { data } = decodeChunk(v3Chunk, at);
+    for (let i = 0; i < CHUNK_VOL; i++) {
+      const x = i & 15, z = (i >> 4) & 15, y = i >> 8, room = x >= 4 && x <= 8 && y >= 4 && y <= 8 && z >= 4 && z <= 8;
+      if (!room) expect(data[i]).toBe(sea[i]);
+    }
+    expect(data[CI(6, 6, 6)]).toBe(AIR);
+    expect(data[CI(6, SEA_LEVEL - 1, 6)]).toBe(WATER);
+    expect(data[CI(6, SEA_LEVEL, 6)]).toBe(AIR);
+    // a record migrated with its place has the sea in it; without it, nothing is added
+    expect(rleDecode(migrateChunk(v3Chunk, at).rle)).toEqual(data);
+    expect(migrateChunk(v3Chunk).rle).toEqual(v3Chunk.rle);
   });
 });

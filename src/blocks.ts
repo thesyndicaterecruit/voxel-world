@@ -9,8 +9,13 @@ export const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, PLANKS 
 // Texture tiles (painted procedurally in textures.ts — no image files).
 // The order must match TILE_PAINTERS in textures.ts; new tiles go at the end.
 export const T_GRASS_TOP = 0, T_GRASS_SIDE = 1, T_DIRT = 2, T_STONE = 3, T_SAND = 4, T_LOG_SIDE = 5, T_LOG_TOP = 6,
-  T_PLANKS = 7, T_LEAVES = 8, T_BRICK = 9, T_BEDROCK = 10, T_WATER = 11, T_GLASS = 12, T_LEAVES_CUT = 13, T_TORCH = 14,
-  NT = 15;
+  T_PLANKS = 7, T_LEAVES = 8, T_BRICK = 9, T_BEDROCK = 10, T_WATER = 11, T_GLASS = 12, T_LEAVES_CUT = 13, T_TORCH = 14;
+/**
+ * Animated water: WATER_FRAMES tiles in a row each, played in the chunk shader (textures.ts): still
+ * water's ripples, and flowing water's streaks running toward −v (down a side face).
+ */
+export const WATER_FRAMES = 16, T_WATER_STILL = 15, T_WATER_FLOW = T_WATER_STILL + WATER_FRAMES;
+export const NT = T_WATER_FLOW + WATER_FRAMES;
 
 /** Which mesh of a chunk a block's faces go into (see streaming.ts / textures.ts). */
 export type RenderPass = 'opaque' | 'cutout' | 'translucent';
@@ -62,9 +67,10 @@ def(LEAVES,  'Leaves',  T_LEAVES_CUT, T_LEAVES_CUT, T_LEAVES_CUT, { opaque: fals
   fastTex: [T_LEAVES, T_LEAVES, T_LEAVES], icon: T_LEAVES, particle: T_LEAVES });
 def(BRICK,   'Brick',   T_BRICK,     T_BRICK,      T_BRICK,    { jit: 0.05 });
 def(BEDROCK, 'Bedrock', T_BEDROCK,   T_BEDROCK,    T_BEDROCK,  { jit: 0.1 });
-// Water blocks: groundwork only — the world doesn't generate them yet (the sea is still one surface)
-def(WATER,   'Water',   T_WATER,     T_WATER,      T_WATER,
-  { solid: false, opaque: false, renderPass: 'translucent', lightFilter: 2, model: 'liquid', cullSame: true, jit: 0 });
+// Water: the sea, lakes, and what flows from them; still ripples on top, streaks running down its sides
+def(WATER,   'Water',   T_WATER_STILL, T_WATER_FLOW, T_WATER_STILL,
+  { solid: false, opaque: false, renderPass: 'translucent', lightFilter: 2, model: 'liquid', cullSame: true, jit: 0,
+    icon: T_WATER, particle: T_WATER });
 def(GLASS,   'Glass',   T_GLASS,     T_GLASS,      T_GLASS,
   { opaque: false, renderPass: 'cutout', lightFilter: 0, cullSame: true, jit: 0 });
 // Torch: a thin stick, not a cube; standing or on a wall (facing in its block state, see torch.ts)
@@ -76,6 +82,17 @@ export const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, GLA
 
 // Tiles with no "up" direction get a random rotation per face, which hides tiling repetition
 export const ROT = new Set([T_GRASS_TOP, T_DIRT, T_STONE, T_SAND, T_LEAVES, T_BEDROCK, T_LEAVES_CUT]);
+
+/* ---------- water's block state ---------- */
+/** The low 3 bits: 0 a source (full), 1–7 flowing, one step lower for each block from where it came */
+export const LEVEL = 7;
+/** Water falling down: full height, and it spreads like a source where it lands */
+export const FALLING = 8;
+/**
+ * Height of a liquid block's surface above its floor, in blocks: full when it is falling or has more
+ * liquid on top (`above`), else 7/8 for a source down to 7/32 at level 7.
+ */
+export const liquidHeight = (state: number, above = false) => (above || state & FALLING ? 1 : (28 - 3 * (state & LEVEL)) / 32);
 
 /* ---------- lookup tables for hot loops (meshing, collision), indexed by block id ---------- */
 const table = (f: (b: BlockType) => boolean | number) => {
