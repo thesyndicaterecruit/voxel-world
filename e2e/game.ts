@@ -37,6 +37,13 @@ export interface Voxel {
   /** World clock in days; setTime(t) sets today's time of day (0 midnight, 0.5 noon) */
   time: number;
   setTime(t: number): void;
+  /** How deep in water the player is (0 dry, 1 feet, 2 waist, 3 head), and seconds of air left */
+  wet: number;
+  breath: number;
+  onGround: boolean;
+  water(): { pending: number; ticks: number; changed: number; ms: number };
+  /** Draw the water blocks or not (to time what drawing them costs) */
+  showWater(on: boolean): void;
 }
 declare global {
   interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }
@@ -84,6 +91,17 @@ export async function until(page: Page, done: () => Promise<boolean>, max = 600)
     if (await done()) return i;
   }
   throw new Error(`still waiting after ${max} frames`);
+}
+
+/** Run frames until streaming has settled: the same chunk counts 10 frames running. */
+export async function settle(page: Page, max = 1000): Promise<void> {
+  let last = '', same = 0;
+  await until(page, async () => {
+    const s = await page.evaluate(() => { const s = window.__voxel.stream(); return [s.loaded, s.lit, s.meshed, s.queued].join(); });
+    same = s === last ? same + 1 : 0;
+    last = s;
+    return same >= 10;
+  }, max);
 }
 
 /** Tap PLAY on the start card. */
@@ -158,6 +176,21 @@ export async function holdJoystick(page: Page, dx: number, dy: number): Promise<
   return async () => {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await cdp.detach();
+  };
+}
+
+/**
+ * Fingers on the touchscreen, several at once (CDP touch events): down / move / up by finger id.
+ * close() lifts any still down.
+ */
+export async function fingers(page: Page) {
+  const cdp = await page.context().newCDPSession(page), on = new Map<number, number[]>();
+  const send = (type: 'touchStart' | 'touchMove' | 'touchEnd') => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: [...on].map(([id, [x, y]]) => ({ id, x, y })) });
+  return {
+    async down(id: number, x: number, y: number) { on.set(id, [x, y]); await send('touchStart'); },
+    async move(id: number, x: number, y: number) { on.set(id, [x, y]); await send('touchMove'); },
+    async up(id: number) { on.delete(id); await send('touchEnd'); },
+    async close() { if (on.size) { on.clear(); await send('touchEnd'); } await cdp.detach(); },
   };
 }
 

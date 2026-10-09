@@ -84,12 +84,16 @@ src/
                      error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
-                     chunk borders, incremental = fresh), mesher, torch geometry, save format + migration, RLE,
-                     mipmaps, generation determinism
+                     chunk borders, incremental = fresh, single and batched), mesher (water surfaces too), torch
+                     geometry, save format + migration, RLE, mipmaps, generation determinism (sea fill, lakes
+                     that hold), flowing water (spreading, falling, draining, infinite sources, chunk borders,
+                     saved updates), swimming physics (sinking, swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
-                     aiming, taps, joystick, pixel captures, frame timing); see-through blocks, torches, hotbar,
-                     Fancy leaves, old saves, time of day (midday/sunset/midnight screenshots, torchlight, frame
-                     time at night)
+                     aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
+                     blocks, torches, hotbar, Fancy leaves, old saves, time of day (midday/sunset/midnight
+                     screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
+                     lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
+                     at night, frame time looking out to sea, flow carrying on after a reload)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
 .github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact
@@ -320,23 +324,25 @@ a microtask then hands all the changes made together (one action, one tick of wa
   Match the existing terse style: short local names in hot loops, a one-line comment where intent
   isn't obvious, section banners (`/* ==== NAME ==== */`) for big blocks.
 - **Debugging:** `window.__voxel` exposes `P, V, world, get, setBlock, act, collides, step, SEED`,
-  `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`, `ready` (world loaded, play enabled), `count()`
-  (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible counts, draw calls, worker
-  time per lighting job, the last relight's cost), `chunk(cx, cz)` (one chunk's streaming state, lit
-  or not, triangles per pass), `light(x, y, z)` ([skylight, block light]), `verifyLight(cx, cz)`
-  (cells that differ from a fresh lighting), `time` (the world clock, days) and `setTime(t)` (time of
-  day today, 0–1), `water()` (pending updates, ticks, the last tick's changes and time) and
-  `waterTick()` (run one now), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle),
-  `getState`, `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and
-  its id), `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests
-  drive the game through it; `?seed=123` in the URL gives a fixed world.
+  `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`, `ready` (world loaded, play
+  enabled), `count()` (non-air blocks in loaded chunks), `stream()` (loaded/lit/meshed/visible
+  counts, draw calls, worker time per lighting job, the last relight's cost), `chunk(cx, cz)` (one
+  chunk's streaming state, lit or not, triangles per pass), `light(x, y, z)` ([skylight, block
+  light]), `verifyLight(cx, cz)` (cells that differ from a fresh lighting), `time` (the world clock,
+  days) and `setTime(t)` (time of day today, 0–1), `water()` (pending updates, ticks, the last
+  tick's changes and time), `waterTick()` (run one now), `showWater(on)` (draw the water or not, to
+  time it), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
+  `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
+  `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests drive the
+  game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames
-  (`until`), never in wall time, and read pixels with `capture` (the 3D view, without the HUD).
-  `frameMs` times frames with the real clock, GPU included; compare timings within one run (taking
-  turns), never against fixed numbers. Every browser test checks that the console stayed free of
-  errors and warnings.
+  (`until`, or `settle` for streaming to finish), never in wall time, and read pixels with `capture`
+  (the 3D view, without the HUD). `fingers` puts several fingers on the screen at once (joystick and
+  JUMP together, as on a phone). `frameMs` times frames with the real clock, GPU included; compare
+  timings within one run (taking turns), never against fixed numbers. Every browser test checks that
+  the console stayed free of errors and warnings.
 - `vite.config.ts` uses `base: './'` so the build works under the Pages sub-path. Keep asset
   references relative.
 

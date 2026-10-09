@@ -274,6 +274,7 @@ async function boot(): Promise<void> {
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
     verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
     water: () => water.stats(), waterTick: () => water.tick(),
+    showWater: (on: boolean) => { chunkMaterials[2].visible = on; },
     get time() { return days; },
     setTime: (t: number) => { days = Math.floor(days) + t; },
     setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
