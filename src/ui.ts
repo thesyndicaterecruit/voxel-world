@@ -25,6 +25,8 @@ export const els = {
   dl: $('dl'),
   dayBtn: $('dayBtn'),
   clock: $('clock'),
+  tpOpt: $('tpOpt'),
+  tpList: $('tpList'),
 };
 
 /** HUD state: current tool mode and selected hotbar slot. */
@@ -162,7 +164,25 @@ export function setClock(days: number): void {
   if (els.clock.textContent !== text) els.clock.textContent = text;
 }
 export const menuOpen = () => document.body.classList.contains('menu');
-export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); }
+export function showMenu(open: boolean): void { document.body.classList.toggle('menu', open); showTeleport(false); }
+/**
+ * The menu's Teleport option: a button per biome (data-act "tp:<index>"), or no option at all
+ * (null: a world without biomes).
+ */
+export function initTeleport(names: string[] | null): void {
+  els.tpOpt.hidden = !names;
+  els.tpList.textContent = '';
+  (names ?? []).forEach((n, i) => {
+    const b = document.createElement('div');
+    b.className = 'sbtn';
+    b.dataset.act = 'tp:' + i;
+    b.setAttribute('role', 'button');
+    b.textContent = n.toUpperCase();
+    els.tpList.appendChild(b);
+  });
+}
+/** Show the list of biomes to teleport to in place of the menu's options, or go back */
+export function showTeleport(open: boolean): void { document.body.classList.toggle('tp', open); }
 export function stepRenderDistance(delta: number): void {
   const r = Math.max(rdMin, Math.min(rdMax, renderDistance + delta));
   if (r === renderDistance) return;

@@ -67,6 +67,11 @@ body.menu #cross,body.menu #joy{display:none}
 h2{margin:0 0 14px;font-size:20px;font-weight:900;letter-spacing:.12em}
 /* settings: label | control rows, a hint under each; three columns on short landscape screens */
 .opts{display:grid;gap:14px;text-align:left}
+#tp{display:none}
+body.tp #tp{display:block}
+body.tp #menu .opts,body.tp #menu .mbtns{display:none}
+#tpList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 2px}
+#tpList .sbtn{width:auto;height:40px;font-size:13px;letter-spacing:.04em;padding:0 8px}
 .opt{display:grid;grid-template-columns:1fr auto;align-items:center;gap:0 12px}
 .lab{font-size:15px;color:#dce8f4}
 .opt .hint{grid-column:1 / -1;margin-top:6px}
@@ -127,6 +132,7 @@ h1{margin:0;font-size:32px;font-weight:900;letter-spacing:.07em;text-shadow:0 3p
   .opt{grid-template-columns:1fr}
   .opt .stepper,.opt .tog{justify-self:start;margin-top:6px}
   .mbtns{display:flex;gap:10px;margin-top:14px}
+  #tpList{grid-template-columns:repeat(4,minmax(0,1fr))}
   .mbtns .mbtn{flex:1;margin-top:0;height:44px}
 }
 @media (max-height:440px){

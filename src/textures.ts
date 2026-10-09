@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
-import { B, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES } from './blocks';
+import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES } from './blocks';
+import { W, D } from './config';
+import { GN } from './biomes';
 import { TEX } from './mesher';
 import { coverageMips, bleedColors } from './mipmaps';
 import { lightUniforms, LIGHT_VERTEX_PARS, LIGHT_VERTEX } from './shading';
@@ -245,6 +247,40 @@ export interface Textures {
   chunkMaterials: THREE.MeshBasicMaterial[];
 }
 
+/* ---------- biome tints ---------- */
+// Grass, foliage and water take the colours of the biomes they're in. Their tiles are grey in the
+// tile array (the hotbar icons keep the painted colours): GREY bright on average, so a tile shows
+// its tint as its average colour. The tints are a tint map over the world, one texel per biome cell
+// (GN × GN) and a layer per kind (grass, foliage, water), sampled at every vertex of a tile that
+// takes a tint; neighbouring cells blend (they are averaged when the map is made, and the sampling
+// is linear). Until setTints, every texel holds the colour the tiles were painted (CLASSIC_TINTS):
+// worlds without biomes look as they always did.
+const GREY = 0.78;
+/** The average colours the tinted tiles were painted (RGB per kind: grass, foliage, water), set by createTextures */
+export const CLASSIC_TINTS = new Uint8Array(9);
+const tintData = new Uint8Array(GN * GN * 4 * 3).fill(255);
+const tintMap = new THREE.DataTexture2DArray(tintData, GN, GN, 3);
+tintMap.magFilter = tintMap.minFilter = THREE.LinearFilter;
+tintMap.generateMipmaps = false;
+tintMap.needsUpdate = true;
+/** The tint kind of each tile: −1 none, 0 grass, 1 foliage, 2 water (the tint map's layers) */
+const TINT_KIND = new Array<number>(NT).fill(-1);
+TINT_KIND[T_GRASS_TOP] = TINT_KIND[T_GRASS_SIDE] = 0;
+TINT_KIND[T_LEAVES] = TINT_KIND[T_LEAVES_CUT] = 1;
+TINT_KIND[T_WATER_STILL] = TINT_KIND[T_WATER_FLOW] = 2;
+/** The world's tints (biomes.ts tintMap: GN × GN RGBA per layer, grass, foliage, water; the colours they show) */
+export function setTints(data: Uint8Array): void {
+  tintData.set(data);
+  tintMap.needsUpdate = true;
+}
+const TINT_VERTEX_PARS = `
+uniform highp sampler2DArray tintMap;
+uniform float tintKinds[ ${NT} ];
+varying vec3 vTint;`;
+const TINT_VERTEX = `
+	float tk = tintKinds[ int( layer + 0.5 ) ];
+	vTint = tk < 0.0 ? vec3( 1.0 ) : textureLod( tintMap, vec3( ( modelMatrix * vec4( transformed, 1.0 ) ).xz * vec2( ${1 / W}, ${1 / D} ), tk ), 0.0 ).rgb * ${(1 / GREY).toFixed(6)};`;
+
 /* ---------- the water's shader code (translucent pass) ---------- */
 const WATER_VERTEX_PARS = `
 uniform vec3 skyColor;
@@ -290,7 +326,8 @@ const WATER_FRAGMENT = `
  */
 const WATER_MAP = `
 	vec2 tx = vTile.xy * ${TEX}.0, gx = dFdx( tx ), gy = dFdy( tx );
-	diffuseColor *= textureLod( tiles, vec3( fract( vTile.xy ), vTile.z ), 0.5 * log2( max( dot( gx, gx ), dot( gy, gy ) ) ) );`;
+	diffuseColor *= textureLod( tiles, vec3( fract( vTile.xy ), vTile.z ), 0.5 * log2( max( dot( gx, gx ), dot( gy, gy ) ) ) );
+	diffuseColor.rgb *= vTint;`;
 /** Fog, except that the surface seen from below glows through the murk from twice as far */
 const WATER_FOG = `
 #ifdef USE_FOG
@@ -308,16 +345,17 @@ function chunkMaterial(tileArray: THREE.DataTexture2DArray, pass: number): THREE
   const water = pass === 2;
   const m = new THREE.MeshBasicMaterial({ vertexColors: true, alphaTest: pass === 1 ? 0.5 : 0, transparent: water, depthWrite: !water });
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray } });
+    Object.assign(sh.uniforms, lightUniforms, { tiles: { value: tileArray }, tintMap: { value: tintMap }, tintKinds: { value: TINT_KIND } });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}${water ? WATER_VERTEX_PARS : ''}`)
+      .replace('#include <common>', `#include <common>\nattribute float layer;\nvarying vec3 vTile;${LIGHT_VERTEX_PARS}${TINT_VERTEX_PARS}${water ? WATER_VERTEX_PARS : ''}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n\tvTile = vec3( uv * ${1 / TEX}, ${water ? 'waterFrame( layer )' : 'layer'} );`)
-      .replace('#include <project_vertex>', `#include <project_vertex>${LIGHT_VERTEX}${water ? WATER_VERTEX : ''}`);
+      .replace('#include <project_vertex>', `#include <project_vertex>${LIGHT_VERTEX}${TINT_VERTEX}${water ? WATER_VERTEX : ''}`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;\nvarying vec3 vLight;' +
+      .replace('#include <common>', '#include <common>\nuniform highp sampler2DArray tiles;\nvarying vec3 vTile;\nvarying vec3 vLight;\nvarying vec3 vTint;' +
         (water ? '\nvarying vec3 vView;\nvarying vec3 vUp;\nvarying vec3 vSkyRefl;' : ''))
-      .replace('#include <map_fragment>', pass === 0 ? 'diffuseColor.rgb *= texture( tiles, vTile ).rgb;' : water ? WATER_MAP :
-        'diffuseColor *= texture( tiles, vTile );')
+      // opaque tiles' alpha marks the texels a tint applies to (only the grass side's grass has less)
+      .replace('#include <map_fragment>', pass === 0 ? 'vec4 tx = texture( tiles, vTile );\n\tdiffuseColor.rgb *= tx.rgb * mix( vec3( 1.0 ), vTint, tx.a );' :
+        water ? WATER_MAP : 'diffuseColor *= texture( tiles, vTile );\n\tdiffuseColor.rgb *= vTint;')
       .replace('#include <color_fragment>', 'diffuseColor.rgb *= vColor.r * vLight;' + (water ? WATER_FRAGMENT : ''))
       .replace('#include <fog_fragment>', water ? WATER_FOG : '#include <fog_fragment>');
     radialFogVertex(sh);
@@ -356,6 +394,27 @@ export function createTextures(renderer: THREE.WebGLRenderer): Textures {
     const px = cv.getContext('2d')!.getImageData(0, 0, TS, TS).data;
     for (let y = 0; y < TS; y++) data.set(px.subarray(y * row, (y + 1) * row), (l * TS + TS - 1 - y) * row);
   });
+  // the grass side takes the grass tint only where it is grass (opaque tiles' alpha is otherwise unused)
+  for (let i = T_GRASS_SIDE * layer; i < (T_GRASS_SIDE + 1) * layer; i += 4) data[i + 3] = data[i + 1] > data[i] ? 255 : 0;
+  // the tiles that take a tint turn grey: brightness relative to their kind's average colour (which
+  // becomes its classic tint), GREY on average; texels they don't apply to (the grass side's dirt,
+  // clear texels) stay as they are
+  const grey = (kind: number, from: number, tiles: number[]) => {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = from * layer; i < (from + 1) * layer; i += 4) if (data[i + 3] > 0) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
+    r /= n; g /= n; b /= n;
+    CLASSIC_TINTS.set([Math.round(r), Math.round(g), Math.round(b)], kind * 3);
+    const k = (GREY * 255) / (0.299 * r + 0.587 * g + 0.114 * b);
+    for (const t of tiles) for (let i = t * layer; i < (t + 1) * layer; i += 4) {
+      if (data[i + 3] === 0 || (t === T_GRASS_SIDE && data[i + 3] < 255)) continue;
+      data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.round((0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) * k));
+    }
+  };
+  grey(0, T_GRASS_TOP, [T_GRASS_TOP, T_GRASS_SIDE]);
+  grey(1, T_LEAVES_CUT, [T_LEAVES, T_LEAVES_CUT]);
+  grey(2, T_WATER_STILL, Array.from({ length: 2 * WATER_FRAMES }, (_, i) => T_WATER_STILL + i));
+  for (let k = 0; k < 3; k++) for (let i = 0; i < GN * GN; i++) tintData.set(CLASSIC_TINTS.subarray(k * 3, k * 3 + 3), (k * GN * GN + i) * 4);
+  tintMap.needsUpdate = true;
   // Tiles of cutout blocks that have see-through texels get colour bleeding (no dark fringes) and
   // coverage-preserving mip levels (they don't fade away in the distance). GL generates the mips of
   // every tile; onUpdate then overwrites these tiles' levels.

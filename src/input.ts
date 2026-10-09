@@ -1,7 +1,7 @@
 import { B, HOTBAR } from './blocks';
 import { player, bufferJump, type Controls } from './player';
 import { els, hud, setMode, selectSlot, slotAt, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance, toggleFancyLeaves,
-  stepBrightness, stepDayLength, toggleAlwaysDay } from './ui';
+  stepBrightness, stepDayLength, toggleAlwaysDay, showTeleport } from './ui';
 
 /* ======================= TOUCH CONTROLS ======================= */
 // Left half = floating joystick, right half = drag-to-look (+ tap to act), buttons handled by data-act.
@@ -39,9 +39,11 @@ export interface InputOptions {
   act: () => void;
   /** Menu → Save & exit */
   quit: () => void;
+  /** Menu → Teleport → a biome (its index) */
+  teleport: (biome: number) => void;
 }
 
-export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void {
+export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptions): void {
   const { joy: joyEl, knob } = els;
 
   function down(id: PointerId, x: number, y: number, target: EventTarget | null, ts: number): void {
@@ -66,6 +68,8 @@ export function initInput({ canvas, isPlaying, act, quit }: InputOptions): void 
       else if (a === 'dl-' || a === 'dl+') stepDayLength(a === 'dl+' ? 1 : -1);
       else if (a === 'aday') toggleAlwaysDay();
       else if (a === 'quit') quit();
+      else if (a === 'tp' || a === 'tpback') showTeleport(a === 'tp');
+      else if (a && a.startsWith('tp:')) { showMenu(false); teleport(+a.slice(3)); }
       return;
     }
     if (x < window.innerWidth * 0.5) {

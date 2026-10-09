@@ -88,6 +88,8 @@ export interface Environment {
   setFog(near: number, far: number): void;
   /** Time of day, 0–1 (0 midnight, 0.5 noon): moves the sun, recolours everything, sets the light uniforms. */
   setTime(t: number): void;
+  /** The biome haze where the camera is: fog and sky lean toward `color` by `amount` (0–1), easing over a second or two */
+  setHaze(color: THREE.Color, amount: number): void;
 }
 
 /**
@@ -176,6 +178,10 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
 
   const sunDir = new THREE.Vector3(0, 1, 0), horizon = new THREE.Color(), underCol = new THREE.Color();
   let day = 1, deep = 0, dim = -1;
+  // biome haze: what the fog and sky lean toward, easing to the target set by setHaze
+  const haze = new THREE.Color(), hazeTo = new THREE.Color(), hazeLit = new THREE.Color();
+  let hazeAmt = 0, hazeAmtTo = 0;
+  const DAY_LUMA = SKY.horizon[0].r * 0.3 + SKY.horizon[0].g * 0.59 + SKY.horizon[0].b * 0.11;
   /** c = by-day colour blended toward night by `day`, then toward the sunrise/sunset one by `dusk` */
   const blend = (out: THREE.Color, set: THREE.Color[], dusk: number) =>
     out.copy(set[2]).lerp(set[0], day).lerp(set[1], dusk);
@@ -190,7 +196,9 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
 
   const env: Environment = {
     update(dt, camera, depth) {
-      const u = depth >= 0;
+      const u = depth >= 0, ease = 1 - Math.exp(-dt / 1.2);
+      haze.lerp(hazeTo, ease);
+      hazeAmt += (hazeAmtTo - hazeAmt) * ease;
       const cam = camera.position;
       for (const c of clouds) {
         c.position.x = wrap(c.position.x + dt * 0.9, cam.x);
@@ -226,6 +234,11 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
         applyFog();
       }
     },
+    setHaze(color, amount) {
+      if (hazeAmt < 0.002 && hazeAmtTo < 0.002) haze.copy(color);      // no haze yet: take its colour straight away
+      hazeTo.copy(color);
+      hazeAmtTo = amount;
+    },
     setFog(near, far) {
       fogNear = near; fogFar = far;
       if (!under) { fog.near = near; fog.far = far; }
@@ -238,6 +251,12 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       day = THREE.MathUtils.smoothstep(h, -0.16, 0.22);
       blend(horizon, SKY.horizon, dusk);
       blend(skyU.zenith.value, SKY.zenith, dusk * 0.6);
+      if (hazeAmt > 0.002) {
+        // the haze darkens with the sky at dusk and at night
+        const lum = Math.min(1, (horizon.r * 0.3 + horizon.g * 0.59 + horizon.b * 0.11) / DAY_LUMA);
+        horizon.lerp(hazeLit.copy(haze).multiplyScalar(lum), hazeAmt);
+        skyU.zenith.value.lerp(hazeLit, hazeAmt * 0.35);
+      }
       skyU.horizon.value.copy(horizon);
       skyU.glow.value.setRGB(0.55, 0.25, 0.08).multiplyScalar(dusk);
       skyU.sunDir.value.copy(sunDir);

@@ -25,22 +25,28 @@ const waterAt = (page: Page, cells: number[][]) => page.evaluate((cells) => cell
 }), cells);
 
 /**
- * The flat beach by the sea nearest the player: sea at (x, z) (water in the top two layers below sea
- * level S), and sand at sea level (its top at S) with nothing on it for 6 blocks inland (direction
- * ax, az) and 3 to each side.
+ * A beach on the sea nearest the player, built for the test (coastlines differ from biome to biome):
+ * open sea at (x, z) (water in the top three layers below sea level S, 2 blocks around), and from it
+ * toward the player (direction ax, az) a flat beach of sand with its top at S, 8 blocks deep and 9
+ * wide, with nothing on it.
  */
-const findShore = (page: Page) => page.evaluate(([WATER, SAND]) => {
+const makeShore = (page: Page) => page.evaluate(([WATER, SAND]) => {
   const v = window.__voxel, sx = Math.floor(v.P[0]), sz = Math.floor(v.P[2]), S = v.seaLevel;
-  const beach = (x: number, z: number) => v.get(x, S - 1, z) === SAND && v.get(x, S, z) === 0;
-  for (let r = 1; r < 80; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+  const sea = (x: number, z: number) => {
+    for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) for (let y = S - 3; y < S; y++) if (v.get(x + i, y, z + j) !== WATER) return false;
+    return true;
+  };
+  for (let r = 1; r < 160; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
     if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
     const x = sx + dx, z = sz + dz;
-    if (v.get(x, S - 1, z) !== WATER || v.get(x, S - 2, z) !== WATER) continue;
-    for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      let ok = true;
-      for (let i = 1; i <= 6 && ok; i++) for (let s = -3; s <= 3 && ok; s++) ok = beach(x + ax * i + az * s, z + az * i + ax * s);
-      if (ok) return { x, z, ax, az };
+    if (!sea(x, z)) continue;
+    const [ax, az] = Math.abs(dx) >= Math.abs(dz) ? [-Math.sign(dx), 0] : [0, -Math.sign(dz)];
+    for (let i = 1; i <= 8; i++) for (let s = -4; s <= 4; s++) {
+      const bx = x + ax * i + az * s, bz = z + az * i + ax * s;
+      for (let y = S - 4; y < S; y++) v.setBlock(bx, y, bz, SAND);
+      for (let y = S; y < S + 8; y++) v.setBlock(bx, y, bz, 0);
     }
+    return { x, z, ax, az };
   }
   return null;
 }, [WATER, SAND]);
@@ -48,7 +54,7 @@ const findShore = (page: Page) => page.evaluate(([WATER, SAND]) => {
 test('a channel dug from the sea fills with water', async ({ page }) => {
   const errors = await openGame(page, '?seed=4242');
   await play(page);
-  const shore = await findShore(page);
+  const shore = await makeShore(page);
   expect(shore).not.toBeNull();
   const { x, z, ax, az } = shore!, S = await page.evaluate(() => window.__voxel.seaLevel);
   /** Block i along the channel (0: the sea), `side` blocks off it */
@@ -159,7 +165,7 @@ test('under water: blue, the surface bright overhead, darker deep down and at ni
 test('a big sea in view: drawing the water costs a fraction of the frame', async ({ page }) => {
   const errors = await openGame(page, '?seed=4242');
   await play(page);
-  const shore = await findShore(page);
+  const shore = await makeShore(page);
   expect(shore).not.toBeNull();
   const { x, z, ax, az } = shore!, S = await page.evaluate(() => window.__voxel.seaLevel);
   // on the beach, looking out to sea

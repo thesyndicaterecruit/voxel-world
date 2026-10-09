@@ -13,8 +13,8 @@ const ctx = self as unknown as {
 ctx.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'gen') {
-    const data = generator(m.gen).generateChunk(m.seed, m.cx, m.cz);
-    ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data }, [data.buffer]);
+    const t0 = performance.now(), data = generator(m.gen).generateChunk(m.seed, m.cx, m.cz), ms = performance.now() - t0;
+    ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data, ms }, [data.buffer]);
   } else if (m.type === 'light') {
     const t0 = performance.now(), light = lightChunk(m.blocks, m.present, m.height), ms = performance.now() - t0;
     ctx.postMessage({ type: 'light', id: m.id, cx: m.cx, cz: m.cz, light, blocks: m.blocks, ms }, [light.buffer, m.blocks.buffer]);

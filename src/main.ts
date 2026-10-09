@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import { CB, CS, EYE, HORIZON } from './config';
 import { B, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
-import { createTextures, setUnderwater } from './textures';
+import { createTextures, setUnderwater, setTints } from './textures';
 import { world, waterDepth } from './world';
 import { generator } from './gen';
+import { BIOMES, NBIOMES, findBiome, biomeAt, weights, tintMap } from './biomes';
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
@@ -15,7 +16,7 @@ import { playSound } from './audio';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
-  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen } from './ui';
+  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport } from './ui';
 import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
@@ -85,6 +86,9 @@ async function boot(): Promise<void> {
   });
 
   const { canvases, textures, chunkMaterials } = createTextures(renderer);
+  // worlds with biomes (generator 2 on): grass, leaves and water take their biomes' colours
+  const biomes = gen.version >= 2;
+  if (biomes) setTints(tintMap(seed));
 
   /* ============================ RENDERER ============================ */
   let pr = Math.min(window.devicePixelRatio || 1, 2);
@@ -178,7 +182,21 @@ async function boot(): Promise<void> {
   };
   document.addEventListener('visibilitychange', () => { if (document.hidden && playing) void save.save(); });
   window.addEventListener('pagehide', () => { if (playing) void save.save(); });
-  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit });
+
+  // Menu → Teleport: to the nearest place of a biome (worlds with biomes: generator 2 on), standing on
+  // its ground, or afloat on its sea. Returns how far that was (−1: the world has none of it)
+  const teleport = (id: number) => {
+    const at = biomes ? findBiome(seed, id, P[0], P[2]) : null;
+    if (!at) { toast(biomes ? `No ${BIOMES[id].name} in this world` : 'This island has no biomes'); return -1; }
+    const [x, z] = at, d = Math.round(Math.hypot(x + 0.5 - P[0], z + 0.5 - P[2]));
+    P[0] = x + 0.5; P[1] = Math.max(gen.surfaceHeight(seed, x, z), gen.seaLevel) + 0.01; P[2] = z + 0.5;
+    V.fill(0);
+    save.requestSave();
+    toast(`${BIOMES[id].name} · ${d} blocks away`, 2200);
+    return d;
+  };
+  initTeleport(biomes ? BIOMES.map((b) => b.name) : null);
+  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit, teleport });
 
   /* ============================ RESIZE ============================ */
   function resize(): void {
@@ -205,7 +223,22 @@ async function boot(): Promise<void> {
 
   /* ============================ LOOP ============================ */
   const look = new THREE.Vector3(), lastState = [NaN, NaN, NaN, NaN, NaN];
-  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0;
+  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0, frames = 0;
+  /** The haze of the biomes around the camera (their colours by weight and how much haze each has) */
+  const hw = new Float32Array(NBIOMES), hazeCol = new THREE.Color(), part = new THREE.Color();
+  const biomeHaze = (x: number, z: number) => {
+    weights(seed, Math.floor(x), Math.floor(z), hw);
+    let amount = 0;
+    hazeCol.setRGB(0, 0, 0);
+    for (let i = 0; i < NBIOMES; i++) {
+      const a = hw[i] * BIOMES[i].hazeAmount;
+      if (a <= 0) continue;
+      hazeCol.add(part.setHex(BIOMES[i].haze).multiplyScalar(a));
+      amount += a;
+    }
+    if (amount > 0) hazeCol.multiplyScalar(1 / amount);
+    env.setHaze(hazeCol, amount);
+  };
   function frame(now: number): void {
     requestAnimationFrame(frame);
     const raw = Math.max(0, (now - last) / 1000);
@@ -248,6 +281,7 @@ async function boot(): Promise<void> {
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     const depth = waterDepth(camera.position.x, camera.position.y, camera.position.z);
+    if (biomes && frames++ % 6 === 0) biomeHaze(camera.position.x, camera.position.z);
     env.update(dt, camera, depth);
     setUnderwater(chunkMaterials[2], depth >= 0);
     streamer.sortTranslucent(camera.position);
@@ -284,6 +318,9 @@ async function boot(): Promise<void> {
     look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
     target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },
     worldId: record.id, save: () => save.save(),
+    teleport, biome: () => (biomes ? BIOMES[biomeAt(seed, Math.floor(P[0]), Math.floor(P[2]))].name : null),
+    biomeAt: (x: number, z: number) => (biomes ? BIOMES[biomeAt(seed, Math.floor(x), Math.floor(z))].name : null),
+    biomes: biomes ? BIOMES.map((b) => b.name) : [],
   };
 }
 

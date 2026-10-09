@@ -6,9 +6,10 @@ Vite. The world is a 512×512×128-block archipelago generated from a seed, stor
 around the player; generation, lighting and meshing (a section at a time) run in Web Workers, and
 each chunk draws in at most two calls (opaque, cutout) plus a share of one for its water
 (translucent, drawn 4×4 chunks at a time). A world keeps the generator that made it: new worlds
-have the sea at y = 48, worlds made before the world grew taller keep the first generator (sea at
-y = 20) so their ground never shifts. You walk
-around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
+are islands of 14 biomes (meadows, forests, snowy peaks, deserts, badlands, jungles, swamps, a
+volcano, three kinds of ocean…) with the sea at y = 48, whose grass, leaves and water take their
+biome's colours; worlds made before the world grew taller keep the first generator (sea at y = 20)
+so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and break/place 10 block types, glass and
 torches among them. Worlds are save files in IndexedDB: edited chunks plus the player state, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
 Chrome are the target. All textures are painted procedurally at startup — there are no image assets
@@ -41,13 +42,14 @@ switch mode, 1–9, 0 and − pick a hotbar slot, mouse wheel over the hotbar sc
 index.html           Markup for the HUD and start screen; loads src/style.css and src/main.ts
 src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
-                     resize, frame loop, window.__voxel
+                     biome teleport, biome haze, resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model flags, lookup tables,
                      faceHidden() culling rule, HOTBAR, rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
-                     RGBA tile texture array, chunk materials per render pass (the water shader), setUnderwater
+                     RGBA tile texture array (grass, leaves, water turned grey), the biome tint map (setTints),
+                     chunk materials per render pass (the water shader, tints), setUnderwater
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
                      time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
@@ -57,7 +59,11 @@ src/
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
   gen.ts             World generators by version (generator(v): sea level, cloud height, generateChunk(seed, cx, cz),
-                     findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2
+                     findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2 (column2: the
+                     biomes' landforms blended, layer2: their blocks, trees)
+  biomes.ts          Generator 2's biomes (pure): the BIOMES table (data), the islands and their climate, coast()
+                     (distance from the coast), the coarse biome map, weights() (blending), findBiome (teleport),
+                     tintMap (grass/foliage/water colours over the world)
   gen1.ts            Generator 1, FROZEN (worlds made before generator versions): columnHeight, waterLevel (sea,
                      lakes), layering, trees, generateChunk, findSpawn; floodSea (old saves get the sea)
   worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshSection off the main thread
@@ -77,7 +83,7 @@ src/
                      boxesGeometry
   environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
                      around the camera, all following the time of day (setTime); fog + underwater look; daylight,
-                     sky tint and the sky colour water reflects
+                     sky tint and the sky colour water reflects; the biome haze (setHaze)
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
                      splashes (the last three lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics, swimming,
@@ -86,14 +92,17 @@ src/
   interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes, mouse + keyboard fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways), menu (view distance, Fancy leaves,
-                     Brightness, Day length, Always day, clock, save & exit), fullscreen, start screen + world list,
-                     error display
+                     Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
+                     screen + world list, error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
                      chunk borders, incremental = fresh, single and batched, high up), mesher (water surfaces too),
                      sections (meshing, splicing, counts, light worked out only as high as needed, water falling
                      through them), torch geometry, save format + migration, RLE, mipmaps, generation (generator
-                     1's fingerprints, determinism, sea fill, lakes that hold), flowing water (spreading, falling,
+                     1's fingerprints, determinism, sea fill, lakes that hold), biomes (data, every biome in 3 of
+                     5 seeds' worlds, one or two per island, cold never next to hot, borders no steeper than the
+                     ground inside, teleport targets, smooth tints; generator 2 deterministic and continuous
+                     across chunk and section borders), flowing water (spreading, falling,
                      draining, infinite sources, chunk borders, saved updates), swimming physics (sinking,
                      swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
@@ -101,7 +110,8 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      blocks, torches, hotbar, Fancy leaves, old saves (keeping generator 1), time of day (midday/sunset/midnight
                      screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
-                     at night, frame time looking out to sea, flow carrying on after a reload)
+                     at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
+                     teleport by touch, then a screenshot of every biome; generation time per chunk)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
 .github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact
@@ -135,15 +145,51 @@ a microtask then hands all the changes made together (one action, one tick of wa
   anything that reaches its output (`tests/gen.test.ts` checks fingerprints of its chunks). New
   worlds get `GENERATOR_VERSION` (2, sea level 48). Changing generator 2 changes the unexplored
   ground of every world made with it — fine while it is new; once worlds depend on it, a change that
-  moves terrain is a new version.
+  moves terrain is a new version. That includes `biomes.ts`: the islands, the biome map and the
+  `BIOMES` table are all part of generator 2's output.
+- **Biomes** (`biomes.ts`, generator 2 on). *The archipelago:* one island per cell of a jittered 5×5
+  grid inside a 40-block band of open sea (a few cells stay open sea), each a warped, skewed ellipse
+  with bays; the middle one is the start island (Meadow and Forest). `coast(seed, x, z).t` is how far
+  a column is from the nearest coast in blocks (positive inland, negative at sea) — the
+  continentalness every landform is built on. *Climate:* `temperature` (colder toward the north, −z,
+  with slow wobbles) and `humidity` (noise). Each island takes the climate of its middle;
+  `islands()` ranks them by temperature into cold, mild and hot thirds and by humidity (and size)
+  within each, and gives each a `primary` and a `secondary` biome (the secondary in patches, round
+  its peaks or on its coast), so every world has every biome, an island has one or two, and
+  neighbours make sense (no snow next to desert). The sea is Frozen Ocean where it is cold, Warm
+  Reef Ocean near hot coasts and Deep Ocean elsewhere. *The biome map:* one biome per `CELL` (4)
+  blocks square, `GN` × `GN` (128 × 128) cells, worked out once per seed and thread (`biomeMap`; a
+  worker's first chunk pays for it, which is the worst case in the generation timings).
+  *A biome is data:* an entry of `BIOMES` (`Biome`; its index is its id, and the teleport list's
+  order) with `name`, `ocean`, its landform (`lift`: how far the ground rises above the coast inland,
+  `amp` and `freq`: how much and how often it rolls; `depth`: how far its sea floor sinks), its
+  blocks (`top`, `fill` `fillDepth` deep, `bed` under water, `shore` where the land meets the sea),
+  its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours), `haze` and `hazeAmount` (what
+  the fog and sky lean toward there) and `decorations` (names of what grows on it: `oak` and
+  `oak-sparse` trees for now; part 2 fills in the rest). *Blending:* `weights(seed, x, z, out)`
+  weighs the cells within `BLEND` (8) blocks with a smooth kernel; a column's height (`column2` in
+  `gen.ts`) is the weighted mix of the biomes' landforms, which all meet sea level at the coast, so a
+  border never makes a cliff of its own (a test checks that a border is never steeper than the
+  ground inside a biome); its blocks are the heaviest biome's, dithered with the next one's near a
+  border. *Tints:* grass, leaves and water tiles are grey in the tile array (`GREY` 0.78 bright on
+  average; hotbar icons keep their painted colours) and take their colour per vertex from the tint
+  map (`tintMap(seed)` → `setTints`: a `GN` × `GN` texture array with a layer per kind, each texel
+  the average of the biomes within 2 cells, sampled linearly by world x/z in the vertex shader; the
+  `tintKinds` uniform says which layer a tile takes, if any). The grass side's alpha marks its grass
+  texels, the only ones the tint touches. Worlds without biomes (generator 1) keep `CLASSIC_TINTS`
+  (the colours the tiles were painted) everywhere, so they look as they always did. *Haze:* every 6
+  frames `main.ts` weighs the biomes around the camera and `env.setHaze` eases the fog and sky
+  toward their haze colour (darkened with the sky at dusk and night). *Teleport* (menu → Teleport,
+  `__voxel.teleport(id)`): `findBiome` finds the nearest cell well inside the biome (its 8
+  neighbours the same), and the player lands on its ground or afloat on its sea.
 - **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
   texture changes.
 - **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
   deep water gets darker, model 'liquid'). Generation fills the air below the sea level
-  (`world.seaLevel`, the generator's) with still water (sources), and digs lakes into inland ground
-  (at most one per 32×32 cell: a bowl filled up to the lowest point of the ground around it, with a
+  (`world.seaLevel`, the generator's) with still water (sources); generator 1 also digs lakes into
+  inland ground (at most one per 32×32 cell: a bowl filled up to the lowest point of the ground around it, with a
   bank raised where the rim has a gap, so a lake always holds its water; `waterLevel(seed, x, z)`).
   Block state: the low 3 bits are the level (0 a source, 1–7 flowing, a step lower per block), bit 3
   (`FALLING`) is water falling down; `liquidHeight` gives a block's surface height (a source's is
@@ -292,8 +338,8 @@ a microtask then hands all the changes made together (one action, one tick of wa
   `data[CI(x & 15, y, z & 15)]` — x fastest, then z, then y — in section y >> SB. The world is `H` =
   128 high. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is the feet position;
   the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
-- **Workers only run pure code.** `gen.ts`, `gen1.ts`, `light.ts`, `mesher.ts`, `torch.ts`,
-  `noise.ts`, `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`.
+- **Workers only run pure code.** `gen.ts`, `gen1.ts`, `biomes.ts`, `light.ts`, `mesher.ts`,
+  `torch.ts`, `noise.ts`, `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`.
   `meshChunk` only sees a padded copy of the chunk (one block of each neighbour, see `paddedCopy`).
   Per-block hashes use world coordinates.
 - **Streaming regions** (`streaming.ts`), measured from the player to each chunk's nearest point:
@@ -362,14 +408,17 @@ a microtask then hands all the changes made together (one action, one tick of wa
   `seaLevel`, `generator`, `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`,
   `ready` (world loaded, play enabled), `count()` (non-air blocks in loaded chunks), `stream()`
   (loaded/lit/meshed/visible counts, draw calls, worker time per lighting job, the last relight's
-  cost), `chunk(cx, cz)` (one chunk's streaming state, lit or not, its non-empty sections, mesh
+  cost, chunks generated and the worker's time per chunk: `genMs` on average, `genMax` at most),
+  `chunk(cx, cz)` (one chunk's streaming state, lit or not, its non-empty sections, mesh
   versions per section, triangles per pass), `light(x, y, z)` ([skylight, block light]),
   `verifyLight(cx, cz)` (cells that differ from a fresh lighting), `time` (the world clock, days)
   and `setTime(t)` (time of day today, 0–1), `water()` (pending updates, ticks, the last tick's
   changes and time), `waterTick()` (run one now), `showWater(on)` (draw the water or not, to time
   it), `setRenderDistance(r)`, `setFancyLeaves(on)` (same as the menu toggle), `getState`,
   `look(yaw, pitch)`, `target()` (the block under the crosshair, with the face hit and its id),
-  `tiles` (the tile canvases), `worldId` and `save()`. Keep it working: the browser tests drive the
+  `tiles` (the tile canvases), `worldId`, `save()`, `biomes` (the biomes' names, by id; empty
+  without biomes), `biome()` / `biomeAt(x, z)` (the biome's name there) and `teleport(id)` (the
+  menu's Teleport: to the nearest place of that biome; returns how far, −1 if there is none). Keep it working: the browser tests drive the
   game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and

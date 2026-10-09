@@ -134,11 +134,12 @@ export interface Streamer {
     tris: number[] };
   /**
    * Counts for debugging: loaded / lit chunks, chunks with meshes, visible ones, meshes per pass,
-   * results waiting, edits waiting; average worker time per lighting job, and how long the last
-   * edit's relight took on the main thread (ms) and how many cells it changed
+   * results waiting, edits waiting; average worker time per lighting job, average and longest worker
+   * time to generate a chunk (and how many were), and how long the last edit's relight took on the
+   * main thread (ms) and how many cells it changed
    */
   stats(): { loaded: number; lit: number; meshed: number; visible: number; passes: number[]; queued: number; edits: number;
-    lightMs: number; relightMs: number; relit: number };
+    lightMs: number; genMs: number; genMax: number; generated: number; relightMs: number; relit: number };
 }
 
 /**
@@ -185,7 +186,7 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
   const ready: Ready[] = [], urgentQ: number[] = [], pads: Uint8Array[] = [], blocks9: Uint8Array[] = [];
   let fresh: THREE.Mesh[] = [];                 // meshes added last frame (frustum culling off once)
   let urgentScheduled = false;
-  let lightMs = 0, lightJobs = 0, relightMs = 0, relitCells = 0;
+  let lightMs = 0, lightJobs = 0, relightMs = 0, relitCells = 0, genMs = 0, genJobs = 0, genMax = 0;
 
   /** Is every existing chunk in the 3×3 around (cx, cz) loaded / lit? */
   const around = (cx: number, cz: number, ok: (c: Chunk | undefined, s: Slot) => boolean) => {
@@ -222,8 +223,11 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       s.state = LOADED;
       resetSlot(s);
     };
-    const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, gen: world.generator, cx, cz }, [],
-      (res) => { if (res.type === 'gen') done(res.data, null, false); });
+    const gen = () => pool.run({ type: 'gen', id: 0, seed: world.seed, gen: world.generator, cx, cz }, [], (res) => {
+      if (res.type !== 'gen') return;
+      genMs += res.ms; genJobs++; genMax = Math.max(genMax, res.ms);
+      done(res.data, null, false);
+    });
     const saved = source.load ? source.load(cx, cz) : null;
     if (saved) saved.then((c) => done(c.data, c.state, true, c.flow ?? null), gen);
     else gen();
@@ -623,7 +627,8 @@ export function createStreamer(scene: THREE.Scene, materials: THREE.Material[], 
       }
       world.forEachChunk((c) => { if (c.light) lit++; });
       return { loaded, lit, meshed, visible, passes, queued: ready.length, edits,
-        lightMs: lightJobs ? +(lightMs / lightJobs).toFixed(2) : 0, relightMs: +relightMs.toFixed(2), relit: relitCells };
+        lightMs: lightJobs ? +(lightMs / lightJobs).toFixed(2) : 0, genMs: genJobs ? +(genMs / genJobs).toFixed(2) : 0,
+        genMax: +genMax.toFixed(2), generated: genJobs, relightMs: +relightMs.toFixed(2), relit: relitCells };
     },
   };
 }

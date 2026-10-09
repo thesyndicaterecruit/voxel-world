@@ -27,7 +27,6 @@ export interface Voxel {
   look(yaw: number, pitch: number): void;
   target(): { x: number; y: number; z: number; nx: number; ny: number; nz: number; id: number } | null;
   count(): number;
-  stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number };
   chunk(cx: number, cz: number): { tris: number[]; meshed: number };
   setFancyLeaves(on: boolean): void;
   save(): Promise<void>;
@@ -48,6 +47,13 @@ export interface Voxel {
   seaLevel: number;
   generator: number;
   world: { topY(x: number, z: number): number };
+  /** Biomes (generator 2 on): their names, the one at the player or at column (x, z), and the teleport to the nearest of one (distance; −1 none) */
+  biomes: string[];
+  biome(): string | null;
+  biomeAt(x: number, z: number): string | null;
+  teleport(id: number): number;
+  stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number; genMs: number; genMax: number;
+    generated: number };
 }
 declare global {
   interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }
