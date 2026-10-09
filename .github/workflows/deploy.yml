@@ -27,6 +27,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm test        # unit tests (Vitest); the browser tests run in e2e.yml
       - run: npm run build   # typecheck + vite build → dist/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4

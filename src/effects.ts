@@ -1,48 +1,87 @@
 import * as THREE from 'three';
-import { AIR, B, T_DIRT, T_GRASS_SIDE } from './blocks';
+import { B, SOLID, MODEL, T_DIRT, T_GRASS_SIDE, T_WATER } from './blocks';
 import { boxesGeometry } from './meshing';
-import { world } from './world';
+import { TEX } from './mesher';
+import { TORCH_MODELS, type TorchQuad } from './torch';
+import { world, inWater } from './world';
 import { radialFog } from './fog';
+import { lightColor } from './shading';
 
 /* ===================== TARGET OUTLINE, GHOST, PARTICLES ===================== */
 export interface Effects {
-  /** Dark wireframe cube around the targeted block (position = block min corner). */
+  /** Dark wireframe box around the targeted block (position = the block's min corner). */
   outline: THREE.Mesh;
-  /** Translucent preview of the block about to be placed (position = block centre). */
+  /** Translucent preview of the block about to be placed (position = the block's min corner). */
   ghost: THREE.Mesh;
   ghostMat: THREE.MeshBasicMaterial;
+  /** Show the outline around box b = [x0, y0, z0, x1, y1, z1] (block units) of block (x, y, z). */
+  showOutline(x: number, y: number, z: number, b: number[]): void;
+  /** Show the placement ghost of block `id` with block state `state` at (x, y, z): a cube or its model, as lit there. */
+  showGhost(x: number, y: number, z: number, id: number, state: number): void;
   /** Spray of little cubes textured like block `id` from the block at (x, y, z). */
   burst(x: number, y: number, z: number, id: number): void;
+  /** Drops thrown up where something hits the water at (x, y, z) at `speed` blocks a second. */
+  splash(x: number, y: number, z: number, speed: number): void;
   updateParticles(dt: number): void;
 }
 
-interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number }
+/** A torch model (texels, see torch.ts) as a geometry in block units, for the placement ghost. */
+function modelGeometry(quads: TorchQuad[]): THREE.BufferGeometry {
+  const pos: number[] = [], uv: number[] = [], index: number[] = [];
+  for (const q of quads) {
+    const n = pos.length / 3;
+    for (let i = 0; i < 4; i++) { pos.push(q.p[i][0] / TEX, q.p[i][1] / TEX, q.p[i][2] / TEX); uv.push(q.uv[i][0] / TEX, q.uv[i][1] / TEX); }
+    index.push(n, n + 1, n + 2, n, n + 2, n + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(index);
+  return g;
+}
+
+/** A flying bit; `drop`: a splash drop, gone when it falls back into the water */
+interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number; drop: boolean }
 
 export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects {
-  const beams: number[][] = [], bt = 0.012, be = 0.012;
-  for (const a of [0, 1]) for (const b of [0, 1]) {
-    beams.push([-be, a - bt, b - bt, 1 + be, a + bt, b + bt]); // along X
-    beams.push([a - bt, -be, b - bt, a + bt, 1 + be, b + bt]); // along Y
-    beams.push([a - bt, b - bt, -be, a + bt, b + bt, 1 + be]); // along Z
+  // the outline is thin beams along the 12 edges of a box, built once per box (a cube, the torch boxes)
+  // so the lines keep their thickness on small boxes
+  const outlines = new Map<string, THREE.BufferGeometry>(), t = 0.012;
+  function outlineGeometry(b: number[]): THREE.BufferGeometry {
+    let g = outlines.get(b.join());
+    if (!g) {
+      const [x0, y0, z0, x1, y1, z1] = b, beams: number[][] = [];
+      for (const p of [0, 1]) for (const q of [0, 1]) {
+        const x = p ? x1 : x0, y = q ? y1 : y0, yy = p ? y1 : y0, z = q ? z1 : z0;
+        beams.push([x0 - t, yy - t, z - t, x1 + t, yy + t, z + t]);   // along X
+        beams.push([x - t, y0 - t, z - t, x + t, y1 + t, z + t]);     // along Y
+        beams.push([x - t, y - t, z0 - t, x + t, y + t, z1 + t]);     // along Z
+      }
+      outlines.set(b.join(), (g = boxesGeometry(beams)));
+    }
+    return g;
   }
-  const outline = new THREE.Mesh(boxesGeometry(beams), radialFog(new THREE.MeshBasicMaterial({ color: 0x151515 })));
+  const outline = new THREE.Mesh(outlineGeometry([0, 0, 0, 1, 1, 1]), radialFog(new THREE.MeshBasicMaterial({ color: 0x151515 })));
   outline.visible = false;
   scene.add(outline);
   const ghostMat = radialFog(new THREE.MeshBasicMaterial({ map: tex[T_GRASS_SIDE], transparent: true, opacity: 0.5, depthWrite: false }));
-  const ghost = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.98, 0.98), ghostMat);
+  const cube = new THREE.BoxGeometry(0.98, 0.98, 0.98).translate(0.5, 0.5, 0.5), torches = TORCH_MODELS.map(modelGeometry);
+  const ghost = new THREE.Mesh(cube, ghostMat);
   ghost.visible = false;
   scene.add(ghost);
 
   const pGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16), parts: Particle[] = [];
   for (let i = 0; i < 36; i++) {
-    const m = new THREE.Mesh(pGeo, radialFog(new THREE.MeshBasicMaterial({ map: tex[T_DIRT] })));
+    const m = new THREE.Mesh(pGeo, radialFog(new THREE.MeshBasicMaterial({ map: tex[T_DIRT], alphaTest: 0.5 })));
     m.visible = false;
     scene.add(m);
-    parts.push({ m, v: [0, 0, 0], life: 0, max: 1 });
+    parts.push({ m, v: [0, 0, 0], life: 0, max: 1, drop: false });
   }
 
+  const lit = new THREE.Color();
   function burst(x: number, y: number, z: number, id: number): void {
-    const map = tex[B[id].t[0]];
+    const map = tex[B[id].particle];
+    lightColor(world.getLight(x, y, z), lit);          // as bright as the spot they fly from
     let n = 0;
     for (const p of parts) {
       if (p.life > 0) continue;
@@ -51,27 +90,59 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
       p.life = p.max = 0.5 + Math.random() * 0.4;
       const k = 0.7 + Math.random() * 0.4;
       p.m.material.map = map;
-      p.m.material.color.setScalar(k);
+      p.m.material.color.copy(lit).multiplyScalar(k);
       p.m.scale.setScalar(1);
       p.m.visible = true;
+      p.drop = false;
       if (++n >= 12) break;
+    }
+  }
+  function splash(x: number, y: number, z: number, speed: number): void {
+    lightColor(world.getLight(Math.floor(x), Math.floor(y + 0.5), Math.floor(z)), lit);
+    const up = Math.min(1.6, speed / 10), count = Math.min(14, 4 + Math.round(speed / 2));
+    let n = 0;
+    for (const p of parts) {
+      if (p.life > 0) continue;
+      const a = Math.random() * Math.PI * 2, r = 0.2 + Math.random() * 0.3, out = 1 + Math.random() * 1.5;
+      p.m.position.set(x + Math.cos(a) * r, y, z + Math.sin(a) * r);
+      p.v[0] = Math.cos(a) * out; p.v[1] = (2.5 + Math.random() * 2.5) * up; p.v[2] = Math.sin(a) * out;
+      p.life = p.max = 0.35 + Math.random() * 0.3;
+      p.m.material.map = tex[T_WATER];
+      p.m.material.color.copy(lit).multiplyScalar(1.1 + Math.random() * 0.3);
+      p.m.scale.setScalar(0.7);
+      p.m.visible = true;
+      p.drop = true;
+      if (++n >= count) break;
     }
   }
   function updateParticles(dt: number): void {
     for (const p of parts) {
       if (p.life <= 0) continue;
       p.life -= dt;
-      if (p.life <= 0) { p.m.visible = false; continue; }
       const q = p.m.position;
+      if (p.drop && p.v[1] < 0 && inWater(q.x, q.y, q.z)) p.life = 0;   // back into the water
+      if (p.life <= 0) { p.m.visible = false; continue; }
       p.v[1] -= 20 * dt;
       q.x += p.v[0] * dt; q.z += p.v[2] * dt;
       const ny = q.y + p.v[1] * dt;
-      if (p.v[1] < 0 && world.getBlock(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z)) !== AIR) {
+      if (p.v[1] < 0 && SOLID[world.getBlock(Math.floor(q.x), Math.floor(ny - 0.08), Math.floor(q.z))]) {
         q.y = Math.floor(ny - 0.08) + 1.08; p.v[1] *= -0.3; p.v[0] *= 0.6; p.v[2] *= 0.6;
       } else q.y = ny;
       p.m.scale.setScalar(Math.min(1, (p.life / p.max) * 1.6));
     }
   }
 
-  return { outline, ghost, ghostMat, burst, updateParticles };
+  function showOutline(x: number, y: number, z: number, b: number[]): void {
+    outline.visible = true;
+    outline.geometry = outlineGeometry(b);
+    outline.position.set(x, y, z);
+  }
+  function showGhost(x: number, y: number, z: number, id: number, state: number): void {
+    ghost.visible = true;
+    ghost.geometry = MODEL[id] === 1 ? torches[state <= 4 ? state : 0] : cube;
+    ghost.position.set(x, y, z);
+    lightColor(world.getLight(x, y, z), ghostMat.color);
+  }
+
+  return { outline, ghost, ghostMat, showOutline, showGhost, burst, splash, updateParticles };
 }

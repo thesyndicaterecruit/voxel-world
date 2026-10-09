@@ -1,17 +1,43 @@
-import { NCX } from './config';
+import { NCX, CHUNK_VOL, OLD_H, CS } from './config';
 import { openDB, type DB } from './db';
 import { rleEncode, rleDecode } from './rle';
+import { floodSea } from './gen1';
+import { GENERATOR_VERSION } from './gen';
+import { HOTBAR } from './blocks';
 import type { Chunk } from './world';
 import type { Mode } from './ui';
 
 /* ============================ SAVE FILES ============================ */
 // IndexedDB "voxel-island":
 //   worlds  keyPath id  → WorldRecord
-//   chunks  key `${worldId}:${cx},${cz}` → { v: SAVE_VERSION, rle } — only chunks the player edited;
-//           everything else regenerates from the seed
-// Bump SAVE_VERSION when the stored format changes (and migrate older saves in openSaves()).
+//   chunks  key `${worldId}:${cx},${cz}` → ChunkRecord — only chunks the player edited; everything
+//           else regenerates from the seed
+// Bump SAVE_VERSION when the stored format changes, and teach migrateWorld/migrateChunk to bring
+// older records up to date (they run on every record read, so old saves keep loading).
+//
+// History:
+//   1  chunks { v: 1, rle } — block ids only
+//   2  chunks { v: 2, rle, srle? } — plus the per-block state (torch facing, water level, …) as a
+//      second RLE stream, omitted while every state byte is 0. World records are unchanged; the
+//      hotbar grew, but new items go at the end so saved slot numbers still point at the same block.
+//   3  world records gain `time` (days since the world began; the fraction is the time of day).
+//      Older worlds start at NEW_WORLD_TIME. Chunks are unchanged apart from the version.
+//   4  the sea is water blocks (before, one surface was drawn over the world, which held air below
+//      it): chunks saved earlier get water in the air below sea level that is open to the sea
+//      (floodSea in gen.ts) when they are read. World records are unchanged apart from the version.
+//   5  chunks { v: 5, rle, srle?, flow? }: `flow` lists the blocks (CI indices) whose water updates
+//      were still pending (water.ts), omitted when there are none. Earlier chunks have none.
+//   6  the world is 128 blocks high (it was OLD_H = 64): chunks hold 128 layers, and older ones get
+//      air above when read (their CI indices, `flow` included, stay the same). World records gain
+//      `generatorVersion` (gen.ts), the generator their unexplored chunks come from: every world made
+//      before has 1 (gen1.ts, with the sea at y = 20), so its ground never shifts.
+//   7  world records gain `hotbar`: the block in each slot (the block picker changes them). Older
+//      worlds get the fixed hotbar every world had (HOTBAR), so their `slot` holds the same block.
+//      Chunks are unchanged apart from the version.
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 7;
+/** When a new world's clock starts: day 1, a little after sunrise (0.25 = 6:00) */
+export const NEW_WORLD_TIME = 0.3;
 const DB_NAME = 'voxel-island', DB_VERSION = 1;
 /** Autosave runs at most this long after the first unsaved change. */
 const AUTOSAVE_MS = 5000;
@@ -29,8 +55,78 @@ export interface WorldRecord {
   /** Selected hotbar slot */
   slot: number;
   mode: Mode;
+  /** Days since the world began: the fraction is the time of day (0 midnight, 0.5 noon) */
+  time: number;
+  /** Which generator makes the world's unexplored chunks (gen.ts): 1 for worlds made before save version 6 */
+  generatorVersion: number;
+  /** The block (id) in each hotbar slot */
+  hotbar: number[];
 }
-interface ChunkRecord { v: number; rle: Uint8Array }
+/** A world record as stored by any version (older ones have no `time`, `generatorVersion` or `hotbar`). */
+export type StoredWorld = Omit<WorldRecord, 'time' | 'generatorVersion' | 'hotbar'> & { time?: number; generatorVersion?: number; hotbar?: number[] };
+/**
+ * A saved chunk: block ids, and the per-block state when any of it is non-zero (both RLE); the blocks
+ * with pending water updates, if any.
+ */
+export interface ChunkRecord { v: number; rle: Uint8Array; srle?: Uint8Array; flow?: Uint16Array }
+/** A chunk's contents in memory, and its pending water updates. */
+export interface ChunkData { data: Uint8Array; state: Uint8Array | null; flow: Uint16Array | null }
+/** Which world (seed) and chunk a record belongs to: migrating chunks from before version 4 needs it. */
+export interface ChunkAt { seed: number; cx: number; cz: number }
+
+/** Bring a stored world record (any saveVersion up to SAVE_VERSION) up to date. */
+export function migrateWorld(w: StoredWorld): WorldRecord {
+  if (w.saveVersion > SAVE_VERSION) throw new Error(`world saved by a newer version (${w.saveVersion})`);
+  if (w.saveVersion === SAVE_VERSION) return w as WorldRecord;
+  // 1 → 2: nothing in the world record itself changed; 2 → 3: the clock starts in the morning; 3 → 4, 4 → 5: unchanged;
+  // 5 → 6: the first generator; 6 → 7: the fixed hotbar
+  return { ...w, time: w.time ?? NEW_WORLD_TIME, generatorVersion: w.generatorVersion ?? 1, hotbar: w.hotbar ?? HOTBAR.slice(),
+    saveVersion: SAVE_VERSION };
+}
+
+/** Air from OLD_H up to the top of today's chunks, as one RLE run: appended to a chunk saved before version 6 */
+const RAISE = rleEncode(new Uint8Array(CHUNK_VOL - CS * CS * OLD_H));
+const raise = (rle: Uint8Array) => {
+  const out = new Uint8Array(rle.length + RAISE.length);
+  out.set(rle);
+  out.set(RAISE, rle.length);
+  return out;
+};
+
+/**
+ * Bring a stored chunk record up to date. Records from before version 4 get the sea (see the
+ * history) when `at` says where they are.
+ */
+export function migrateChunk(r: ChunkRecord, at?: ChunkAt): ChunkRecord {
+  if (r.v > SAVE_VERSION) throw new Error(`chunk saved by a newer version (${r.v})`);
+  if (r.v === SAVE_VERSION) return r;
+  // 1 → 2: no state stream yet, i.e. every state byte is 0; 2 → 3: unchanged; 3 → 4: the sea; 4 → 5: no pending water;
+  // 5 → 6: air on top (chunks and their state); flow indices stay as they are; 6 → 7: unchanged
+  if (r.v === 6) return { ...r, v: SAVE_VERSION };
+  let rle: Uint8Array = raise(r.rle);
+  if (r.v < 4 && at) {
+    const data = rleDecode(rle);
+    if (floodSea(data, at.seed, at.cx, at.cz)) rle = rleEncode(data);
+  }
+  const out: ChunkRecord = { v: SAVE_VERSION, rle };
+  if (r.srle) out.srle = raise(r.srle);
+  if (r.flow) out.flow = r.flow;
+  return out;
+}
+
+/** Encode a chunk for saving, with the blocks that have pending water updates (`flow`). */
+export function encodeChunk(data: Uint8Array, state: Uint8Array | null, flow: Uint16Array | null = null): ChunkRecord {
+  const r: ChunkRecord = { v: SAVE_VERSION, rle: rleEncode(data) };
+  if (state && state.some((s) => s !== 0)) r.srle = rleEncode(state);
+  if (flow && flow.length) r.flow = flow.slice();
+  return r;
+}
+
+/** Decode a saved chunk (of any version; `at`: see migrateChunk); throws if it is corrupt. */
+export function decodeChunk(stored: ChunkRecord, at?: ChunkAt): ChunkData {
+  const r = migrateChunk(stored, at);
+  return { data: rleDecode(r.rle), state: r.srle ? rleDecode(r.srle) : null, flow: r.flow ? Uint16Array.from(r.flow) : null };
+}
 
 const chunkKey = (id: string, cx: number, cz: number) => `${id}:${cx},${cz}`;
 const worldRange = (id: string) => IDBKeyRange.bound(`${id}:`, `${id}:￿`);
@@ -59,8 +155,8 @@ export async function openSaves(): Promise<boolean> {
 /** Saved worlds, most recently played first. */
 export async function listWorlds(): Promise<WorldRecord[]> {
   if (!db) return [];
-  const all = await db.getAll<WorldRecord>('worlds');
-  return all.filter((w) => w.saveVersion <= SAVE_VERSION).sort((a, b) => b.lastPlayed - a.lastPlayed);
+  const all = await db.getAll<StoredWorld>('worlds');
+  return all.filter((w) => w.saveVersion <= SAVE_VERSION).map(migrateWorld).sort((a, b) => b.lastPlayed - a.lastPlayed);
 }
 
 export async function createWorld(name: string, seed: number): Promise<WorldRecord> {
@@ -68,6 +164,7 @@ export async function createWorld(name: string, seed: number): Promise<WorldReco
   const w: WorldRecord = {
     id: now.toString(36) + Math.floor(Math.random() * 1e6).toString(36),
     name, seed, createdAt: now, lastPlayed: now, saveVersion: SAVE_VERSION, player: null, slot: 0, mode: 'break',
+    time: NEW_WORLD_TIME, generatorVersion: GENERATOR_VERSION, hotbar: HOTBAR.slice(),
   };
   if (db) await db.write(['worlds'], (tx) => tx.objectStore('worlds').put(w));
   return w;
@@ -84,8 +181,8 @@ export async function deleteWorld(id: string): Promise<void> {
 /* ======================= THE WORLD BEING PLAYED ======================= */
 export interface WorldSave {
   readonly record: WorldRecord;
-  /** Streamer source: edited data for a chunk (saved or waiting to be), or null to generate it. */
-  load(cx: number, cz: number): Promise<Uint8Array> | null;
+  /** Streamer source: edited contents of a chunk (saved or waiting to be), or null to generate it. */
+  load(cx: number, cz: number): Promise<ChunkData> | null;
   /** Streamer source: a chunk is being dropped from memory; keeps its unsaved edits. */
   unload(c: Chunk): void;
   /** A block in chunk (cx, cz) changed. */
@@ -98,11 +195,12 @@ export interface WorldSave {
 
 /**
  * `getState` reports the current player state for each save (null: not playing yet, keep the
- * stored one). `getChunk` returns the loaded chunk, if any.
+ * stored one). `getChunk` returns the loaded chunk, if any; `getFlow` its pending water updates.
  */
-export async function openWorld(record: WorldRecord, getChunk: (cx: number, cz: number) => Chunk | undefined,
-  getState: () => Pick<WorldRecord, 'player' | 'slot' | 'mode'> | null): Promise<WorldSave> {
-  const id = record.id;
+export async function openWorld(stored: StoredWorld, getChunk: (cx: number, cz: number) => Chunk | undefined,
+  getState: () => Pick<WorldRecord, 'player' | 'slot' | 'mode' | 'time' | 'hotbar'> | null,
+  getFlow: (cx: number, cz: number) => Uint16Array | null = () => null): Promise<WorldSave> {
+  const record = migrateWorld(stored), id = record.id;
   // chunks with saved edits
   const saved = new Set<number>();
   if (db) {
@@ -112,7 +210,7 @@ export async function openWorld(record: WorldRecord, getChunk: (cx: number, cz: 
     }
   }
   const dirty = new Set<number>();                 // loaded chunks with unsaved edits
-  const pending = new Map<number, Uint8Array>();   // unloaded chunks with unsaved edits (RLE)
+  const pending = new Map<number, ChunkRecord>();  // unloaded chunks with unsaved edits (encoded)
   let timer = 0, chain: Promise<void> = Promise.resolve();
 
   async function write(): Promise<void> {
@@ -122,27 +220,25 @@ export async function openWorld(record: WorldRecord, getChunk: (cx: number, cz: 
     if (st) Object.assign(record, st, { lastPlayed: Date.now() });
     if (!db) return;                               // no saving: edits stay in memory (pending) for this session
     // snapshot everything now; edits made while the write runs are picked up next time
-    const entries: [number, Uint8Array][] = [...pending];
+    const entries: [number, ChunkRecord][] = [...pending];
     pending.clear();
     for (const ci of dirty) {
       const c = getChunk(ci % NCX, Math.floor(ci / NCX));
-      if (c) entries.push([ci, rleEncode(c.data)]);
+      if (c) entries.push([ci, encodeChunk(c.data, c.state, getFlow(c.cx, c.cz))]);
     }
     dirty.clear();
     try {
       await db.write(['worlds', 'chunks'], (tx) => {
         const chunks = tx.objectStore('chunks');
-        for (const [ci, rle] of entries) {
-          chunks.put({ v: SAVE_VERSION, rle } satisfies ChunkRecord, chunkKey(id, ci % NCX, Math.floor(ci / NCX)));
-        }
+        for (const [ci, r] of entries) chunks.put(r, chunkKey(id, ci % NCX, Math.floor(ci / NCX)));
         tx.objectStore('worlds').put(record);
       });
       for (const [ci] of entries) saved.add(ci);
     } catch (e) {
       // try again next time: loaded chunks are simply dirty again, unloaded ones keep their snapshot
-      for (const [ci, rle] of entries) {
+      for (const [ci, r] of entries) {
         if (getChunk(ci % NCX, Math.floor(ci / NCX))) dirty.add(ci);
-        else if (!pending.has(ci)) pending.set(ci, rle);
+        else if (!pending.has(ci)) pending.set(ci, r);
       }
       console.warn('Saving failed', e);
     }
@@ -155,18 +251,18 @@ export async function openWorld(record: WorldRecord, getChunk: (cx: number, cz: 
       if (p) {
         pending.delete(ci);
         dirty.add(ci);                             // still unsaved, now from the loaded chunk
-        return Promise.resolve(rleDecode(p));
+        return Promise.resolve(decodeChunk(p));
       }
       if (!db || !saved.has(ci)) return null;
       return db.get<ChunkRecord>('chunks', chunkKey(id, cx, cz)).then((r) => {
         if (!r) throw new Error('missing chunk');
-        return rleDecode(r.rle);
+        return decodeChunk(r, { seed: record.seed, cx, cz });
       });
     },
     unload(c) {
       const ci = c.cx + c.cz * NCX;
       if (!dirty.delete(ci)) return;
-      pending.set(ci, rleEncode(c.data));
+      pending.set(ci, encodeChunk(c.data, c.state, getFlow(c.cx, c.cz)));
       ws.requestSave();
     },
     touch(cx, cz) {

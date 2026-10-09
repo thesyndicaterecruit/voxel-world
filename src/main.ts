@@ -1,23 +1,31 @@
 import * as THREE from 'three';
 import { CB, CS, EYE, HORIZON } from './config';
-import { B, HOTBAR } from './blocks';
+import { B, AIR, HOTBAR } from './blocks';
 import { urlSeed, randomSeed } from './noise';
-import { createTextures } from './textures';
-import { world } from './world';
-import { columnHeight, findSpawn } from './gen';
+import { createTextures, setUnderwater, setTints } from './textures';
+import { world, waterDepth } from './world';
+import { generator } from './gen';
+import { BIOMES, NBIOMES, findBiome, biomeAt, weights, tintMap } from './biomes';
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
 import { createEffects } from './effects';
-import { P, V, player, spawn, update, collides } from './player';
+import { createWater } from './water';
+import { P, V, player, playerEvents, spawn, update, collides, aim } from './player';
+import { playSound } from './audio';
 import { createInteraction } from './interact';
 import { initInput, readControls, setSensitivity } from './input';
-import { els, hud, initHotbar, initMenu, initStartScreen, selectSlot, setMode, setNote, showError, showWorlds, toast } from './ui';
+import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
+  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock } from './ui';
+import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
 /** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
-const RD_KEY = 'voxel-island.renderDistance';
+const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves', BRIGHT_KEY = 'voxel-island.brightness';
+const DAY_KEY = 'voxel-island.dayLength', ALWAYS_DAY_KEY = 'voxel-island.alwaysDay';
+/** Day length setting: real minutes for a whole day */
+const DAY_MINUTES = [5, 10, 20, 40, 60], DEFAULT_DAY = 2;
 
 function savedRenderDistance(): number {
   try {
@@ -64,9 +72,11 @@ async function boot(): Promise<void> {
   /* ============================ SAVE FILES ============================ */
   if (!(await openSaves())) setNote('Saving is not available in this browser (private mode?), so this island will not be kept.');
   const { record, list } = await pickWorld();
-  const seed = record.seed;
+  const seed = record.seed, gen = generator(record.generatorVersion);
   world.seed = seed;
-  const [sx, sz] = findSpawn(seed);
+  world.generator = gen.version;
+  world.seaLevel = gen.seaLevel;
+  const [sx, sz] = gen.findSpawn(seed);
   // where the player starts: the saved position, or the spawn point of a new world
   const home = record.player ? { x: record.player.x, z: record.player.z } : { x: sx + 0.5, z: sz + 0.5 };
   showWorlds(list.map((w) => ({ id: w.id, name: w.name, seed: w.seed, lastPlayed: w.lastPlayed, played: !!w.player })), record.id, {
@@ -75,7 +85,10 @@ async function boot(): Promise<void> {
     create: () => void createWorld(nextName(list), randomSeed()).then((w) => reopen(w.id)),
   });
 
-  const { canvases, textures, chunkMaterial } = createTextures(renderer);
+  const { canvases, textures, chunkMaterials } = createTextures(renderer);
+  // worlds with biomes (generator 2 on): grass, leaves and water take their biomes' colours
+  const biomes = gen.version >= 2;
+  if (biomes) setTints(tintMap(seed));
 
   /* ============================ RENDERER ============================ */
   let pr = Math.min(window.devicePixelRatio || 1, 2);
@@ -87,14 +100,32 @@ async function boot(): Promise<void> {
   camera.rotation.order = 'YXZ';
 
   let playing = false, ready = false;
+  /** The world clock: days since the world began (the fraction is the time of day), saved with it */
+  let days = record.time;
   const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
-    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode } : null));
+    () => (playing ? { player: { x: P[0], y: P[1], z: P[2], yaw: player.yaw, pitch: player.pitch }, slot: hud.sel, mode: hud.mode, time: days,
+      hotbar: hud.items.slice() } : null),
+    (cx, cz) => water.pendingIn(cx, cz));
   const pool = createWorkerPool((msg) => showError('COULD NOT START WORKERS', msg));
   // edited chunks come from the save; everything else is generated
-  const streamer = createStreamer(scene, chunkMaterial, pool, save);
-  world.onChange = (x, _y, z) => { streamer.markDirty(x, z); save.touch(x >> CB, z >> CB); };
-  const env = createEnvironment(scene, renderer, seed, home.x, home.z);
+  const streamer = createStreamer(scene, chunkMaterials, pool, save);
+  const env = createEnvironment(scene, renderer, seed, home.x, home.z, gen.seaLevel, gen.cloudY);
   const fx = createEffects(scene, textures);
+  // flowing water: torches it reaches pop off; a chunk with water updates pending has something to save
+  const water = createWater(world, { onWash: (x, y, z, id) => fx.burst(x, y, z, id), onPending: (cx, cz) => save.touch(cx, cz) });
+  // block changes: the water around them moves, and all the changes made together (one action, one
+  // tick of water) are relit and re-meshed in one go, right after
+  const changes: number[] = [];
+  let flushing = false;
+  world.onChange = (x, y, z, old) => {
+    changes.push(x, y, z, old);
+    save.touch(x >> CB, z >> CB);
+    water.blockChanged(x, y, z, old);
+    if (!flushing) { flushing = true; queueMicrotask(() => { flushing = false; streamer.blocksChanged(changes.splice(0)); }); }
+  };
+  world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); };
+  // hitting the water fast throws up a splash
+  playerEvents.splash = (x, y, z, speed) => { fx.splash(x, y, z, speed); playSound('splash', Math.min(1, speed / 20)); };
 
   // view distance: how far chunks are streamed, and where the fog ends
   const setRenderDistance = (r: number) => { streamer.setRenderDistance(r); env.setFog(r * CS * 0.35, r * CS); };
@@ -104,9 +135,46 @@ async function boot(): Promise<void> {
     setRenderDistance(r);
     try { localStorage.setItem(RD_KEY, String(r)); } catch (e) { /* storage unavailable */ }
   });
+  // Fancy leaves (default on): see-through cutout leaves; off meshes them as plain opaque cubes
+  let fancy = true;
+  try { fancy = localStorage.getItem(LEAVES_KEY) !== '0'; } catch (e) { /* storage unavailable */ }
+  streamer.setOpaqueLeaves(!fancy);
+  initLeavesToggle(fancy, (on) => {
+    streamer.setOpaqueLeaves(!on);
+    try { localStorage.setItem(LEAVES_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  });
+
+  // Brightness: how far the light curve is lifted, and how dark the darkest places get
+  let bright = 1;
+  try { const v = localStorage.getItem(BRIGHT_KEY); if (v !== null && BRIGHTNESS[+v]) bright = +v; } catch (e) { /* storage unavailable */ }
+  const setBrightness = (i: number) => { lightUniforms.lift.value = BRIGHTNESS[i].lift; lightUniforms.lightFloor.value = BRIGHTNESS[i].floor; };
+  setBrightness(bright);
+  initBrightness(bright, BRIGHTNESS.map((b) => b.name), (i) => {
+    setBrightness(i);
+    try { localStorage.setItem(BRIGHT_KEY, String(i)); } catch (e) { /* storage unavailable */ }
+  });
+
+  // Day length and Always day (which holds the sun at noon)
+  let dayMin = DAY_MINUTES[DEFAULT_DAY], alwaysDay = false;
+  try {
+    const v = localStorage.getItem(DAY_KEY);
+    if (v !== null && DAY_MINUTES.includes(+v)) dayMin = +v;
+    alwaysDay = localStorage.getItem(ALWAYS_DAY_KEY) === '1';
+  } catch (e) { /* storage unavailable */ }
+  initDayLength(DAY_MINUTES.indexOf(dayMin), DAY_MINUTES.map((m) => `${m} MIN`), (i) => {
+    dayMin = DAY_MINUTES[i];
+    try { localStorage.setItem(DAY_KEY, String(dayMin)); } catch (e) { /* storage unavailable */ }
+  });
+  initAlwaysDay(alwaysDay, (on) => {
+    alwaysDay = on;
+    try { localStorage.setItem(ALWAYS_DAY_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  });
 
   const interaction = createInteraction(fx);
-  initHotbar(canvases, (i) => { fx.ghostMat.map = textures[B[HOTBAR[i]].t[0]]; });
+  // the world's hotbar; the block picker puts any block in the selected slot
+  hud.items = HOTBAR.map((d, i) => { const id = record.hotbar[i]; return B[id] && id !== AIR ? id : d; });
+  initHotbar(canvases, (i) => { const b = B[hud.items[i]]; fx.ghostMat.map = textures[b.model === 'liquid' ? b.icon : b.tex[0]]; });
+  initPicker((id) => { setMode('place'); toast(B[id].name, 900); save.requestSave(); });
 
   // autosave: within 5 s of a change, and right away when the app is hidden, closed or exited
   let quitting = false;
@@ -118,7 +186,21 @@ async function boot(): Promise<void> {
   };
   document.addEventListener('visibilitychange', () => { if (document.hidden && playing) void save.save(); });
   window.addEventListener('pagehide', () => { if (playing) void save.save(); });
-  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit });
+
+  // Menu → Teleport: to the nearest place of a biome (worlds with biomes: generator 2 on), standing on
+  // its ground, or afloat on its sea. Returns how far that was (−1: the world has none of it)
+  const teleport = (id: number) => {
+    const at = biomes ? findBiome(seed, id, P[0], P[2]) : null;
+    if (!at) { toast(biomes ? `No ${BIOMES[id].name} in this world` : 'This island has no biomes'); return -1; }
+    const [x, z] = at, d = Math.round(Math.hypot(x + 0.5 - P[0], z + 0.5 - P[2]));
+    P[0] = x + 0.5; P[1] = Math.max(gen.surfaceHeight(seed, x, z), gen.seaLevel) + 0.01; P[2] = z + 0.5;
+    V.fill(0);
+    save.requestSave();
+    toast(`${BIOMES[id].name} · ${d} blocks away`, 2200);
+    return d;
+  };
+  initTeleport(biomes ? BIOMES.map((b) => b.name) : null);
+  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit, teleport });
 
   /* ============================ RESIZE ============================ */
   function resize(): void {
@@ -136,16 +218,31 @@ async function boot(): Promise<void> {
 
   // the title fly-around circles the start point, high enough to clear the hills on its path
   const hx = Math.floor(home.x), hz = Math.floor(home.z);
-  let orbitY = columnHeight(seed, hx, hz) + 12;
+  let orbitY = gen.surfaceHeight(seed, hx, hz) + 12;
   for (let a = 0; a < 64; a++) {
     const x = Math.round(hx + Math.sin(a / 64 * Math.PI * 2) * 30), z = Math.round(hz + Math.cos(a / 64 * Math.PI * 2) * 30);
-    orbitY = Math.max(orbitY, columnHeight(seed, x, z) + 6);
+    orbitY = Math.max(orbitY, gen.surfaceHeight(seed, x, z) + 6);
   }
   els.play.textContent = record.player ? 'LOADING ISLAND…' : 'GENERATING ISLANDS…';
 
   /* ============================ LOOP ============================ */
   const look = new THREE.Vector3(), lastState = [NaN, NaN, NaN, NaN, NaN];
-  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0;
+  let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0, frames = 0;
+  /** The haze of the biomes around the camera (their colours by weight and how much haze each has) */
+  const hw = new Float32Array(NBIOMES), hazeCol = new THREE.Color(), part = new THREE.Color();
+  const biomeHaze = (x: number, z: number) => {
+    weights(seed, Math.floor(x), Math.floor(z), hw);
+    let amount = 0;
+    hazeCol.setRGB(0, 0, 0);
+    for (let i = 0; i < NBIOMES; i++) {
+      const a = hw[i] * BIOMES[i].hazeAmount;
+      if (a <= 0) continue;
+      hazeCol.add(part.setHex(BIOMES[i].haze).multiplyScalar(a));
+      amount += a;
+    }
+    if (amount > 0) hazeCol.multiplyScalar(1 / amount);
+    env.setHaze(hazeCol, amount);
+  };
   function frame(now: number): void {
     requestAnimationFrame(frame);
     const raw = Math.max(0, (now - last) / 1000);
@@ -154,6 +251,7 @@ async function boot(): Promise<void> {
     if (playing) {
       // physics waits until the chunks under the player are loaded (unloaded chunks are solid)
       if (streamer.areaLoaded(P[0], P[2])) update(dt, readControls());
+      if (!menuOpen()) water.update(dt);
       camera.position.set(P[0], P[1] + EYE, P[2]);
       camera.rotation.set(player.pitch, player.yaw, 0);
       // moving or looking around counts as a change worth saving
@@ -166,7 +264,7 @@ async function boot(): Promise<void> {
     }
     camera.getWorldDirection(look);
     const t0 = performance.now();
-    streamer.update(playing ? P[0] : home.x, playing ? P[2] : home.z, look.x, look.z);
+    streamer.update(playing ? P[0] : home.x, playing ? P[2] : home.z, look.x, look.z, !ready ? 'first' : playing ? 'play' : 'title');
     streamMs = Math.max(streamMs * 0.98, performance.now() - t0);
     if (!ready && streamer.isReady(home.x, home.z, READY_RADIUS)) {
       ready = true;
@@ -179,9 +277,18 @@ async function boot(): Promise<void> {
       setMode(record.mode);
       initStartScreen(() => { playing = true; save.requestSave(); });
     }
+    lightUniforms.time.value = now / 1000;           // torch flicker
+    // the clock runs while playing (not while the menu is open); Always day holds it at noon
+    if (playing && !menuOpen()) days = alwaysDay ? Math.floor(days) + 0.5 : days + dt / (dayMin * 60);
+    env.setTime(days % 1);
+    if (menuOpen()) setClock(days);
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
-    env.update(dt, camera);
+    const depth = waterDepth(camera.position.x, camera.position.y, camera.position.z);
+    if (biomes && frames++ % 6 === 0) biomeHaze(camera.position.x, camera.position.z);
+    env.update(dt, camera, depth);
+    setUnderwater(chunkMaterials[2], depth >= 0);
+    streamer.sortTranslucent(camera.position);
     renderer.render(scene, camera);
 
     // adaptive resolution: drop pixel ratio on slow phones
@@ -196,14 +303,29 @@ async function boot(): Promise<void> {
 
   // small debug handle (handy for testing from the console)
   (window as unknown as { __voxel: unknown }).__voxel = {
-    P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world),
+    P, V, world, get: world.getBlock.bind(world), setBlock: world.setBlock.bind(world), getState: world.getState.bind(world),
+    light: (x: number, y: number, z: number) => { const v = world.getLight(x, y, z); return [v >> 4, v & 15]; },
     act: interaction.act, collides, step: (dt: number) => update(dt, readControls()), SEED: seed,
+    seaLevel: gen.seaLevel, generator: gen.version,
     get yaw() { return player.yaw; }, get pitch() { return player.pitch; }, get mode() { return hud.mode; },
     get onGround() { return player.onGround; }, get pixelRatio() { return pr; }, get ready() { return ready; },
+    get wet() { return player.wet; }, get breath() { return player.breath; },
     count: () => world.count(),
     stream: () => ({ ...streamer.stats(), updateMs: +streamMs.toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles }),
     setRenderDistance, chunk: (cx: number, cz: number) => streamer.debugChunk(cx, cz),
+    verifyLight: (cx: number, cz: number) => streamer.verifyLight(cx, cz),
+    water: () => water.stats(), waterTick: () => water.tick(),
+    showWater: (on: boolean) => { chunkMaterials[2].visible = on; },
+    get time() { return days; },
+    setTime: (t: number) => { days = Math.floor(days) + t; },
+    setFancyLeaves: (on: boolean) => setFancyLeaves(on), tiles: canvases,
+    look: (yaw: number, pitch: number) => { player.yaw = yaw; player.pitch = pitch; },
+    hotbar: () => hud.items.slice(), pick: pickBlock, sel: () => hud.sel,
+    target: () => { const h = aim(); return h && { ...h, id: world.getBlock(h.x, h.y, h.z) }; },
     worldId: record.id, save: () => save.save(),
+    teleport, biome: () => (biomes ? BIOMES[biomeAt(seed, Math.floor(P[0]), Math.floor(P[2]))].name : null),
+    biomeAt: (x: number, z: number) => (biomes ? BIOMES[biomeAt(seed, Math.floor(x), Math.floor(z))].name : null),
+    biomes: biomes ? BIOMES.map((b) => b.name) : [],
   };
 }
 

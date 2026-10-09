@@ -15,7 +15,25 @@
 <div id="tint"></div>
 <div id="ui">
   <div id="cross"></div>
-  <div id="hotbar" data-act="none"></div>
+  <div id="hotrow">
+    <div id="hotbar" data-act="none"></div>
+    <div id="pickBtn" class="btn" data-act="pick" role="button" aria-label="All blocks">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="#fff"><rect x="3" y="3" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5" fill-opacity=".55"/></svg>
+    </div>
+  </div>
+  <div id="picker" data-act="none">
+    <div class="pcard">
+      <div class="ptop">
+        <div id="ptabs"></div>
+        <input id="psearch" type="search" placeholder="Search" data-act="search" autocomplete="off" spellcheck="false" enterkeyhint="done">
+        <div class="sbtn pclose" data-act="pclose" role="button" aria-label="Close">&times;</div>
+      </div>
+      <div id="pgrid"></div>
+      <p class="hint">Tap a block to put it in the selected slot &middot; tap a slot above to choose another</p>
+    </div>
+  </div>
   <div id="joy"><div id="knob"></div></div>
   <div id="toast"></div>
   <div id="menuBtn" class="btn" data-act="menu" role="button" aria-label="Menu">
@@ -31,17 +49,64 @@
   <div id="menu" data-act="none">
     <div class="card">
       <h2>MENU</h2>
-      <div class="setting">
-        <span>View distance</span>
-        <div class="stepper">
-          <div class="sbtn" data-act="rd-" role="button" aria-label="Less">&minus;</div>
-          <span id="rd">6</span>
-          <div class="sbtn" data-act="rd+" role="button" aria-label="More">+</div>
+      <div class="opts">
+        <div class="opt">
+          <span class="lab">View distance</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="rd-" role="button" aria-label="Less">&minus;</div>
+            <span id="rd" class="val">6</span>
+            <div class="sbtn" data-act="rd+" role="button" aria-label="More">+</div>
+          </div>
+          <p class="hint">Lower it if the game stutters</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Fancy leaves</span>
+          <div class="sbtn tog" id="leavesBtn" data-act="leaves" role="button" aria-pressed="true">ON</div>
+          <p class="hint">Off is faster on weak phones</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Brightness</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="br-" role="button" aria-label="Darker">&minus;</div>
+            <span id="br" class="val wide">NORMAL</span>
+            <div class="sbtn" data-act="br+" role="button" aria-label="Brighter">+</div>
+          </div>
+          <p class="hint">How dark nights and caves get</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Day length</span>
+          <div class="stepper">
+            <div class="sbtn" data-act="dl-" role="button" aria-label="Shorter">&minus;</div>
+            <span id="dl" class="val wide">20 MIN</span>
+            <div class="sbtn" data-act="dl+" role="button" aria-label="Longer">+</div>
+          </div>
+          <p class="hint">Real minutes for a whole day</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Always day</span>
+          <div class="sbtn tog off" id="dayBtn" data-act="aday" role="button" aria-pressed="false">OFF</div>
+          <p class="hint">Keeps the sun at noon</p>
+        </div>
+        <div class="opt">
+          <span class="lab">Time</span>
+          <span id="clock" class="val clock">DAY 1 · 07:12</span>
+          <p class="hint">Saved with the world</p>
+        </div>
+        <div class="opt" id="tpOpt">
+          <span class="lab">Teleport</span>
+          <div class="sbtn tog off" data-act="tp" role="button">BIOME…</div>
+          <p class="hint">To the nearest biome of a kind</p>
         </div>
       </div>
-      <p class="hint">Lower it if the game stutters</p>
-      <div class="mbtn" data-act="resume" role="button">RESUME</div>
-      <div class="mbtn sec" data-act="quit" role="button">SAVE &amp; EXIT</div>
+      <div id="tp">
+        <p class="hint">Teleport to the nearest…</p>
+        <div id="tpList"></div>
+        <div class="mbtn sec" data-act="tpback" role="button">BACK</div>
+      </div>
+      <div class="mbtns">
+        <div class="mbtn" data-act="resume" role="button">RESUME</div>
+        <div class="mbtn sec" data-act="quit" role="button">SAVE &amp; EXIT</div>
+      </div>
     </div>
   </div>
 </div>
@@ -56,7 +121,7 @@
         <span class="k">RIGHT SIDE</span><span>Drag to look &middot; tap to break / place</span>
         <span class="k">JUMP</span><span>Jump (1-block steps auto-jump)</span>
         <span class="k">⛏️ / 🧱</span><span>Switch Break &harr; Place mode</span>
-        <span class="k">TOP BAR</span><span>Pick a block to build with</span>
+        <span class="k">TOP BAR</span><span>Pick a block to build with &middot; ▦ for every block</span>
       </div>
     </div>
     <div class="actions">

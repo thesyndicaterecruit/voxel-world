@@ -1,123 +1,137 @@
-import { CS, H, W, D, SEA_LEVEL as S, CHUNK_VOL, CI, inWorld } from './config';
-import { AIR, GRASS, DIRT, STONE, SAND, LOG, LEAVES, BEDROCK } from './blocks';
+import { CS, CHUNK_VOL, CI, H, W, D, inWorld } from './config';
+import { AIR, GRASS, DIRT, STONE, LOG, LEAVES, BEDROCK, WATER, ICE } from './blocks';
 import { hash2, hash3, vnoise, fbm, sstep } from './noise';
+import { BIOMES, NBIOMES, weights, coast, type Biome } from './biomes';
+import * as g1 from './gen1';
 
-/* ===================== ARCHIPELAGO GENERATION ===================== */
-// Pure: every block is a function of (seed, world x, y, z) only, so a chunk comes out the same
-// whichever order chunks are generated in, on any thread. No shared PRNG state, no trig.
+/* ============================ GENERATORS ============================ */
+// A world remembers which generator made it (WorldRecord.generatorVersion), and its unexplored
+// chunks always come from that one, so the ground never shifts under a saved world. Version 1 is the
+// first archipelago (gen1.ts, frozen: every world made before versions existed uses it); new worlds
+// get GENERATOR_VERSION. Every generator is pure: a chunk is a function of (seed, cx, cz) only.
 
-// Salts that decorrelate the noise fields made from one seed
-const K_CONT = 0x2c1b3c6d, K_WARPX = 0x297a2d39, K_WARPZ = 0x7ed55d16, K_SEABED = 0x165667b1, K_SAND = 0x0f3a9c51;
-const K_TREE = 0x68e31da4, K_TX = 0x1b56c4e9, K_TZ = 0x3c6ef372, K_TH = 0x5be0cd19, K_PRI = 0x6a09e667;
-const K_FOREST = 0x510e527f, K_LEAF = 0x1f83d9ab, K_MTN = 0x9b05688c;
+/** The generator new worlds get */
+export const GENERATOR_VERSION = 2;
 
-/** Continent value above which a column is land (about the 70th percentile of the raw noise). */
-const ISLAND_T = 0.6;
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-
-/** "Island-ness" of a column: > ISLAND_T is land. Low-frequency noise + a central island − edge falloff. */
-function continent(seed: number, x: number, z: number): number {
-  // a light domain warp so coastlines don't follow the noise grid
-  const wx = x + (vnoise(seed ^ K_WARPX, x / 53, z / 53) - 0.5) * 40;
-  const wz = z + (vnoise(seed ^ K_WARPZ, x / 53, z / 53) - 0.5) * 40;
-  const f = 1 / 110, sc = seed ^ K_CONT;
-  const n = vnoise(sc, wx * f, wz * f) * 0.6 + vnoise(sc, wx * f * 2.03 + 17.3, wz * f * 2.03 - 9.1) * 0.27 +
-    vnoise(sc, wx * f * 4.1 - 5.7, wz * f * 4.1 + 23.9) * 0.13;
-  // the central island always exists (the player spawns on it): a raised disc merged into the noise
-  const dx = x + 0.5 - W / 2, dz = z + 0.5 - D / 2;
-  const centre = 1 - sstep(clamp01((Math.sqrt(dx * dx + dz * dz) - 14) / 40));
-  // open deep ocean toward the world edge
-  const de = Math.min(x + 0.5, z + 0.5, W - x - 0.5, D - z - 0.5);
-  const edge = sstep(clamp01((de - 20) / 60));
-  return Math.max(n + centre * 0.3, centre * 0.74) * edge;
+export interface Generator {
+  readonly version: number;
+  /** Generation fills the air below y = seaLevel with water */
+  readonly seaLevel: number;
+  /** Where the clouds float (their lowest y) */
+  readonly cloudY: number;
+  /** All the blocks of chunk (cx, cz) (CHUNK_VOL, CI layout) */
+  generateChunk(seed: number, cx: number, cz: number): Uint8Array;
+  /** The spawn column: the player stands on its highest block */
+  findSpawn(seed: number): [number, number];
+  /** Where the ground is in column (x, z) (y of the first block above it), roughly: the title fly-around keeps above it */
+  surfaceHeight(seed: number, x: number, z: number): number;
 }
 
-/** Column height: blocks y < h are filled, so the surface is at y = h. h ≥ SEA_LEVEL is dry land. */
-export function columnHeight(seed: number, x: number, z: number): number {
-  const t = continent(seed, x, z) - ISLAND_T;
-  let h;
+/* ---------- generator 2: the biome archipelago ---------- */
+// The islands and their biomes come from biomes.ts. Every biome shapes the ground its own way
+// (landform); a column's height mixes the shapes of the biomes around it by their weights, so a
+// border never makes a cliff of its own, and every shape meets the same coastline. The biome that
+// counts most at a column (or, near a border, now and then the next one) lays its blocks on top.
+
+/** Generator 2's sea level */
+export const SEA_LEVEL = 48;
+const S = SEA_LEVEL;
+const K_RELIEF = 0x7a3b9c41, K_BED = 0x2e6f81d3, K_DITHER = 0x5d1f2a77, K_TREE = 0x68e31da4, K_TX = 0x1b56c4e9, K_TZ = 0x3c6ef372;
+const K_TH = 0x5be0cd19, K_PRI = 0x6a09e667, K_LEAF = 0x1f83d9ab, K_PATCH = 0x4c8f3b2d, K_ICE = 0x71d3a9e5;
+/** How far inland the ground takes to rise from the beach, and offshore the sea floor to sink (blocks) */
+const RISE = 14, SHELF = 28;
+
+/**
+ * Biome `bm`'s ground at column (x, z), t blocks from the coast (positive inland): from the beach,
+ * at sea level for every biome, it rises inland by `lift` plus rolling `amp`; offshore its floor sinks
+ * to `depth` below the sea. Continuous in t, so blended biomes meet smoothly.
+ */
+function landform(seed: number, bm: Biome, x: number, z: number, t: number): number {
   if (t >= 0) {
-    // land rises from the beach over a band into the original island's hills; some inland areas
-    // (a separate low-frequency mask) grow mountains with bare stone peaks
-    const m = sstep(Math.min(1, t / 0.12)), inland = sstep(clamp01((t - 0.06) / 0.2));
-    const mtn = sstep(clamp01((vnoise(seed ^ K_MTN, x / 64, z / 64) - 0.5) / 0.25)) * inland;
-    h = S + Math.floor(m * (2 + fbm(seed, x * 0.07, z * 0.07) * (14 + 12 * mtn)));
-  } else {
-    // shelf from the shore down to the deep ocean floor
-    const d = sstep(Math.min(1, -t / 0.18));
-    h = S - 1 - Math.floor(d * 12 + vnoise(seed ^ K_SEABED, x * 0.09, z * 0.09) * 2.5);
+    const r = sstep(Math.min(1, t / RISE));
+    return S + r * (bm.lift + bm.amp * (fbm(seed ^ K_RELIEF, x * bm.freq, z * bm.freq) - 0.35));
   }
-  return Math.min(H - 12, h);
+  const d = sstep(Math.min(1, -t / SHELF));
+  return S - 1 - d * (bm.depth + (vnoise(seed ^ K_BED, x / 11, z / 11) - 0.5) * 3);
 }
 
-/** Block at height y in a column of height h (same layering as the original island). */
-function layer(seed: number, x: number, z: number, y: number, h: number): number {
+const W8 = new Float32Array(NBIOMES);
+/**
+ * Column (x, z): its ground height (blocks y < h are filled), the biome whose blocks are on top, and
+ * how much of the sea's surface freezes there (the biomes' `freeze`, blended)
+ */
+export function column2(seed: number, x: number, z: number): { h: number; biome: number; freeze: number } {
+  const { t } = coast(seed, x, z);
+  let best = weights(seed, x, z, W8), second = -1, h = 0, freeze = 0;
+  for (let i = 0; i < NBIOMES; i++) {
+    if (W8[i] <= 0) continue;
+    h += W8[i] * landform(seed, BIOMES[i], x, z, t);
+    freeze += W8[i] * BIOMES[i].freeze;
+    if (i !== best && (second < 0 || W8[i] > W8[second])) second = i;
+  }
+  // near a border the two biomes' blocks mingle
+  if (second >= 0 && hash2(seed ^ K_DITHER, x, z) < W8[second] * 0.9) best = second;
+  return { h: Math.max(2, Math.min(H - 8, Math.round(h))), biome: best, freeze };
+}
+
+/** Does column (x, z) of biome bm have a patch of its patch block on top (on land; on the sea floor for a sea biome)? */
+const patched = (seed: number, bm: Biome, x: number, z: number, h: number) =>
+  bm.patchAmount > 0 && (h < S) === bm.ocean && vnoise(seed ^ K_PATCH, x / 7, z / 7) * 0.8 + hash2(seed ^ K_PATCH, x, z) * 0.2 < bm.patchAmount;
+
+/** Block at height y of a column h high (with the sea above it) whose top belongs to biome bm; `patch`: a patch on top */
+function layer2(bm: Biome, y: number, h: number, patch: boolean): number {
   if (y === 0) return BEDROCK;
-  if (h >= S) {
-    if (h <= S + 1) return y >= h - 3 ? SAND : STONE;          // beach
-    if (y === h - 1) return h >= S + 12 ? STONE : GRASS;       // grass, or bare stone on high peaks
-    return y >= h - 4 ? DIRT : STONE;
+  const d = h - 1 - y;                                               // how deep under the surface
+  if (h < S) return d === 0 && patch ? bm.patch : d < 3 ? bm.bed : STONE;   // under the sea
+  if (h <= S + 1 && bm.shore !== bm.top) {                           // the shore: a beach, gravel, mud…
+    if (d === 0) return bm.shore;
+    return d < 4 ? (bm.shore === GRASS ? DIRT : bm.shore) : STONE;
   }
-  // seabed: sand in the shallows and in patches further out, stone elsewhere
-  const sandy = h >= S - 6 || vnoise(seed ^ K_SAND, x * 0.08, z * 0.08) > 0.55;
-  return sandy && y >= h - 3 ? SAND : STONE;
+  if (d === 0) return patch ? bm.patch : bm.top;
+  if (d <= bm.fillDepth) return bm.fill;
+  return d <= bm.fillDepth + bm.underDepth ? bm.under : STONE;
 }
 
-/* ============================ TREES ============================ */
-// One candidate per TC×TC cell, anywhere in the cell. A candidate grows if the ground suits it
-// and no higher-priority candidate in a neighbouring cell is within 4 blocks, so trees keep the
-// original spacing (5+ apart on some axis) and their canopies (radius 2) never overlap.
+/* ---------- trees (for now: the oaks every biome with "oak" in its decorations grows) ---------- */
 const TC = 6;
-
-export interface Tree { x: number; z: number; h: number; th: number; pri: number }
+interface Tree { x: number; z: number; h: number; th: number; pri: number }
+const TREE_CHANCE: Record<string, number> = { 'oak': 0.5, 'oak-sparse': 0.12 };
 
 function candidate(seed: number, gx: number, gz: number): Tree | null {
-  const x = gx * TC + Math.floor(hash2(seed ^ K_TX, gx, gz) * TC);
-  const z = gz * TC + Math.floor(hash2(seed ^ K_TZ, gx, gz) * TC);
+  const x = gx * TC + Math.floor(hash2(seed ^ K_TX, gx, gz) * TC), z = gz * TC + Math.floor(hash2(seed ^ K_TZ, gx, gz) * TC);
   if (!inWorld(x, z)) return null;
-  // density varies: groves and open meadows
-  if (hash2(seed ^ K_TREE, gx, gz) >= 0.1 + 0.55 * vnoise(seed ^ K_FOREST, x / 40, z / 40)) return null;
-  const h = columnHeight(seed, x, z);
-  if (h < S + 2 || h > S + 10) return null;                    // on grass, and not too high up
+  const { h, biome } = column2(seed, x, z), bm = BIOMES[biome];
+  const chance = bm.decorations.reduce((a, d) => a + (TREE_CHANCE[d] ?? 0), 0);
+  if (!chance || hash2(seed ^ K_TREE, gx, gz) >= chance || h < S + 2 || bm.top !== GRASS) return null;
   return { x, z, h, th: 4 + Math.floor(hash2(seed ^ K_TH, gx, gz) * 2), pri: hash2(seed ^ K_PRI, gx, gz) };
 }
-
-/** The tree that grows in cell (gx, gz), if any. `cand` may memoize candidate(). */
-function treeIn(seed: number, gx: number, gz: number, cand = candidate): Tree | null {
-  const t = cand(seed, gx, gz);
-  if (!t) return null;
-  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-    if (!dx && !dz) continue;
-    const o = cand(seed, gx + dx, gz + dz);
-    if (o && Math.abs(o.x - t.x) <= 4 && Math.abs(o.z - t.z) <= 4 &&
-        (o.pri > t.pri || (o.pri === t.pri && (dz > 0 || (dz === 0 && dx > 0))))) return null;
-  }
-  return t;
-}
-
-/** Trees whose trunk or canopy touches the block rectangle [x0, x1] × [z0, z1]. */
-export function treesNear(seed: number, x0: number, z0: number, x1: number, z1: number): Tree[] {
+/** Trees whose trunk or canopy touches the block rectangle [x0, x1] × [z0, z1] (spaced like generator 1's) */
+function treesNear(seed: number, x0: number, z0: number, x1: number, z1: number): Tree[] {
   const memo = new Map<number, Tree | null>();
-  const cand = (s: number, gx: number, gz: number) => {
+  const cand = (gx: number, gz: number) => {
     const k = (gx + 64) * 4096 + gz + 64;
     let t = memo.get(k);
-    if (t === undefined) memo.set(k, (t = candidate(s, gx, gz)));
+    if (t === undefined) memo.set(k, (t = candidate(seed, gx, gz)));
     return t;
   };
   const out: Tree[] = [];
-  for (let gz = Math.floor((z0 - 2) / TC); gz <= Math.floor((z1 + 2) / TC); gz++)
-    for (let gx = Math.floor((x0 - 2) / TC); gx <= Math.floor((x1 + 2) / TC); gx++) {
-      const t = treeIn(seed, gx, gz, cand);
-      if (t && t.x + 2 >= x0 && t.x - 2 <= x1 && t.z + 2 >= z0 && t.z - 2 <= z1) out.push(t);
+  for (let gz = Math.floor((z0 - 2) / TC); gz <= Math.floor((z1 + 2) / TC); gz++) for (let gx = Math.floor((x0 - 2) / TC); gx <= Math.floor((x1 + 2) / TC); gx++) {
+    const t = cand(gx, gz);
+    if (!t || t.x + 2 < x0 || t.x - 2 > x1 || t.z + 2 < z0 || t.z - 2 > z1) continue;
+    let ok = true;
+    for (let dz = -1; dz <= 1 && ok; dz++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dz) continue;
+      const o = cand(gx + dx, gz + dz);
+      if (o && Math.abs(o.x - t.x) <= 4 && Math.abs(o.z - t.z) <= 4 && (o.pri > t.pri || (o.pri === t.pri && (dz > 0 || (dz === 0 && dx > 0))))) { ok = false; break; }
     }
+    if (ok) out.push(t);
+  }
   return out;
 }
-
-/** Stamp the part of tree t that falls inside the chunk at (x0, z0). Same shape as the original oaks. */
 function stampTree(seed: number, data: Uint8Array, x0: number, z0: number, t: Tree): void {
   const { x, z, h, th } = t, inside = (lx: number, lz: number) => lx >= 0 && lx < CS && lz >= 0 && lz < CS;
   if (inside(x - x0, z - z0)) {
-    data[CI(x - x0, h - 1, z - z0)] = DIRT;                    // no grass under the trunk
+    data[CI(x - x0, h - 1, z - z0)] = DIRT;
     for (let y = h; y < h + th; y++) data[CI(x - x0, y, z - z0)] = LOG;
   }
   for (let dy = th - 2; dy <= th + 1; dy++) {
@@ -133,36 +147,43 @@ function stampTree(seed: number, data: Uint8Array, x0: number, z0: number, t: Tr
   }
 }
 
-/** Generate chunk (cx, cz) of the world with this seed. */
-export function generateChunk(seed: number, cx: number, cz: number): Uint8Array {
+function generateChunk2(seed: number, cx: number, cz: number): Uint8Array {
   const data = new Uint8Array(CHUNK_VOL), x0 = cx * CS, z0 = cz * CS;
   for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
-    const x = x0 + lx, z = z0 + lz, h = columnHeight(seed, x, z);
-    for (let y = 0; y < h; y++) data[CI(lx, y, lz)] = layer(seed, x, z, y, h);
+    const x = x0 + lx, z = z0 + lz, { h, biome, freeze } = column2(seed, x, z), bm = BIOMES[biome], p = patched(seed, bm, x, z, h);
+    for (let y = 0; y < h; y++) data[CI(lx, y, lz)] = layer2(bm, y, h, p);
+    for (let y = h; y < S; y++) data[CI(lx, y, lz)] = WATER;           // still water: sources
+    // a cold sea freezes over in floes
+    if (h < S && freeze > 0 && vnoise(seed ^ K_ICE, x / 6, z / 6) * 0.85 + hash2(seed ^ K_ICE, x, z) * 0.15 < freeze) data[CI(lx, S - 1, lz)] = ICE;
   }
-  // trees from this chunk and its neighbours whose canopies reach in
   for (const t of treesNear(seed, x0, z0, x0 + CS - 1, z0 + CS - 1)) stampTree(seed, data, x0, z0, t);
   return data;
 }
 
-/* ============================ SPAWN ============================ */
-/**
- * The spawn column: the beach or grass column nearest the world centre (on the central island)
- * with no tree over it. The player stands at y = columnHeight(seed, x, z).
- */
-export function findSpawn(seed: number): [number, number] {
-  const ok = (x: number, z: number) => {
-    const h = columnHeight(seed, x, z);
-    if (h < S || h >= S + 12) return false;                    // water, or a bare stone peak
-    return treesNear(seed, x, z, x, z).length === 0;            // no trunk or leaves above
-  };
+/** Generator 2's spawn: the dry grass nearest the middle of the start island, with no tree over it */
+function findSpawn2(seed: number): [number, number] {
   const cx = W / 2, cz = D / 2;
-  for (let r = 0; r < W / 2; r++) {                              // square rings outward from the centre
-    for (let i = -r; i <= r; i++) {
-      for (const [x, z] of [[cx + i, cz - r], [cx + i, cz + r], [cx - r, cz + i], [cx + r, cz + i]]) {
-        if (inWorld(x, z) && ok(x, z)) return [x, z];
-      }
+  for (let r = 0; r < W / 2; r++) for (let i = -r; i <= r; i++) {
+    for (const [x, z] of [[cx + i, cz - r], [cx + i, cz + r], [cx - r, cz + i], [cx + r, cz + i]]) {
+      if (!inWorld(x, z)) continue;
+      const { h, biome } = column2(seed, x, z);
+      if (h >= S + 1 && BIOMES[biome].top === GRASS && treesNear(seed, x, z, x, z).length === 0) return [x, z];
     }
   }
   return [cx, cz];
+}
+
+const GENERATORS: Record<number, Generator> = {
+  1: { version: 1, seaLevel: g1.SEA_LEVEL_1, cloudY: 64, generateChunk: g1.generateChunk, findSpawn: g1.findSpawn, surfaceHeight: g1.columnHeight },
+  2: {
+    version: 2, seaLevel: SEA_LEVEL, cloudY: 108, generateChunk: generateChunk2, findSpawn: findSpawn2,
+    surfaceHeight: (seed, x, z) => column2(seed, x, z).h,
+  },
+};
+
+/** The generator with this version; throws for a version this build doesn't know. */
+export function generator(version: number): Generator {
+  const g = GENERATORS[version];
+  if (!g) throw new Error(`unknown world generator ${version}`);
+  return g;
 }
