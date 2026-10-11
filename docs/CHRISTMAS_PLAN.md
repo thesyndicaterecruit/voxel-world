@@ -520,7 +520,7 @@ Fill these in as you go; drop them into the script and letter files:
 
 ## Checklist
 
-- [ ] Milestone 1a — Christmas blocks: the cubes
+- [x] Milestone 1a — Christmas blocks: the cubes
 - [ ] Milestone 1b — Christmas blocks: decorations
 - [ ] Milestone 2 — Snowfall and winter atmosphere
 - [ ] Milestone 3 — Entity system and Bentley's model

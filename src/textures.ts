@@ -36,10 +36,9 @@ function tn(x: number, y: number, cx: number, cy: number, s: number): number {
 }
 const pick = (p: RGB[], v: number) => p[Math.max(0, Math.min(p.length - 1, Math.floor(v * p.length)))];
 const rx = () => Math.floor(trand() * TS);
-function tile(paint: Painter): HTMLCanvasElement {
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = TS;
-  const g = cv.getContext('2d')!, img = g.createImageData(TS, TS), d = img.data;
+/** Paint a tile: TS × TS RGBA pixels, rows top down (the canvas's layout; no DOM needed, so tests can paint too) */
+export function paintTile(paint: Painter): Uint8ClampedArray {
+  const d = new Uint8ClampedArray(TS * TS * 4);
   const put: Put = (x, y, c, k = 1, a = 255) => {
     x = ((x % TS) + TS) % TS; y = ((y % TS) + TS) % TS;
     const i = (y * TS + x) * 4;
@@ -47,6 +46,13 @@ function tile(paint: Painter): HTMLCanvasElement {
   };
   const each: Each = (f) => { for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) f(x, y); };
   paint(put, each);
+  return d;
+}
+function tile(paint: Painter): HTMLCanvasElement {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = TS;
+  const g = cv.getContext('2d')!, img = g.createImageData(TS, TS);
+  img.data.set(paintTile(paint));
   g.putImageData(img, 0, 0);
   return cv;
 }
@@ -474,13 +480,154 @@ const vines: Painter = (put, each) => {
   }
 };
 
+/* ---------- Christmas: presents, candy canes, gingerbread and icing, snow bricks, frosted glass, puzzle ice ---------- */
+/** A present's colours (blocks.ts PRESENTS order): its paper, the dots printed on it, its ribbon */
+const PRESENT_COLOURS = [
+  [0xc41f2b, 0xe34a50, 0xf0bf3a],                // red, gold ribbon
+  [0x1f7a36, 0x379a4d, 0xd42a33],                // green, red ribbon
+  [0xd9a12a, 0xf0c75c, 0xc41f2b],                // gold, red ribbon
+  [0xee6fa9, 0xf9a9cc, 0xfaf3f6],                // pink, white ribbon
+];
+/**
+ * A present's tile: wrapping paper with a little dot pattern and soft creases, a satin ribbon where
+ * `band` says (how far across it, 0 … 5, or −1; and how far along), and the box's edge darker so
+ * stacked presents read as separate boxes
+ */
+function wrapped(put: Put, each: Each, [p, d, r]: number[], band: (x: number, y: number) => [number, number]): void {
+  const base = hx(p), spot = hx(d), rb = hx(r);
+  each((x, y) => {
+    const edge = Math.min(x, y, TS - 1 - x, TS - 1 - y) === 0 ? 0.8 : 1, [at, along] = band(x, y);
+    if (at >= 0) { put(x, y, rb, edge * (at === 0 || at === 5 ? 0.78 : at === 1 ? 1.1 : 1) * (0.94 + 0.1 * tn(along, at, 8, 2, 101))); return; }
+    const dx = (x + ((y >> 3) & 1) * 4) & 7, dy = y & 7;
+    put(x, y, dx >= 3 && dx <= 4 && dy >= 3 && dy <= 4 ? spot : base, edge * (0.93 + 0.1 * tn(x, y, 8, 8, 100) + 0.04 * (trand() - 0.5)));
+  });
+}
+/** The ribbon down the middle of a side, x 13 … 18 */
+const presentSide = (c: number[]): Painter => (put, each) => wrapped(put, each, c, (x, y) => [x >= 13 && x <= 18 ? x - 13 : -1, y]);
+/** Which part of the bow a texel of a present's top is: 0 none, 1 a loop, 2 inside a loop, 3 the knot, 4 a tail */
+function bowPart(x: number, y: number): number {
+  const X = x + 0.5, Y = y + 0.5;
+  if (Math.abs(X - 16) <= 2.5 && Math.abs(Y - 15) <= 2.5) return 3;
+  for (const s of [-1, 1]) {
+    const dx = X - (16 + s * 6.5), dy = Y - 12, c = Math.cos(0.5), sn = Math.sin(0.5) * s;
+    const u = (dx * c + dy * sn) / 6.2, v = (-dx * sn + dy * c) / 4.2, e = u * u + v * v;
+    if (e <= 1) return e < 0.22 ? 2 : 1;
+  }
+  for (const s of [-1, 1]) {                    // tails from the knot down and out, notched at the end
+    const ax = 16 + s * 1.5, ay = 17, bx = 16 + s * 7, by = 27.5, lx = bx - ax, ly = by - ay, len = Math.hypot(lx, ly);
+    const t = ((X - ax) * lx + (Y - ay) * ly) / (len * len), perp = Math.abs(((X - ax) * ly - (Y - ay) * lx) / len);
+    if (t >= 0 && t <= 1 && perp <= 1.6 && !(t * len > len - 1.6 + perp * 0.9 && perp < 1)) return 4;
+  }
+  return 0;
+}
+/** The top: the ribbon both ways round the box, crossing in the middle, and a bow on it */
+const presentTop = (c: number[]): Painter => (put, each) => {
+  const rb = hx(c[2]), pp = hx(c[0]), under = (x: number, y: number): RGB => ((x >= 13 && x <= 18) || (y >= 13 && y <= 18) ? rb : pp);
+  wrapped(put, each, c, (x, y) => (x >= 13 && x <= 18 ? [x - 13, y] : y >= 13 && y <= 18 ? [y - 13, x] : [-1, 0]));
+  // the bow's shadow, then its loops, knot and tails, outlined so it stands out from the ribbon under it
+  each((x, y) => { if (!bowPart(x, y) && bowPart(x - 1, y - 1)) put(x, y, under(x, y), 0.62); });
+  each((x, y) => {
+    const part = bowPart(x, y);
+    if (!part) return;
+    const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([i, j]) => { const q = bowPart(x + i, y + j); return q !== part && q !== 2 && part !== 2; });
+    let k = part === 2 ? 0.5 : part === 3 ? 1.12 : part === 4 ? 0.9 : 1.02 + 0.12 * (tn(x, y, 4, 4, 102) - 0.5);
+    if (part === 3 && (x === 14 || y === 13)) k = 1.25;          // light catching the knot
+    put(x, y, rb, edge ? k * 0.7 : k);
+  });
+};
+/** Candy cane: diagonal stripes (16 texels a turn, so they run on from block to block) — thick, white, thin, white — a little rounded */
+const candyCane = (thick: number, thin: number): Painter => (put, each) => {
+  const red = hx(thick), red2 = hx(thin), white = hx(0xf6f1ee);
+  each((x, y) => {
+    const s = (x + y) & 15, n = 0.97 + 0.05 * tn(x, y, 8, 8, 103);
+    if (s < 6) put(x, y, red, n * (s === 0 ? 1.12 : s === 5 ? 0.82 : 1));
+    else if (s === 10 || s === 11) put(x, y, red2, n * (s === 10 ? 1.06 : 0.9));
+    else put(x, y, white, n * (s === 6 || s === 12 ? 0.92 : 1));
+  });
+  for (let i = 0; i < 10; i++) { const x = rx(), y = rx(); if (((x + y) & 15) < 5) put(x, y, red, 1.3); }   // gloss
+};
+const P_GINGER = pal(0x84461c, 0x934f21, 0xa15927, 0xae632d, 0xbb6e34);
+const gingerbread: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_GINGER, 0.45 * tn(x, y, 8, 8, 104) + 0.25 * tn(x, y, 4, 4, 105) + 0.3 * trand())));
+  for (let i = 0; i < 26; i++) put(rx(), rx(), hx(0x5a2d10));          // spice
+  for (let i = 0; i < 10; i++) { const x = rx(), y = rx(); put(x, y, hx(0xd0945a)); put(x + 1, y, hx(0xc2844c)); }   // baked sugar
+};
+const P_ICING = pal(0xeee5da, 0xf3ece3, 0xf7f2eb, 0xfaf7f2, 0xfefcf9);
+const icing: Painter = (put, each) => {
+  each((x, y) => put(x, y, pick(P_ICING, 0.55 * tn(x, y, 16, 8, 106) + 0.3 * tn(x, y, 8, 8, 107) + 0.15 * trand())));
+  for (let i = 0; i < 8; i++) put(rx(), rx(), hx(0xffffff));
+};
+/** Gingerbread with icing, a side: gingerbread, and icing poured over the top running down it in rounded drips */
+const icedGingerbread: Painter = (put, each) => {
+  gingerbread(put, each);
+  const len = new Float32Array(TS).fill(4);
+  for (let i = 0, x0 = Math.floor(trand() * 8); i < 4; i++) {
+    const c = x0 + i * 8 + trand() * 2, w = 1.8 + trand() * 1.2, l = 4 + trand() * 8;
+    for (let x = 0; x < TS; x++) {
+      // a drip: straight down, its end round (wraps round the tile, so the drips tile)
+      const d = Math.abs(((x + 0.5 - c + TS * 1.5) % TS) - TS / 2);
+      if (d < w) len[x] = Math.max(len[x], 4 + l - w + Math.sqrt(w * w - d * d));
+      else if (d < w + 1.5) len[x] = Math.max(len[x], 4 + (w + 1.5 - d) * 0.8);       // the icing thickens round it
+    }
+  }
+  each((x, y) => {
+    const n = Math.round(len[x]);
+    if (y < n) put(x, y, pick(P_ICING, 0.4 + 0.4 * tn(x, y, 8, 4, 108) + 0.2 * trand()), y === 0 ? 1.02 : y === n - 1 ? 0.88 : 1);
+    else if (y === n) put(x, y, P_GINGER[0], 0.7);             // shadow under the icing
+  });
+  for (let x = 0; x < TS; x++) if (len[x] > 7 && len[(x + TS - 1) % TS] > 7) put(x, Math.round(len[x]) - 3, hx(0xffffff));   // gloss on the drips
+};
+const P_SNOWB = pal(0xdbe5ee, 0xe3ebf2, 0xeaf1f6, 0xf1f6f9, 0xf8fbfd);
+const snowBricks: Painter = (put, each) => {
+  // big blocks of packed snow, a row of two to a tile, the rows offset, thin blue-grey joints
+  each((x, y) => {
+    const row = y >> 3, yy = y & 7, sx = (x + (row & 1) * 8) & 31, bx = sx & 15;
+    if (yy === 7 || bx === 15) { put(x, y, hx(0xa4b7c9), 0.95 + 0.08 * trand()); return; }
+    let k = 0.95 + 0.06 * thash(sx >> 4, row, 109);
+    if (yy === 0) k *= 1.04; else if (yy === 6) k *= 0.9;
+    if (bx === 0) k *= 1.02; else if (bx === 14) k *= 0.93;
+    put(x, y, pick(P_SNOWB, 0.5 * tn(x, y, 8, 8, 110) + 0.5 * trand()), k);
+  });
+};
+const frostedGlass: Painter = (put, each) => {
+  // glass with frost grown over it: a band round the edges, thickest in the corners, its inner edge
+  // gently wavy with little crystals on it; a clear window in the middle with glass's glare
+  each((x, y) => {
+    const e = Math.min(x, y, TS - 1 - x, TS - 1 - y), dx = x - 15.5, dy = y - 15.5;
+    const r = 0.6 * Math.max(Math.abs(dx), Math.abs(dy)) + 0.4 * Math.hypot(dx, dy), a = Math.atan2(dy, dx);
+    const f = r + 3 * (0.7 * tn(x, y, 8, 8, 111) + 0.3 * tn(x, y, 4, 4, 112) - 0.5) + 1.6 * Math.max(0, Math.sin(a * 10 + 1)) ** 4;
+    if (e <= 1) put(x, y, hx(e === 0 ? 0xb4cad8 : 0xe9f3f8), 0.97 + 0.05 * trand());        // the frame, like glass's
+    else if (f > 11) put(x, y, hx(f > 13 ? 0xe4eff7 : f > 11.8 ? 0xd0e2ee : 0xf6fbff), 0.97 + 0.05 * trand());   // frost, bright at its edge
+    else put(x, y, hx(0xd6eaf3), 1, 0);                                                     // clear
+  });
+  for (let i = 0; i < 7; i++) for (let j = 0; j < 2; j++) put(10 + i + j, 18 - i, hx(0xf7fcff));   // glare
+  for (let i = 0; i < 4; i++) put(11 + i, 22 - i, hx(0xf7fcff));
+};
+const P_PUZZLE = pal(0x6fbfd4, 0x7cc7da, 0x8ad0e1, 0x98d8e7, 0xa7e0ed);
+const puzzleIce: Painter = (put, each) => {
+  // one square tile a block: a dark groove round it, a bevel, smooth ice with glare, a snowflake in the middle
+  each((x, y) => {
+    const e = Math.min(x, y, TS - 1 - x, TS - 1 - y), lit = x + y < TS - 1;
+    if (e === 0) { put(x, y, hx(0x3c7a96)); return; }
+    if (e === 1) { put(x, y, hx(lit ? 0xe2f7fb : 0x5aa3bb)); return; }
+    put(x, y, pick(P_PUZZLE, 0.35 + 0.35 * tn(x, y, 16, 16, 113) + 0.12 * trand()), e === 2 ? (lit ? 1.07 : 0.92) : 1);
+  });
+  for (const [x0, y0, n] of [[6, 13, 7], [7, 17, 4], [21, 27, 3]]) for (let i = 0; i < n; i++) put(x0 + i, y0 - i, hx(0xd2f2f8));
+  each((x, y) => {
+    const dx = Math.abs(x - 15.5), dy = Math.abs(y - 15.5);
+    if ((dx < 1 && dy < 5) || (dy < 1 && dx < 5) || (dx === dy && dx < 4)) put(x, y, hx(0xf6fdff));
+  });
+};
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
 export const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
   glass, leavesCut, torch, ...frames(stillWater), ...frames(flowWater),
   snow, ice, packedIce, sandstoneTop, sandstoneSide, sandstoneBottom, redSand, ...TERRACOTTA_COLOURS.map(terracotta), gravel, clay,
   podzolTop, podzolSide, coarseDirt, mud, moss, basaltTop, basaltSide, obsidian, ore(P_COAL), ore(P_COPPER), ore(P_IRON), ore(P_GOLD),
-  glowCrystal, tallGrass, seagrass, cactusEnd(1, true), cactusSide, cactusEnd(0.85, false), lilyPad, vines];
+  glowCrystal, tallGrass, seagrass, cactusEnd(1, true), cactusSide, cactusEnd(0.85, false), lilyPad, vines,
+  ...PRESENT_COLOURS.flatMap((c) => [presentTop(c), presentSide(c)]), candyCane(0xd0202c, 0xd0202c), candyCane(0xec5c9f, 0xf08cbd),
+  gingerbread, icing, icedGingerbread, snowBricks, frostedGlass, puzzleIce];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */

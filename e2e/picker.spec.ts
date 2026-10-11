@@ -18,7 +18,7 @@ test('the block picker: tabs, big targets, search; a tap puts a block in the sel
   expect(bb.x - (hb.x + hb.width)).toBeLessThan(16);
   await btn.tap();
   await expect(page.locator('#picker')).toBeVisible();
-  await expect(page.locator('.ptab')).toHaveText(['NATURAL', 'STONE', 'WOOD', 'PLANTS', 'LIGHT', 'LIQUIDS']);
+  await expect(page.locator('.ptab')).toHaveText(['NATURAL', 'STONE', 'WOOD', 'PLANTS', 'LIGHT', 'LIQUIDS', 'CHRISTMAS']);
   await expect(page.locator('.ptab.on')).toHaveText('NATURAL');
   const items = page.locator('.pitem:visible');
   await expect(items).toHaveCount(12);

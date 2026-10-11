@@ -9,9 +9,15 @@ export const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, PLANKS 
   TERRACOTTA = 18, GRAVEL = 24, CLAY = 25, PODZOL = 26, COARSE_DIRT = 27, MUD = 28, MOSS = 29, BASALT = 30, OBSIDIAN = 31,
   COAL_ORE = 32, COPPER_ORE = 33, IRON_ORE = 34, GOLD_ORE = 35, GLOW_CRYSTAL = 36,
   // plants and other blocks that aren't cubes (models: cross, inset, flat)
-  TALL_GRASS = 37, SEAGRASS = 38, CACTUS = 39, LILY_PAD = 40, VINES = 41;
+  TALL_GRASS = 37, SEAGRASS = 38, CACTUS = 39, LILY_PAD = 40, VINES = 41,
+  // Christmas: the cubes
+  /** Presents in 4 colours: PRESENT + 0 … 3, red, green, gold, pink */
+  PRESENT = 42, CANDY_CANE = 46, PINK_CANDY_CANE = 47, GINGERBREAD = 48, ICING = 49, ICED_GINGERBREAD = 50, SNOW_BRICKS = 51,
+  FROSTED_GLASS = 52, PUZZLE_ICE = 53;
 /** The terracotta colours' names, in id order from TERRACOTTA */
 export const TERRACOTTAS = ['Terracotta', 'White Terracotta', 'Orange Terracotta', 'Yellow Terracotta', 'Red Terracotta', 'Brown Terracotta'];
+/** The presents' names, in id order from PRESENT */
+export const PRESENTS = ['Red Present', 'Green Present', 'Gold Present', 'Pink Present'];
 
 // Texture tiles (painted procedurally in textures.ts — no image files).
 // The order must match TILE_PAINTERS in textures.ts; new tiles go at the end.
@@ -27,8 +33,11 @@ export const T_SNOW = 47, T_ICE = 48, T_PACKED_ICE = 49, T_SANDSTONE_TOP = 50, T
   T_RED_SAND = 53, T_TERRACOTTA = 54 /* … 59, one per colour */, T_GRAVEL = 60, T_CLAY = 61, T_PODZOL_TOP = 62, T_PODZOL_SIDE = 63,
   T_COARSE_DIRT = 64, T_MUD = 65, T_MOSS = 66, T_BASALT_TOP = 67, T_BASALT = 68, T_OBSIDIAN = 69, T_COAL_ORE = 70,
   T_COPPER_ORE = 71, T_IRON_ORE = 72, T_GOLD_ORE = 73, T_GLOW_CRYSTAL = 74, T_TALL_GRASS = 75, T_SEAGRASS = 76, T_CACTUS_TOP = 77,
-  T_CACTUS = 78, T_CACTUS_BOTTOM = 79, T_LILY_PAD = 80, T_VINES = 81;
-export const NT = 82;
+  T_CACTUS = 78, T_CACTUS_BOTTOM = 79, T_LILY_PAD = 80, T_VINES = 81,
+  /** The presents' tiles, two per colour (in PRESENTS order): T_PRESENT + 2i the top (ribbon and bow), + 2i + 1 the sides */
+  T_PRESENT = 82 /* … 89 */, T_CANDY_CANE = 90, T_PINK_CANDY_CANE = 91, T_GINGERBREAD = 92, T_ICING = 93, T_ICED_GINGERBREAD = 94,
+  T_SNOW_BRICKS = 95, T_FROSTED_GLASS = 96, T_PUZZLE_ICE = 97;
+export const NT = 98;
 
 /** Which mesh of a chunk a block's faces go into (see streaming.ts / textures.ts). */
 export type RenderPass = 'opaque' | 'cutout' | 'translucent';
@@ -161,6 +170,21 @@ def(CACTUS,  'Cactus',  T_CACTUS_TOP, T_CACTUS,     T_CACTUS_BOTTOM, { opaque: f
 // a lily pad lies on the water's surface (it floats in the block above the water); vines hang on a wall (their state faces it)
 plant(LILY_PAD, 'Lily Pad', T_LILY_PAD, { model: 'flat', support: 'water', jit: 0.08 });
 plant(VINES, 'Vines', T_VINES, { model: 'flat', support: 'wall', replaceable: true });
+// Christmas cubes. A present's icon is its top, the bow; gingerbread with icing has icing's top, gingerbread's bottom
+// and drips of icing painted down its sides.
+PRESENTS.forEach((name, i) => def(PRESENT + i, name, T_PRESENT + 2 * i, T_PRESENT + 2 * i + 1, T_PRESENT + 2 * i + 1,
+  { jit: 0.04, icon: T_PRESENT + 2 * i }));
+def(CANDY_CANE, 'Candy Cane Block', T_CANDY_CANE, T_CANDY_CANE, T_CANDY_CANE, { jit: 0.03 });
+def(PINK_CANDY_CANE, 'Pink Candy Cane Block', T_PINK_CANDY_CANE, T_PINK_CANDY_CANE, T_PINK_CANDY_CANE, { jit: 0.03 });
+def(GINGERBREAD, 'Gingerbread', T_GINGERBREAD, T_GINGERBREAD, T_GINGERBREAD, { jit: 0.05 });
+def(ICING,   'Icing',   T_ICING,     T_ICING,      T_ICING,    { jit: 0.02 });
+def(ICED_GINGERBREAD, 'Gingerbread with Icing', T_ICING, T_ICED_GINGERBREAD, T_GINGERBREAD, { jit: 0.04 });
+def(SNOW_BRICKS, 'Snow Bricks', T_SNOW_BRICKS, T_SNOW_BRICKS, T_SNOW_BRICKS, { jit: 0.03 });
+// frosted glass: glass with frost grown over it (solid texels), clearer in the middle
+def(FROSTED_GLASS, 'Frosted Glass', T_FROSTED_GLASS, T_FROSTED_GLASS, T_FROSTED_GLASS,
+  { opaque: false, renderPass: 'cutout', lightFilter: 0, cullSame: true, jit: 0 });
+// puzzle ice: the slide puzzle's floor, a square to a block; slippery like packed ice (the slide comes with the puzzle)
+def(PUZZLE_ICE, 'Puzzle Ice', T_PUZZLE_ICE, T_PUZZLE_ICE, T_PUZZLE_ICE, { jit: 0.02, slippery: true });
 
 // The hotbar a new world starts with (and every world saved before save version 7 had: their slot
 // numbers point at these). The block picker puts other blocks in its slots; each world keeps its own.
@@ -176,12 +200,14 @@ export const PICKER: readonly { name: string; blocks: readonly number[] }[] = [
   { name: 'Plants', blocks: [LEAVES, MOSS, TALL_GRASS, CACTUS, VINES, LILY_PAD, SEAGRASS] },
   { name: 'Light', blocks: [TORCH, GLOW_CRYSTAL] },
   { name: 'Liquids', blocks: [WATER] },
+  { name: 'Christmas', blocks: [...PRESENTS.map((_, i) => PRESENT + i), CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD,
+    SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE] },
 ];
 
 // Tiles with no "up" direction get a random rotation per face, which hides tiling repetition
 export const ROT = new Set([T_GRASS_TOP, T_DIRT, T_STONE, T_SAND, T_LEAVES, T_BEDROCK, T_LEAVES_CUT, T_SNOW, T_ICE, T_PACKED_ICE,
   T_SANDSTONE_TOP, T_SANDSTONE_BOTTOM, T_RED_SAND, T_GRAVEL, T_CLAY, T_PODZOL_TOP, T_COARSE_DIRT, T_MUD, T_MOSS, T_BASALT_TOP, T_OBSIDIAN,
-  T_COAL_ORE, T_COPPER_ORE, T_IRON_ORE, T_GOLD_ORE, ...TERRACOTTAS.map((_, i) => T_TERRACOTTA + i)]);
+  T_COAL_ORE, T_COPPER_ORE, T_IRON_ORE, T_GOLD_ORE, ...TERRACOTTAS.map((_, i) => T_TERRACOTTA + i), T_GINGERBREAD, T_ICING]);
 
 /* ---------- water's block state ---------- */
 /** The low 3 bits: 0 a source (full), 1–7 flowing, one step lower for each block from where it came */

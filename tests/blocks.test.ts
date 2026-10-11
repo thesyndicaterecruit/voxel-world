@@ -5,12 +5,16 @@ import {
   SNOW, ICE, PACKED_ICE, SANDSTONE, RED_SAND, TERRACOTTA, GRAVEL, CLAY, PODZOL, COARSE_DIRT, MUD, MOSS, BASALT, OBSIDIAN,
   COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL, T_SNOW, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES, BUILD_ON, LOGGABLE,
   SUPPORT, STACKS, OFFSET, S_NONE, S_FLOOR, S_WATER, S_WALL, S_TORCH, WATERLOGGED, waterState,
+  PRESENT, PRESENTS, CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD, SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE, T_PRESENT,
 } from '../src/blocks';
 import { TILE_PAINTERS } from '../src/textures';
 
 /** Plain opaque cubes */
 const CUBES = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, BRICK, BEDROCK];
 const SEE_THROUGH = [GLASS, LEAVES, WATER, TORCH];
+/** The Christmas blocks (Milestone 1a: the cubes) */
+const CHRISTMAS = [...PRESENTS.map((_, i) => PRESENT + i), CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD, SNOW_BRICKS,
+  FROSTED_GLASS, PUZZLE_ICE];
 
 describe('block registry', () => {
   it('keeps every id: chunks and saves store them', () => {
@@ -27,7 +31,12 @@ describe('block registry', () => {
 
   it('keeps the ids of the plants', () => {
     expect([TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES]).toEqual([37, 38, 39, 40, 41]);
-    expect(B.length).toBe(42);
+  });
+
+  it('keeps the ids of the Christmas blocks', () => {
+    expect(CHRISTMAS).toEqual([42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53]);
+    expect(PRESENTS.map((_, i) => B[PRESENT + i].name)).toEqual(['Red Present', 'Green Present', 'Gold Present', 'Pink Present']);
+    expect(B.length).toBe(54);
   });
 
   it('has a painter for every tile', () => {
@@ -68,15 +77,43 @@ describe('block registry', () => {
     expect(new Set(B[SANDSTONE].tex).size).toBe(3);                   // top, sides and bottom
     for (const id of [BASALT, PODZOL]) expect(B[id].tex[0]).not.toBe(B[id].tex[1]);
     // each has tiles of its own (ores, terracotta colours…), and every new tile is used
-    const tiles = B.filter((b) => b.id > TORCH).flatMap((b) => [...new Set(b.tex)]);
+    const tiles = B.filter((b) => b.id > TORCH && b.id < PRESENT).flatMap((b) => [...new Set(b.tex)]);
     expect(new Set(tiles).size).toBe(tiles.length);
-    expect(tiles.filter((t) => t >= T_SNOW).length).toBe(NT - T_SNOW);
+    const used = new Set(B.filter((b) => b.id > TORCH).flatMap((b) => [...b.tex, b.icon]));
+    expect([...used].filter((t) => t >= T_SNOW).length).toBe(NT - T_SNOW);
+  });
+
+  it('describes the Christmas blocks: cubes, frosted glass like glass, puzzle ice slippery like packed ice', () => {
+    for (const id of CHRISTMAS) {
+      expect(B[id].model).toBe('cube');
+      expect([B[id].solid, B[id].lightEmission, B[id].support, B[id].replaceable]).toEqual([true, 0, 'none', false]);
+      expect([TARGETABLE[id], BUILD_ON[id], REPLACEABLE[id]]).toEqual([1, 1, 0]);
+      if (id !== FROSTED_GLASS) expect([B[id].opaque, B[id].renderPass, OCCLUDES[id]]).toEqual([true, 'opaque', 1]);
+    }
+    // frosted glass is glass in everything but its look
+    const behaviour = (id: number) => ({ ...B[id], id: 0, name: '', tex: [0, 0, 0], icon: 0, particle: 0 });
+    expect(behaviour(FROSTED_GLASS)).toEqual(behaviour(GLASS));
+    expect(B[PUZZLE_ICE].slippery).toBe(true);
+    expect(CHRISTMAS.filter((id) => SLIPPERY[id])).toEqual([PUZZLE_ICE]);
+    // presents: a top with the bow (also the icon) and sides with the ribbon, a pair of tiles per colour
+    PRESENTS.forEach((_, i) => expect([B[PRESENT + i].tex, B[PRESENT + i].icon]).toEqual([[T_PRESENT + 2 * i + 1, T_PRESENT + 2 * i, T_PRESENT + 2 * i + 1], T_PRESENT + 2 * i]));
+    // gingerbread with icing: icing on top, gingerbread underneath, and sides of its own (drips)
+    expect(B[ICED_GINGERBREAD].tex[1]).toBe(B[ICING].tex[1]);
+    expect(B[ICED_GINGERBREAD].tex[2]).toBe(B[GINGERBREAD].tex[2]);
+    expect(B.filter((b) => b.tex.includes(B[ICED_GINGERBREAD].tex[0])).map((b) => b.id)).toEqual([ICED_GINGERBREAD]);
+    // the rest have one tile of their own
+    for (const id of [CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE]) expect(new Set(B[id].tex).size).toBe(1);
+    expect(new Set([CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE].map((id) => B[id].tex[0])).size).toBe(7);
   });
 
   it('puts every block but air on exactly one tab of the block picker', () => {
-    expect(PICKER.map((t) => t.name)).toEqual(['Natural', 'Stone', 'Wood', 'Plants', 'Light', 'Liquids']);
+    expect(PICKER.map((t) => t.name)).toEqual(['Natural', 'Stone', 'Wood', 'Plants', 'Light', 'Liquids', 'Christmas']);
     const all = PICKER.flatMap((t) => [...t.blocks]);
     expect(all.slice().sort((a, b) => a - b)).toEqual(B.filter((b) => b.id !== AIR).map((b) => b.id));
+  });
+
+  it('has every Christmas block on the Christmas tab, and nothing else', () => {
+    expect(PICKER.find((t) => t.name === 'Christmas')!.blocks).toEqual(CHRISTMAS);
   });
 
   it('keeps the first 8 hotbar slots, so slot numbers in old saves still mean the same block', () => {
@@ -176,6 +213,15 @@ describe('face culling', () => {
     expect(faceHidden(WATER, WATER)).toBe(true);
     for (const nb of [GLASS, LEAVES, TORCH]) expect(faceHidden(WATER, nb)).toBe(false);
     expect(faceHidden(GLASS, WATER)).toBe(false);
+  });
+
+  it('hides frosted glass against frosted glass, not against glass, and never what is behind it', () => {
+    expect(faceHidden(FROSTED_GLASS, FROSTED_GLASS)).toBe(true);
+    expect(faceHidden(FROSTED_GLASS, GLASS)).toBe(false);
+    expect(faceHidden(GLASS, FROSTED_GLASS)).toBe(false);
+    for (const self of [...CUBES, LEAVES, WATER, PUZZLE_ICE]) expect(faceHidden(self, FROSTED_GLASS)).toBe(false);
+    // the other Christmas blocks are opaque: they hide whatever touches them
+    for (const nb of CHRISTMAS.filter((id) => id !== FROSTED_GLASS)) for (const self of [STONE, GLASS, FROSTED_GLASS, WATER]) expect(faceHidden(self, nb)).toBe(true);
   });
 
   it('never hides a face behind a torch', () => {

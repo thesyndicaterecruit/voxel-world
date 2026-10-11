@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H } from '../src/config';
 import { STONE, GLASS, LEAVES, WATER, TORCH, T_WATER_STILL, T_WATER_FLOW, FALLING, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES,
-  WATERLOGGED, T_TALL_GRASS, T_CACTUS } from '../src/blocks';
+  WATERLOGGED, T_TALL_GRASS, T_CACTUS, PRESENT, T_PRESENT, FROSTED_GLASS, PUZZLE_ICE, ICED_GINGERBREAD, T_ICING, T_ICED_GINGERBREAD,
+  T_GINGERBREAD } from '../src/blocks';
 import { INSET, FLAT_OUT, ON_WATER, CROSS_IN } from '../src/plants';
 import { PAD_VOL, PI, FP, TEX, meshChunk, type PassMesh } from '../src/mesher';
 import { TORCH_MODELS } from '../src/torch';
@@ -61,6 +62,28 @@ describe('chunk mesher', () => {
     const n = TORCH_MODELS[0].length;
     expect(quads([[4, 5, 4, STONE], [4, 6, 4, TORCH]])).toEqual([6, n, 0]);
     for (let s = 1; s <= 4; s++) expect(quads([[4, 5, 4, TORCH]], false, [[4, 5, 4, s]])).toEqual([0, n, 0]);
+  });
+
+  it('meshes the Christmas cubes with their own tiles: a present\'s bow on top, icing on top of gingerbread', () => {
+    /** The tile on each face of a lone block: [top, bottom, sides…] */
+    const faces = (id: number) => {
+      const vs = verts(mesh([[4, 5, 4, id]])[0]!), out: number[][] = [[], [], []];
+      for (let q = 0; q < vs.length / 4; q++) {
+        const f = vs.slice(q * 4, q * 4 + 4);
+        expect(new Set(f.map((v) => v[5])).size).toBe(1);
+        out[f.every((v) => v[1] === 6) ? 0 : f.every((v) => v[1] === 5) ? 1 : 2].push(f[0][5]);
+      }
+      return out;
+    };
+    for (let i = 0; i < 4; i++) expect(faces(PRESENT + i)).toEqual([[T_PRESENT + 2 * i], [T_PRESENT + 2 * i + 1], Array(4).fill(T_PRESENT + 2 * i + 1)]);
+    expect(faces(ICED_GINGERBREAD)).toEqual([[T_ICING], [T_GINGERBREAD], Array(4).fill(T_ICED_GINGERBREAD)]);
+  });
+
+  it('meshes frosted glass like glass: the cutout pass, the face between two of them hidden, but not against glass', () => {
+    expect(quads([[4, 5, 4, FROSTED_GLASS]])).toEqual([0, 6, 0]);
+    expect(quads(pair(FROSTED_GLASS))).toEqual([0, 10, 0]);
+    expect(quads([[4, 5, 4, FROSTED_GLASS], [5, 5, 4, GLASS]])).toEqual([0, 12, 0]);
+    expect(quads([[4, 5, 4, PUZZLE_ICE], [5, 5, 4, ICED_GINGERBREAD]])).toEqual([10, 0, 0]);   // opaque cubes
   });
 });
 

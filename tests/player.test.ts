@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CHUNK_VOL, CI, WALK } from '../src/config';
-import { STONE, ICE, PACKED_ICE } from '../src/blocks';
+import { STONE, ICE, PACKED_ICE, PUZZLE_ICE } from '../src/blocks';
 import { world } from '../src/world';
 import { P, V, player, update, type Controls } from '../src/player';
 
-// A stone floor (its top at y = 20) with lanes of ice and of packed ice in it, running along x
-const FLOOR = 20, STONE_Z = 262, ICE_Z = 270, PACKED_Z = 278;
+// A stone floor (its top at y = 20) with lanes of ice, of packed ice and of puzzle ice in it, running along x
+const FLOOR = 20, STONE_Z = 262, ICE_Z = 270, PACKED_Z = 278, PUZZLE_Z = 286;
 beforeAll(() => {
   for (let cz = 15; cz <= 18; cz++) for (let cx = 15; cx <= 19; cx++) {
     const d = new Uint8Array(CHUNK_VOL);
@@ -15,6 +15,7 @@ beforeAll(() => {
   for (let x = 250; x < 310; x++) for (let dz = -2; dz <= 2; dz++) {
     world.setBlock(x, FLOOR - 1, ICE_Z + dz, ICE);
     world.setBlock(x, FLOOR - 1, PACKED_Z + dz, PACKED_ICE);
+    world.setBlock(x, FLOOR - 1, PUZZLE_Z + dz, PUZZLE_ICE);
   }
 });
 
@@ -44,6 +45,12 @@ describe('walking on ice', () => {
 
   it('packed ice is just as slippery', () => {
     const [, slide] = walk(PACKED_Z, 3), [, ice] = walk(ICE_Z, 3);
+    expect(slide).toBeCloseTo(ice, 5);
+  });
+
+  it('so is puzzle ice (until the puzzle gives it its slide)', () => {
+    const [slow] = walk(PUZZLE_Z, 0.25), [, slide] = walk(PUZZLE_Z, 3), [, ice] = walk(PACKED_Z, 3);
+    expect(slow).toBeLessThan(WALK * 0.5);
     expect(slide).toBeCloseTo(ice, 5);
   });
 });

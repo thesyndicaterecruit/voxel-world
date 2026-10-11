@@ -10,7 +10,7 @@ are islands of 14 biomes (meadows, forests, snowy peaks, deserts, badlands, jung
 volcano, three kinds of ocean…) with the sea at y = 48, whose grass, leaves and water take their
 biome's colours; worlds made before the world grew taller keep the first generator (sea at y = 20)
 so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and
-break/place 41 block types (glass, torches, ice, ores, a glowing crystal, plants among them), any
+break/place 53 block types (glass, torches, ice, ores, a glowing crystal, plants, presents and candy canes among them), any
 of them put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
 plus the player state and hotbar, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
@@ -51,7 +51,7 @@ src/
                      flags, lookup tables, faceHidden() culling rule, waterState (waterlogged plants), HOTBAR (a new
                      world's), PICKER (the picker's tabs), rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise (2D and 3D), fbm (all take the seed); urlSeed()
-  textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
+  textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames; paintTile, pure) → canvases, CanvasTextures,
                      RGBA tile texture array (grass, leaves, water turned grey), the biome tint map (setTints),
                      chunk materials per render pass (the water shader, tints), setUnderwater
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
@@ -111,7 +111,8 @@ src/
                      Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
                      screen + world list, error display
   style.css          All styles
-tests/               Unit tests of the pure modules (Vitest): registry + face culling, plants (popping off when
+tests/               Unit tests of the pure modules (Vitest): registry + face culling, tiles (painted in Node: the ones
+                     before the Christmas tiles unchanged, how the Christmas tiles look), plants (popping off when
                      unsupported, hit boxes, offsets), light (spreading, removal,
                      chunk borders, incremental = fresh, single and batched, high up), mesher (water surfaces too),
                      sections (meshing, splicing, counts, light worked out only as high as needed, water falling
@@ -124,7 +125,7 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      sandbars, cliffs and beaches, stacks and arches, overhangs, caves with hillside entrances,
                      no cave touching water, a cave carved alike across chunk and section borders, ore veins at
                      their depths, crystals only on deep caverns' walls), flowing water (spreading, falling,
-                     draining, infinite sources, chunk borders, saved updates), sliding on ice, swimming physics (sinking,
+                     draining, infinite sources, chunk borders, saved updates), sliding on ice (and puzzle ice), swimming physics (sinking,
                      swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
@@ -133,7 +134,9 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
-                     teleport by touch, then every biome pictured from the air; generation time per chunk)
+                     teleport by touch, then every biome pictured from the air; generation time per chunk), the
+                     Christmas blocks (their tab by touch, in portrait too, placed and broken; by day, at sunset
+                     and at night, each the colour it should be, frosted glass half see-through)
 docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
                      CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
@@ -258,7 +261,8 @@ light changed, ahead of everything else.
 - **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
-  texture changes.
+  texture changes. `tests/textures.test.ts` paints every tile in Node (`paintTile`) and keeps a
+  fingerprint of the tiles before the Christmas ones, so a painter inserted in the middle fails it.
 - **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
   deep water gets darker, model 'liquid'). Generation fills the air below the sea level
   (`world.seaLevel`, the generator's) with still water (sources); generator 1 also digs lakes into
@@ -328,14 +332,19 @@ light changed, ahead of everything else.
   never change; new blocks get new ids: 0–12 the first blocks, 13–36 the islands' — snow, ice,
   packed ice, sandstone, red sand, terracotta in 6 colours, gravel, clay, podzol, coarse dirt, mud,
   moss, basalt, obsidian, coal/copper/iron/gold ore, glow crystal — 37–41 plants: tall grass,
-  seagrass, cactus, lily pad, vines), a name, a tile per face kind
-  (sandstone has a top, sides and bottom; basalt and podzol a top and sides), `solid` (collides), `opaque`
+  seagrass, cactus, lily pad, vines — 42–53 Christmas cubes: presents in 4 colours (`PRESENT` + 0 … 3,
+  red, green, gold, pink; `PRESENTS` their names), candy cane and pink candy cane blocks, gingerbread,
+  icing, gingerbread with icing, snow bricks, frosted glass, puzzle ice), a name, a tile per face kind
+  (sandstone has a top, sides and bottom; basalt and podzol a top and sides; a present a top with a bow
+  — also its icon — and sides with a ribbon, a pair of tiles per colour from `T_PRESENT`; gingerbread
+  with icing has icing's top, gingerbread's bottom and sides of its own, drips painted down them),
+  `solid` (collides), `opaque`
   (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' | 'translucent'),
   `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves, 2 water, 15
   opaque), `model` ('cube' | 'torch' | 'liquid' | 'cross' | 'inset' | 'flat', MODEL: M_CUBE …),
   `cullSame` (two of it hide their shared face: glass, water), `jit` (brightness variation), `icon`
   (hotbar tile), `particle` (tile of the bits that fly off when it breaks), `slippery` (the feet
-  barely grip: ice and packed ice, see player.ts), optional `fastTex` (tiles when meshed as an opaque
+  barely grip: ice, packed ice and puzzle ice, see player.ts), optional `fastTex` (tiles when meshed as an opaque
   cube: leaves with Fancy leaves off), and for plants (see Plants) `support` ('none' | 'floor' |
   'water' | 'wall' | 'torch'), `stacks`, `waterlog` ('no' | 'can' | 'only'), `replaceable` (building
   there replaces it), `offset` (drawn off the middle of its block), `slow` (× the player's speed in
@@ -344,7 +353,11 @@ light changed, ahead of everything else.
   cubes darken AO corners. Ice is a cube in the translucent pass (like water: `lightFilter` 2,
   `cullSame`, no jitter so its top reflects the sky in the water shader, which animates only the
   water's own tiles). The glow crystal is an opaque cube that gives off light 10, and its tile is
-  drawn at full brightness (`TILE_KIND` 3 in `textures.ts`: the vertex shader sets its light to 1). Hot loops use the `Uint8Array` tables
+  drawn at full brightness (`TILE_KIND` 3 in `textures.ts`: the vertex shader sets its light to 1).
+  Frosted glass is glass in everything but its tile (cutout, `cullSame`, `lightFilter` 0): a frosted
+  band round a clear window, every texel solid or clear (the cutout pass is alpha-tested), so it
+  shows part of what's behind it. Puzzle ice is an opaque cube, a bevelled square to a block so a
+  floor of it reads as a grid, `slippery` like packed ice until Milestone 9 gives it the slide. Hot loops use the `Uint8Array` tables
   (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, `REPLACEABLE` (air, liquids, plants that make way),
   `BUILD_ON` (cubes and the cactus), `SUPPORT`, `LOGGABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
@@ -387,8 +400,9 @@ light changed, ahead of everything else.
   `HOTBAR`).
 - **Block picker** (`ui.ts`, the ▦ button right of the hotbar, or B): every block but air on a grid
   of big targets (3D icons drawn from the tiles: top and two sides shaded like faces in the world),
-  a tab per category (`PICKER` in `blocks.ts`: Natural, Stone, Wood, Plants, Light, Liquids; every
-  block is on exactly one) and a search box (any tab clears it). A tap on a block puts it in the
+  a tab per category (`PICKER` in `blocks.ts`: Natural, Stone, Wood, Plants, Light, Liquids,
+  Christmas; every block is on exactly one; in portrait the tabs wrap three to a row, Christmas alone
+  on the last) and a search box (any tab clears it). A tap on a block puts it in the
   selected slot and switches to Place; the hotbar stays above the picker (`#hotrow` is over
   `#picker`), so a tap on a slot chooses the next one to fill. Touches on the grid are handled like
   the hotbar's: a tap picks, an up-down swipe scrolls it (`#pgrid` doesn't scroll by itself under the
