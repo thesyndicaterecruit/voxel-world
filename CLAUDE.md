@@ -134,7 +134,7 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
                      teleport by touch, then every biome pictured from the air; generation time per chunk)
-docs/                Pictures for pull requests (not part of the game)
+docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
 .github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact
@@ -555,6 +555,10 @@ light changed, ahead of everything else.
   references relative.
 
 ## Roadmap
+
+**Current focus: Bentley's Christmas Adventure** — a story mode, due 25 December 2026. The plan,
+milestones and story are in [docs/CHRISTMAS_PLAN.md](docs/CHRISTMAS_PLAN.md); work through it one
+milestone at a time, and it takes priority over the ideas below.
 
 Ideas, roughly in priority order. Nothing here is committed to.
 
