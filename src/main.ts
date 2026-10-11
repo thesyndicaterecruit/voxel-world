@@ -14,6 +14,7 @@ import { createWater } from './water';
 import { P, V, player, playerEvents, spawn, update, collides, aim } from './player';
 import { playSound } from './audio';
 import { createInteraction } from './interact';
+import { popUnsupported } from './plants';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
   setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock } from './ui';
@@ -113,15 +114,23 @@ async function boot(): Promise<void> {
   const fx = createEffects(scene, textures);
   // flowing water: torches it reaches pop off; a chunk with water updates pending has something to save
   const water = createWater(world, { onWash: (x, y, z, id) => fx.burst(x, y, z, id), onPending: (cx, cz) => save.touch(cx, cz) });
-  // block changes: the water around them moves, and all the changes made together (one action, one
-  // tick of water) are relit and re-meshed in one go, right after
-  const changes: number[] = [];
+  // block changes: the water around them moves, whatever they held up pops off (torches, plants: and
+  // what those held up), and all the changes made together (one action, one tick of water) are relit
+  // and re-meshed in one go, right after
+  const changes: number[] = [], moved: number[] = [];
   let flushing = false;
+  const flush = () => {
+    for (let i = 0; i < moved.length; i += 3) popUnsupported(world, moved[i], moved[i + 1], moved[i + 2], (x, y, z, id) => fx.burst(x, y, z, id));
+    moved.length = 0;
+    flushing = false;
+    streamer.blocksChanged(changes.splice(0));
+  };
   world.onChange = (x, y, z, old) => {
     changes.push(x, y, z, old);
+    moved.push(x, y, z);
     save.touch(x >> CB, z >> CB);
     water.blockChanged(x, y, z, old);
-    if (!flushing) { flushing = true; queueMicrotask(() => { flushing = false; streamer.blocksChanged(changes.splice(0)); }); }
+    if (!flushing) { flushing = true; queueMicrotask(flush); }
   };
   world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); };
   // hitting the water fast throws up a splash

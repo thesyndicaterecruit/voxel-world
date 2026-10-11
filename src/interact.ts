@@ -1,15 +1,21 @@
 import { H } from './config';
-import { AIR, BEDROCK, GRASS, DIRT, WATER, REPLACEABLE, SOLID, OPAQUE, MODEL, TORCH } from './blocks';
+import { AIR, BEDROCK, GRASS, DIRT, WATER, B, REPLACEABLE, BUILD_ON, SOLID, OPAQUE, MODEL, SUPPORT, LOGGABLE, WATERLOGGED, M_TORCH,
+  M_LIQUID, S_WATER, S_WALL, S_TORCH } from './blocks';
 import { world, type Hit } from './world';
 import { P, V, aim, collides, overlapsPlayer } from './player';
 import { hud, toast } from './ui';
-import { TORCH_SUPPORT, torchStateFor, torchBox } from './torch';
+import { torchStateFor } from './torch';
+import { blockBox, holds } from './plants';
 import type { Effects } from './effects';
 
 /* ===================== BREAK / PLACE ===================== */
+// Breaking a block leaves air (water, for a waterlogged plant); whatever it held up pops off by itself
+// (main.ts runs popUnsupported after every change). Building goes against the face of the block hit,
+// or into it where it makes way (grass, seagrass); nothing builds against a torch or a plant.
 const buzz = (ms: number) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) { /* ignore */ } };
-const isTorch = (id: number) => MODEL[id] === 1;
 const UNIT = [0, 0, 0, 1, 1, 1];
+/** Why a block that needs holding up can't stay where it was put, by what it needs (SUPPORT) */
+const UNHELD = ['', 'Needs solid ground under it', 'Goes on water', 'Goes on walls', 'Torches need a solid block'];
 
 export interface Interaction {
   /** Break or place (depending on the HUD mode) at the crosshair. */
@@ -23,39 +29,42 @@ export interface Interaction {
  * saying why it can't go there, or null when there's simply no room.
  */
 function placement(h: Hit, id: number): { x: number; y: number; z: number; state: number } | string | null {
-  if (isTorch(world.getBlock(h.x, h.y, h.z))) return null;           // nothing builds against a torch
-  const x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
+  // water is only aimed at to put something on it (a lily pad)
+  const target = world.getBlock(h.x, h.y, h.z), liquid = MODEL[target] === M_LIQUID;
+  let x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
+  if (REPLACEABLE[target] && !liquid) { x = h.x; y = h.y; z = h.z; }   // grass, seagrass, vines make way
+  else if (!BUILD_ON[target] && !liquid) return null;                // nothing builds against a torch or a plant
   if (!world.isLoaded(x, z) || y < 0 || y >= H || !REPLACEABLE[world.getBlock(x, y, z)]) return null;
-  if (!isTorch(id)) return { x, y, z, state: 0 };
-  if (world.getBlock(x, y, z) === WATER) return "Torches don't burn under water";
-  // torches stand on top of a block or lean out of its side, and need a solid cube to hold them
-  const state = torchStateFor(h.nx, h.ny, h.nz), support = world.getBlock(h.x, h.y, h.z);
-  if (state < 0) return 'Torches go on top of blocks or on walls';
-  if (!SOLID[support] || MODEL[support] !== 0) return 'Torches need a solid block';
+  const b = B[id], sup = SUPPORT[id], wet = world.water(x, y, z) >= 0;
+  let state = 0;
+  if (sup === S_TORCH || sup === S_WALL) {
+    // torches stand on top of a block or lean out of its side; vines hang on its side
+    state = torchStateFor(h.nx, h.ny, h.nz);
+    if (state < 0 || (sup === S_WALL && state === 0)) return sup === S_WALL ? UNHELD[S_WALL] : 'Torches go on top of blocks or on walls';
+  }
+  if (MODEL[id] === M_TORCH && wet) return "Torches don't burn under water";
+  if (!SOLID[id] && b.model !== 'liquid') {
+    // in water, a plant that can sit there is waterlogged; the others don't grow there, and water plants grow nowhere else
+    if (wet && b.waterlog === 'no') return sup === S_WATER ? UNHELD[S_WATER] : "Doesn't grow under water";
+    if (!wet && b.waterlog === 'only') return 'Only grows under water';
+    if (wet) state |= WATERLOGGED;
+  }
+  if (sup && !holds(world, id, state, x, y, z)) return UNHELD[sup];
   return { x, y, z, state };
 }
 
 export function createInteraction(fx: Effects): Interaction {
-  /** Torches held up by block (x, y, z) fall off once it's gone. */
-  function popTorches(x: number, y: number, z: number): void {
-    TORCH_SUPPORT.forEach(([dx, dy, dz], state) => {
-      const tx = x - dx, ty = y - dy, tz = z - dz;
-      if (isTorch(world.getBlock(tx, ty, tz)) && world.getState(tx, ty, tz) === state) {
-        world.setBlock(tx, ty, tz, AIR);
-        fx.burst(tx, ty, tz, TORCH);
-      }
-    });
-  }
+  /** What the crosshair is on: a lily pad (or anything else that goes on water) about to be placed aims at the water's surface too */
+  const target = () => aim(hud.mode === 'place' && SUPPORT[hud.items[hud.sel]] === S_WATER);
 
   function act(): void {
-    const h = aim();
+    const h = target();
     if (!h) return;
     if (hud.mode === 'break') {
-      const id = world.getBlock(h.x, h.y, h.z);
+      const id = world.getBlock(h.x, h.y, h.z), st = world.getState(h.x, h.y, h.z);
       if (id === BEDROCK) { toast('Bedrock is unbreakable'); return; }
-      world.setBlock(h.x, h.y, h.z, AIR);
+      world.setBlock(h.x, h.y, h.z, st & WATERLOGGED && LOGGABLE[id] ? WATER : AIR);
       fx.burst(h.x, h.y, h.z, id);
-      popTorches(h.x, h.y, h.z);
       buzz(14);
       return;
     }
@@ -76,12 +85,12 @@ export function createInteraction(fx: Effects): Interaction {
   }
 
   function updateTarget(playing: boolean): void {
-    const h = playing ? aim() : null;
+    const h = playing ? target() : null;
     fx.outline.visible = !!h;
     fx.ghost.visible = false;
     if (!h) return;
-    // a torch's outline hugs its hit box
-    fx.showOutline(h.x, h.y, h.z, isTorch(world.getBlock(h.x, h.y, h.z)) ? torchBox(world.getState(h.x, h.y, h.z)) : UNIT);
+    // a torch's or a plant's outline hugs its hit box
+    fx.showOutline(h.x, h.y, h.z, blockBox(world.getBlock(h.x, h.y, h.z), world.getState(h.x, h.y, h.z), world.seed, h.x, h.y, h.z) ?? UNIT);
     if (hud.mode !== 'place') return;
     const id = hud.items[hud.sel], at = placement(h, id);
     if (!at || typeof at === 'string') return;

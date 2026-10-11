@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHUNK_VOL, CI } from '../src/config';
-import { AIR, STONE, WATER, TORCH, LEVEL, FALLING } from '../src/blocks';
+import { AIR, STONE, WATER, TORCH, LEVEL, FALLING, SEAGRASS, TALL_GRASS, WATERLOGGED } from '../src/blocks';
 import { World } from '../src/world';
 import { createWater, MAX_UPDATES } from '../src/water';
 
@@ -17,10 +17,10 @@ function testWorld(from?: World) {
   const washed: number[][] = [];
   w.onChange = (x, y, z, old) => water.blockChanged(x, y, z, old);
   const run = (n: number) => { for (let i = 0; i < n; i++) water.tick(); };
-  /** 'S' a source, 'F' falling, 1–7 a level, '.' no water */
+  /** 'S' a source (a waterlogged plant too), 'F' falling, 1–7 a level, '.' no water */
   const at = (x: number, y: number, z: number) => {
-    if (w.getBlock(x, y, z) !== WATER) return '.';
-    const s = w.getState(x, y, z);
+    const s = w.water(x, y, z);
+    if (s < 0) return '.';
     return s & FALLING ? 'F' : (s & LEVEL) === 0 ? 'S' : s & LEVEL;
   };
   return { w, water, run, at, washed };
@@ -106,6 +106,30 @@ describe('flowing water', () => {
     t.run(4);
     expect(t.at(X + 2, Y, Z)).toBe(2);
     expect(t.washed).toEqual([[X + 2, Y, Z, TORCH]]);
+  });
+
+  it('flows out of a waterlogged plant, a source, and never into one', () => {
+    const t = testWorld();
+    t.w.setBlock(X, Y, Z, SEAGRASS, WATERLOGGED);
+    t.run(12);
+    expect([t.at(X, Y, Z), t.at(X + 1, Y, Z), t.at(X + 3, Y, Z), t.at(X, Y, Z - 7)]).toEqual(['S', 1, 3, 7]);
+    expect([t.w.getBlock(X, Y, Z), t.w.getState(X, Y, Z)]).toEqual([SEAGRASS, WATERLOGGED]);   // still the plant
+    // flowing water reaching a plant that can sit in water leaves it be (it is full already)
+    const u = testWorld();
+    u.w.setBlock(X + 1, Y, Z, SEAGRASS, WATERLOGGED);
+    u.w.setBlock(X, Y, Z, WATER);
+    u.run(12);
+    expect([u.w.getBlock(X + 1, Y, Z), u.w.getState(X + 1, Y, Z)]).toEqual([SEAGRASS, WATERLOGGED]);
+    expect(u.washed).toEqual([]);
+  });
+
+  it('washes plants that can\'t be in water away', () => {
+    const t = testWorld();
+    t.w.setBlock(X + 2, Y, Z, TALL_GRASS);
+    t.w.setBlock(X, Y, Z, WATER);
+    t.run(12);
+    expect(t.washed).toEqual([[X + 2, Y, Z, TALL_GRASS]]);
+    expect(t.at(X + 2, Y, Z)).toBe(2);
   });
 
   it('leaves water nobody disturbed alone, and updates at most MAX_UPDATES blocks a tick', () => {

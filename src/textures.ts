@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
-import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES, T_GLOW_CRYSTAL } from './blocks';
+import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES, T_GLOW_CRYSTAL, T_TALL_GRASS,
+  T_VINES } from './blocks';
 import { W, D } from './config';
 import { GN } from './biomes';
 import { TEX } from './mesher';
@@ -405,13 +406,81 @@ const glowCrystal: Painter = (put, each) => {
   for (let i = 0; i < 8; i++) put(rx(), rx(), hx(0xffffff));
 };
 
+/* ---------- plants (cutout tiles: clear round them; y = 0 is the top of the plant) ---------- */
+const P_SEAGRASS = pal(0x1d5a37, 0x276d43, 0x318050, 0x3c925d, 0x4aa56c);
+/** Blades growing up from the bottom of the tile: `n` of them, `lo`…`hi` texels tall, in `p`'s colours (darker at the foot), swaying by `sway` */
+function blades(put: Put, p: RGB[], n: number, lo: number, hi: number, sway: number): void {
+  for (let i = 0; i < n; i++) {
+    const x0 = 2 + trand() * 27, h = lo + trand() * (hi - lo), lean = (trand() - 0.5) * 0.6, ph = trand() * 6.3, wide = trand() < 0.45;
+    for (let j = 0; j < h; j++) {
+      const t = j / h, x = Math.round(x0 + lean * j * (1 + 0.8 * t) + sway * Math.sin(ph + j * 0.35) * t), y = TS - 1 - j;
+      const c = pick(p, 0.12 + 0.75 * t + 0.13 * trand());
+      put(x, y, c);
+      if (wide && t < 0.55) put(x + 1, y, c, 0.88);
+    }
+  }
+}
+const clear = (put: Put, each: Each, c: RGB) => each((x, y) => put(x, y, c, 1, 0));
+const tallGrass: Painter = (put, each) => {
+  clear(put, each, P_GRASS[1]);
+  blades(put, P_GRASS, 17, 9, 27, 0.6);
+};
+const seagrass: Painter = (put, each) => {
+  clear(put, each, P_SEAGRASS[1]);
+  blades(put, P_SEAGRASS, 12, 16, 31, 2.2);
+};
+const P_CACTUS = pal(0x23491a, 0x2e5a21, 0x3a6b29, 0x467c31, 0x538d3a, 0x62a044);
+/** The cactus seen from above (or below): rings round a pale middle, a dark rim */
+const cactusEnd = (dark: number, spines: boolean): Painter => (put, each) => {
+  each((x, y) => {
+    const r = Math.max(Math.abs(x - 15.5), Math.abs(y - 15.5));
+    if (r > 13.5) { put(x, y, P_CACTUS[0], dark); return; }
+    put(x, y, pick(P_CACTUS, 0.2 + 0.55 * (1 - r / 14) + 0.25 * trand()), dark * (Math.floor(r) % 4 === 0 ? 0.88 : 1));
+  });
+  if (spines) for (let i = 0; i < 10; i++) { const x = 4 + Math.floor(trand() * 24), y = 4 + Math.floor(trand() * 24); put(x, y, hx(0xe9e3b4)); }
+};
+const cactusSide: Painter = (put, each) => {
+  // ribs four texels wide with dark grooves between them, spines in rows along the ribs
+  each((x, y) => {
+    const r = x & 3;
+    if (r === 3) { put(x, y, P_CACTUS[0], 0.9 + 0.1 * trand()); return; }
+    put(x, y, pick(P_CACTUS, (r === 1 ? 0.7 : 0.45) + 0.2 * tn(x, y, 4, 8, 90) + 0.12 * trand()));
+  });
+  for (let x = 1; x < TS; x += 4) for (let y = 2 + ((x >> 2) & 1) * 3; y < TS; y += 6) { put(x, y, hx(0xe9e3b4)); put(x, y + 1, P_CACTUS[0]); }
+};
+const P_LILY = pal(0x1c5e1c, 0x236e22, 0x2b7e29, 0x338e31, 0x3e9e3a);
+const lilyPad: Painter = (put, each) => {
+  // a round leaf with a notch cut to its middle, veins running out from there
+  each((x, y) => {
+    const dx = x - 15.5, dy = y - 15.5, r = Math.hypot(dx, dy), a = Math.atan2(dy, dx);
+    if (r > 14 || (a > 0.3 && a < 0.85)) { put(x, y, P_LILY[1], 1, 0); return; }
+    const vein = Math.abs(((a * 7) / Math.PI) % 1) < 0.12 && r > 2;
+    put(x, y, pick(P_LILY, (vein ? 0.1 : 0.45) + 0.3 * (r / 14) + 0.2 * trand()), r > 13 ? 0.82 : 1);
+  });
+};
+const vines: Painter = (put, each) => {
+  // strands hanging from the top, wavering, with small leaves along them
+  clear(put, each, P_LEAF[1]);
+  for (let i = 0; i < 7; i++) {
+    const x0 = 2 + trand() * 27, ph = trand() * 6.3, amp = 1 + trand() * 2;
+    for (let y = 0; y < TS; y++) {
+      const x = Math.round(x0 + amp * Math.sin(ph + y * 0.3));
+      put(x, y, pick(P_LEAF, 0.1 + 0.3 * trand()));
+      if (trand() < 0.22) {                   // a leaf: a little cluster to one side
+        const s = trand() < 0.5 ? -1 : 1, c = pick(P_LEAF, 0.45 + 0.5 * trand());
+        put(x + s, y, c); put(x + 2 * s, y, c, 0.9); put(x + s, y + 1, c, 0.85); put(x + s, y - 1, c, 1.08);
+      }
+    }
+  }
+};
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
 export const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
   glass, leavesCut, torch, ...frames(stillWater), ...frames(flowWater),
   snow, ice, packedIce, sandstoneTop, sandstoneSide, sandstoneBottom, redSand, ...TERRACOTTA_COLOURS.map(terracotta), gravel, clay,
   podzolTop, podzolSide, coarseDirt, mud, moss, basaltTop, basaltSide, obsidian, ore(P_COAL), ore(P_COPPER), ore(P_IRON), ore(P_GOLD),
-  glowCrystal];
+  glowCrystal, tallGrass, seagrass, cactusEnd(1, true), cactusSide, cactusEnd(0.85, false), lilyPad, vines];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
@@ -449,8 +518,8 @@ tintMap.needsUpdate = true;
  * vec4 uniform.
  */
 const TILE_KIND = new Float32Array(Math.ceil(NT / 4) * 4).fill(-1);
-TILE_KIND[T_GRASS_TOP] = TILE_KIND[T_GRASS_SIDE] = 0;
-TILE_KIND[T_LEAVES] = TILE_KIND[T_LEAVES_CUT] = 1;
+TILE_KIND[T_GRASS_TOP] = TILE_KIND[T_GRASS_SIDE] = TILE_KIND[T_TALL_GRASS] = 0;
+TILE_KIND[T_LEAVES] = TILE_KIND[T_LEAVES_CUT] = TILE_KIND[T_VINES] = 1;
 TILE_KIND[T_WATER_STILL] = TILE_KIND[T_WATER_FLOW] = 2;
 TILE_KIND[T_GLOW_CRYSTAL] = 3;
 /** The world's tints (biomes.ts tintMap: GN × GN RGBA per layer, grass, foliage, water; the colours they show) */
@@ -599,8 +668,8 @@ export function createTextures(renderer: THREE.WebGLRenderer): Textures {
       data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.round((0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) * k));
     }
   };
-  grey(0, T_GRASS_TOP, [T_GRASS_TOP, T_GRASS_SIDE]);
-  grey(1, T_LEAVES_CUT, [T_LEAVES, T_LEAVES_CUT]);
+  grey(0, T_GRASS_TOP, [T_GRASS_TOP, T_GRASS_SIDE, T_TALL_GRASS]);
+  grey(1, T_LEAVES_CUT, [T_LEAVES, T_LEAVES_CUT, T_VINES]);
   grey(2, T_WATER_STILL, Array.from({ length: 2 * WATER_FRAMES }, (_, i) => T_WATER_STILL + i));
   for (let k = 0; k < 3; k++) for (let i = 0; i < GN * GN; i++) tintData.set(CLASSIC_TINTS.subarray(k * 3, k * 3 + 3), (k * GN * GN + i) * 4);
   tintMap.needsUpdate = true;

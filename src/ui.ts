@@ -132,14 +132,15 @@ export const pickerOpen = () => document.body.classList.contains('pick');
 
 /**
  * A block's picture for the picker: a little cube seen from above at an angle, its top and two sides
- * shaded like the faces in the world (non-cubes: their icon tile, flat), on a `size`-px canvas.
+ * shaded like the faces in the world (torches and plants: their icon tile, flat), on a `size`-px canvas.
  */
 function blockIcon(id: number, size = 96): HTMLCanvasElement {
   const b = B[id], cv = document.createElement('canvas'), g = cv.getContext('2d')!;
   cv.width = cv.height = size;
   g.imageSmoothingEnabled = false;
-  if (b.model === 'torch') { g.drawImage(tiles[b.icon], 0, 0, size, size); return cv; }
-  const cube = b.model === 'cube' && !b.fastTex, T = 32, h = size / 2, q = size / 4;
+  // torches and plants: their picture, flat
+  if (b.model === 'torch' || b.model === 'cross' || b.model === 'flat') { g.drawImage(tiles[b.icon], 0, 0, size, size); return cv; }
+  const cube = (b.model === 'cube' || b.model === 'inset') && !b.fastTex, T = 32, h = size / 2, q = size / 4;
   // one face: its tile, darkened by `shade`, drawn through the affine map that puts the tile's
   // corners on the face's (tile x along (ax, ay), tile y along (bx, by), from (ox, oy))
   const face = (tile: number, shade: number, ax: number, ay: number, bx: number, by: number, ox: number, oy: number) => {

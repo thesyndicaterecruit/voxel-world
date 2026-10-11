@@ -1,5 +1,5 @@
 import { CB, CS, H, W, D, NCX, NCZ, CI } from './config';
-import { AIR, WATER, SOLID, MODEL, LEVEL, FALLING } from './blocks';
+import { AIR, WATER, SOLID, MODEL, LOGGABLE, LEVEL, FALLING, M_LIQUID, waterState } from './blocks';
 import { cellKey, keyX, keyY, keyZ } from './light';
 
 /* ============================ FLOWING WATER ============================ */
@@ -18,7 +18,8 @@ import { cellKey, keyX, keyY, keyZ } from './light';
 //   behind it finds another way.
 // - Two or more sources beside a flowing block standing on solid ground (or on a source) turn it
 //   into a source: water is infinite.
-// - Sources never change by themselves.
+// - Sources never change by themselves. A waterlogged plant (seagrass…) is a source too: water flows
+//   out of it, never into it; water flowing into a plant that can't be waterlogged washes it away.
 // The scheduled updates of a chunk are saved with it (pendingIn / restore), so water left flowing
 // keeps flowing after a reload.
 
@@ -84,15 +85,18 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
     const ci = (x >> CB) + (z >> CB) * NCX;
     if (ci !== lastChunk) { lastChunk = ci; if (opts.onPending) opts.onPending(x >> CB, z >> CB); }
   }
+  /** The water in a cell: its state, −1 for none (a waterlogged plant is a source: 0) */
+  const water = (x: number, y: number, z: number) => waterState(w.getBlock(x, y, z), w.getState(x, y, z));
   /**
-   * What water can do to a cell: 0 nothing (solid, a source, outside the world), 1 flow in (air, or
-   * a torch it washes away), 2 it is flowing water (which levels itself, see fed)
+   * What water can do to a cell: 0 nothing (solid, a source, outside the world, a plant that can sit
+   * in water), 1 flow in (air, or a torch or plant it washes away), 2 it is flowing water (which
+   * levels itself, see fed)
    */
   function open(x: number, y: number, z: number): number {
     if (y < 0 || y >= H || x < 0 || z < 0 || x >= W || z >= D) return 0;
-    const id = w.getBlock(x, y, z);
-    if (id === WATER) return isSource(w.getState(x, y, z)) ? 0 : 2;
-    return id === AIR || (!SOLID[id] && MODEL[id] !== 2) ? 1 : 0;
+    const id = w.getBlock(x, y, z), st = water(x, y, z);
+    if (st >= 0) return isSource(st) ? 0 : 2;
+    return id === AIR || (!SOLID[id] && MODEL[id] !== M_LIQUID && !LOGGABLE[id]) ? 1 : 0;
   }
   /** Water flows into open cell (x, y, z) */
   function pour(x: number, y: number, z: number, state: number): void {
@@ -103,23 +107,23 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
   /** Horizontal neighbours of (x, y, z) that are sources */
   function sourcesAround(x: number, y: number, z: number): number {
     let n = 0;
-    for (let d = 0; d < 4; d++) if (w.getBlock(x + DX[d], y, z + DZ[d]) === WATER && isSource(w.getState(x + DX[d], y, z + DZ[d]))) n++;
+    for (let d = 0; d < 4; d++) { const s = water(x + DX[d], y, z + DZ[d]); if (s >= 0 && isSource(s)) n++; }
     return n;
   }
   /** The state a flowing block should have now (−1: it dries up) */
   function fed(x: number, y: number, z: number): number {
     let most = 0, sources = 0;
     for (let d = 0; d < 4; d++) {
-      if (w.getBlock(x + DX[d], y, z + DZ[d]) !== WATER) continue;
-      const s = w.getState(x + DX[d], y, z + DZ[d]);
+      const s = water(x + DX[d], y, z + DZ[d]);
+      if (s < 0) continue;
       if (isSource(s)) sources++;
       if (amount(s) > most) most = amount(s);
     }
     if (sources >= 2) {
-      const b = w.getBlock(x, y - 1, z);
-      if (SOLID[b] || (b === WATER && isSource(w.getState(x, y - 1, z)))) return 0;
+      const below = water(x, y - 1, z);
+      if (SOLID[w.getBlock(x, y - 1, z)] || (below >= 0 && isSource(below))) return 0;
     }
-    if (w.getBlock(x, y + 1, z) === WATER) return FALLING;
+    if (water(x, y + 1, z) >= 0) return FALLING;
     return most > 1 ? 9 - most : -1;                 // one level weaker than the strongest neighbour
   }
   /**
@@ -127,7 +131,7 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
    * SLOPE blocks (a cell over air or water), or every open way when there is none
    */
   function ways(x: number, y: number, z: number): number {
-    const drop = (cx: number, cz: number) => w.getBlock(cx, y - 1, cz) === WATER || open(cx, y - 1, cz) === 1;
+    const drop = (cx: number, cz: number) => water(cx, y - 1, cz) >= 0 || open(cx, y - 1, cz) === 1;
     const key = (cx: number, cz: number) => (cx + 16) * 1024 + cz + 16;
     let opens = 0, found = 0, layer: number[] = [];
     const seen = new Set<number>([key(x, z)]);
@@ -167,12 +171,12 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
       if (!((m >> d) & 1)) continue;
       const nx = x + DX[d], nz = z + DZ[d], o = open(nx, y, nz);
       if (o === 1) pour(nx, y, nz, 8 - a);
-      else if (o === 2 && amount(w.getState(nx, y, nz)) < a) schedule(nx, y, nz);   // too weak: it levels itself up
+      else if (o === 2 && amount(water(nx, y, nz)) < a) schedule(nx, y, nz);   // too weak: it levels itself up
     }
   }
   function update(x: number, y: number, z: number): void {
-    if (w.getBlock(x, y, z) !== WATER) return;
-    let st = w.getState(x, y, z);
+    let st = water(x, y, z);
+    if (st < 0) return;
     if (!isSource(st)) {
       const ns = fed(x, y, z);
       if (ns < 0) { if (w.setBlock(x, y, z, AIR)) changed++; return; }
@@ -182,9 +186,9 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
     if (below) {
       // falling first; flowing water below turns into falling water by itself
       if (below === 1) pour(x, y - 1, z, FALLING);
-      else if (!(w.getState(x, y - 1, z) & FALLING)) schedule(x, y - 1, z);
+      else if (!(water(x, y - 1, z) & FALLING)) schedule(x, y - 1, z);
       if (sourcesAround(x, y, z) >= 3) spread(x, y, z, st);   // the edge of a lake over a hole spreads out too
-    } else if (isSource(st) || w.getBlock(x, y - 1, z) !== WATER) spread(x, y, z, st);
+    } else if (isSource(st) || water(x, y - 1, z) < 0) spread(x, y, z, st);
   }
   function park(k: number): void {
     const ci = (keyX(k) >> CB) + (keyZ(k) >> CB) * NCX;
@@ -195,9 +199,9 @@ export function createWater(w: WaterWorld, opts: { onWash?: (x: number, y: numbe
 
   const sim: WaterSim = {
     blockChanged(x, y, z, old) {
-      if (old === WATER || w.getBlock(x, y, z) === WATER) schedule(x, y, z);
+      if (old === WATER || LOGGABLE[old] || water(x, y, z) >= 0) schedule(x, y, z);
       for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
-        if (w.getBlock(x + dx, y + dy, z + dz) === WATER) schedule(x + dx, y + dy, z + dz);
+        if (water(x + dx, y + dy, z + dz) >= 0) schedule(x + dx, y + dy, z + dz);
       }
     },
     update(dt) {

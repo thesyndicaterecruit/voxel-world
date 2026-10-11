@@ -1,6 +1,8 @@
 import { CS, H, SH, NSEC, W as WORLD_W, D as WORLD_D } from './config';
-import { AIR, LEAVES, B, ROT, OCCLUDES, PASS, MODEL, FILTER, SOLID, FALLING, faceHidden, liquidHeight } from './blocks';
-import { TORCH_MODELS } from './torch';
+import { AIR, LEAVES, WATER, B, ROT, OCCLUDES, PASS, MODEL, FILTER, SOLID, OPAQUE, LOGGABLE, OFFSET, FALLING, WATERLOGGED, M_TORCH, M_LIQUID,
+  M_CROSS, M_INSET, M_FLAT, S_WATER, SUPPORT, faceHidden, liquidHeight } from './blocks';
+import { TORCH_MODELS, TORCH_SUPPORT } from './torch';
+import { CROSS_IN, INSET, FLAT_UP, FLAT_OUT, ON_WATER, plantOffset } from './plants';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO, smooth light) ======================= */
@@ -173,11 +175,13 @@ function builder() {
     },
   };
 }
+type Builder = ReturnType<typeof builder>;
 /** One builder per pass, reused from section to section (finish() copies the mesh out) */
 const builders = [builder(), builder(), builder()];
 
 /** Texels to fixed-point position units */
 const TP = FP / TEX;
+const NO_OFFSET = [0, 0];
 /** Most blocks a merged water surface spans each way (texture coordinates are bytes: 7 × TEX ≤ 255) */
 const MERGE = 7;
 
@@ -206,6 +210,12 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
   /** Is padded column (qx, qz) beyond the edge of the world? */
   const outside = (qx: number, qz: number) => x0 + qx - 1 < 0 || z0 + qz - 1 < 0 || x0 + qx - 1 >= WORLD_W || z0 + qz - 1 >= WORLD_D;
   /**
+   * Liquid `lid`'s state in padded cell i (its level bits), −1 where there is none. A waterlogged
+   * plant's cell holds water too: a source.
+   */
+  const liq = (i: number, lid: number) =>
+    pad[i] === lid ? (state ? state[i] : 0) : lid === WATER && state && state[i] & WATERLOGGED && LOGGABLE[pad[i]] ? 0 : -1;
+  /**
    * Liquid `id`'s surface height (0–1 block above layer y) at the top corner shared by padded columns
    * cx−1…cx × cz−1…cz: full where any of them is falling or has the liquid on top, else the average
    * of their liquid heights — sources count 10 times, so open water stays level — pulled down by
@@ -215,13 +225,12 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
   const surface = (cx: number, y: number, cz: number, id: number) => {
     let sum = 0, n = 0;
     for (let dz = -1; dz <= 0; dz++) for (let dx = -1; dx <= 0; dx++) {
-      const qx = cx + dx, qz = cz + dz, i = PI(qx, y, qz), out = outside(qx, qz), b = out ? (y < seaLevel ? id : AIR) : pad[i];
-      if (b === id) {
-        const st = state && !out ? state[i] : 0;
-        if (st & FALLING || (!out && y + 1 < H && pad[i + PW * PW] === id)) return 1;
+      const qx = cx + dx, qz = cz + dz, i = PI(qx, y, qz), out = outside(qx, qz), st = out ? (y < seaLevel ? 0 : -1) : liq(i, id);
+      if (st >= 0) {
+        if (st & FALLING || (!out && y + 1 < H && liq(i + PW * PW, id) >= 0)) return 1;
         const h = liquidHeight(st);
         if (st === 0) { sum += h * 10; n += 10; } else { sum += h; n++; }
-      } else if (!SOLID[b]) n++;
+      } else if (out || !SOLID[pad[i]]) n++;
     }
     return sum / n;
   };
@@ -280,6 +289,54 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
       out.quad(vi[0], vi[1], vi[2], vi[3], false);
     }
   };
+
+  /** Liquid `id` in padded cell (px, y, pz): a surface shaped by its neighbours, no AO (translucent pass) */
+  const liquid = (px: number, y: number, pz: number, lx: number, lz: number, id: number) => {
+    const out = passes[PASS[id]], tex = B[id].tex;
+    // the surface's height at the top corners (x0 z0, x1 z0, x0 z1, x1 z1)
+    C[0] = surface(px, y, pz, id); C[1] = surface(px + 1, y, pz, id);
+    C[2] = surface(px, y, pz + 1, id); C[3] = surface(px + 1, y, pz + 1, id);
+    // a sloping surface flows downhill: its streaks are turned that way (rot: toward −z, +z, +x, −x)
+    const gx = C[1] + C[3] - C[0] - C[2], gz = C[2] + C[3] - C[0] - C[1], still = Math.abs(gx) + Math.abs(gz) < 0.01;
+    const rot = still ? 0 : Math.abs(gx) >= Math.abs(gz) ? (gx < 0 ? 2 : 3) : (gz < 0 ? 1 : 0);
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f], ny = y + F.n[1], qx = px + F.n[0], qz = pz + F.n[2];
+      if (ny < 0 || (!F.n[1] && y < seaLevel && outside(qx, qz))) continue;   // the sea goes on past the world's edge
+      // the (lowered) top shows under anything but more liquid; the other faces cull as usual
+      const ni = PI(qx, ny, qz), nb = ny < H ? pad[ni] : AIR, more = ny < H && liq(ni, id) >= 0;
+      if (more || (f !== 2 && faceHidden(id, nb, opaqueLeaves))) continue;
+      const k = Math.round(F.s * 255), tl = f === 2 && !still ? tex[0] : tex[F.k];
+      if (f === 2 && still && C[0] === C[1] && C[0] === C[2] && C[0] === C[3]) {
+        // a flat top, lit the same at every corner: merged with its like (flushFlat)
+        for (let i = 0; i < 4; i++) smooth(px, y, pz, F.n, F.ao[i], i);
+        if (SKY[0] === SKY[1] && SKY[0] === SKY[2] && SKY[0] === SKY[3] && BLK[0] === BLK[1] && BLK[0] === BLK[2] && BLK[0] === BLK[3]) {
+          flat[lx + CS * lz] = 1 + Math.round(C[0] * FP) + 65 * (SKY[0] + 256 * BLK[0]);
+          flatTile = tl;
+          continue;
+        }
+      }
+      for (let i = 0; i < 4; i++) {
+        const v = F.v[i], h = v[1] ? C[v[0] + 2 * v[2]] : 0;
+        let u = F.uv[i][0], w = F.uv[i][1];
+        if (f === 2) {
+          u = rot === 0 ? v[0] : rot === 1 ? 1 - v[0] : rot === 2 ? v[2] : 1 - v[2];
+          w = rot === 0 ? v[2] : rot === 1 ? 1 - v[2] : rot === 2 ? 1 - v[0] : v[0];
+        } else if (!F.n[1]) w = h;                // a side reaches up to the surface
+        smooth(px, y, pz, F.n, F.ao[i], i);
+        vi[i] = out.vert((lx + v[0]) * FP, y * FP + Math.round(h * FP), (lz + v[2]) * FP, k, SKY[i], BLK[i],
+          Math.round(u * TEX), Math.round(w * TEX), tl);
+      }
+      // split the top across the two corners closer in height: a smoother surface
+      out.quad(vi[0], vi[1], vi[2], vi[3], f === 2 && Math.abs(C[3] - C[0]) < Math.abs(C[2] - C[1]));
+    }
+  };
+
+  /** A quad seen from both sides: corners a b c d (in order round it), once each way round */
+  const sheet = (out: Builder, a: number, b: number, c: number, d: number) => { out.quad(a, b, c, d, false); out.quad(d, c, b, a, false); };
+  /** Vertex (x, y, z in blocks from the chunk's corner) of a plant */
+  const pv = (out: Builder, x: number, y: number, z: number, k: number, sky: number, blk: number, u: number, v: number, tl: number) =>
+    out.vert(Math.round(x * FP), Math.round(y * FP), Math.round(z * FP), k, sky, blk, u, v, tl);
+
   // skip the section's empty layers above its highest block
   const y0 = sy * SH;
   let top = y0 + SH - 1;
@@ -291,14 +348,18 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
   if (top < y0) return [null, null, null];
 
   for (let y = y0; y <= top; y++) { if (y > y0) flushFlat(y - 1); for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
-    const px = lx + 1, pz = lz + 1, id = pad[PI(px, y, pz)];
+    const px = lx + 1, pz = lz + 1, pi = PI(px, y, pz), id = pad[pi];
     if (id === AIR) continue;
-    const x = x0 + lx, z = z0 + lz, b = B[id], model = MODEL[id];
+    const x = x0 + lx, z = z0 + lz, b = B[id], model = MODEL[id], st = state ? state[pi] : 0;
     const fast = opaqueLeaves && id === LEAVES, out = passes[fast ? 0 : PASS[id]], tex = fast && b.fastTex ? b.fastTex : b.tex;
 
-    if (model === 1) {                             // torch: its stick-and-flame model, tilted per facing
-      const st = state ? state[PI(px, y, pz)] : 0, quads = TORCH_MODELS[st <= 4 ? st : 0];
-      const v = light[PI(px, y, pz)], sky = (v >> 4) * 17, blk = (v & 15) * 17;   // the light it stands in
+    if (model === M_LIQUID) { liquid(px, y, pz, lx, lz, id); continue; }
+    // a waterlogged plant: the water round it first (it is a source), then the plant
+    if (st & WATERLOGGED && LOGGABLE[id]) liquid(px, y, pz, lx, lz, WATER);
+
+    if (model === M_TORCH) {                       // torch: its stick-and-flame model, tilted per facing
+      const quads = TORCH_MODELS[st <= 4 ? st : 0];
+      const v = light[pi], sky = (v >> 4) * 17, blk = (v & 15) * 17;   // the light it stands in
       for (const q of quads) {
         const k = q.glow ? 255 : Math.round(q.shade * 255);
         for (let i = 0; i < 4; i++) {
@@ -311,47 +372,56 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
       continue;
     }
 
-    if (model === 2) {                             // liquid: a surface shaped by its neighbours, no AO
-      // the surface's height at the top corners (x0 z0, x1 z0, x0 z1, x1 z1)
-      C[0] = surface(px, y, pz, id); C[1] = surface(px + 1, y, pz, id);
-      C[2] = surface(px, y, pz + 1, id); C[3] = surface(px + 1, y, pz + 1, id);
-      // a sloping surface flows downhill: its streaks are turned that way (rot: toward −z, +z, +x, −x)
-      const gx = C[1] + C[3] - C[0] - C[2], gz = C[2] + C[3] - C[0] - C[1], still = Math.abs(gx) + Math.abs(gz) < 0.01;
-      const rot = still ? 0 : Math.abs(gx) >= Math.abs(gz) ? (gx < 0 ? 2 : 3) : (gz < 0 ? 1 : 0);
-      for (let f = 0; f < 6; f++) {
-        const F = FACES[f], ny = y + F.n[1], qx = px + F.n[0], qz = pz + F.n[2];
-        if (ny < 0 || (!F.n[1] && y < seaLevel && outside(qx, qz))) continue;   // the sea goes on past the world's edge
-        // the (lowered) top shows under anything but more liquid; the other faces cull as usual
-        const nb = ny < H ? pad[PI(qx, ny, qz)] : AIR;
-        if (f === 2 ? nb === id : faceHidden(id, nb, opaqueLeaves)) continue;
-        const k = Math.round(F.s * 255), tl = f === 2 && !still ? tex[0] : tex[F.k];
-        if (f === 2 && still && C[0] === C[1] && C[0] === C[2] && C[0] === C[3]) {
-          // a flat top, lit the same at every corner: merged with its like (flushFlat)
-          for (let i = 0; i < 4; i++) smooth(px, y, pz, F.n, F.ao[i], i);
-          if (SKY[0] === SKY[1] && SKY[0] === SKY[2] && SKY[0] === SKY[3] && BLK[0] === BLK[1] && BLK[0] === BLK[2] && BLK[0] === BLK[3]) {
-            flat[lx + CS * lz] = 1 + Math.round(C[0] * FP) + 65 * (SKY[0] + 256 * BLK[0]);
-            flatTile = tl;
-            continue;
-          }
+    if (model === M_CROSS || model === M_FLAT) {
+      // plants: lit by the light in their own block, a little darker at the foot, no AO
+      const v = light[pi], sky = (v >> 4) * 17, blk = (v & 15) * 17, j = 1 - b.jit * hash3(seed, x, y, z), tl = tex[0];
+      const kt = Math.round(j * 255), kb = Math.round(j * (model === M_CROSS ? 0.78 : 1) * 255);
+      if (model === M_CROSS) {                     // two quads crossed corner to corner, seen from both sides
+        const o = OFFSET[id] ? plantOffset(seed, x, y, z) : NO_OFFSET, a = CROSS_IN, c = 1 - CROSS_IN, bx = lx + o[0], bz = lz + o[1];
+        for (let d = 0; d < 2; d++) {
+          const za = d ? c : a, zb = d ? a : c;
+          sheet(out, pv(out, bx + a, y, bz + za, kb, sky, blk, 0, 0, tl), pv(out, bx + a, y + 1, bz + za, kt, sky, blk, 0, TEX, tl),
+            pv(out, bx + c, y + 1, bz + zb, kt, sky, blk, TEX, TEX, tl), pv(out, bx + c, y, bz + zb, kb, sky, blk, TEX, 0, tl));
         }
-        for (let i = 0; i < 4; i++) {
-          const v = F.v[i], h = v[1] ? C[v[0] + 2 * v[2]] : 0;
-          let u = F.uv[i][0], w = F.uv[i][1];
-          if (f === 2) {
-            u = rot === 0 ? v[0] : rot === 1 ? 1 - v[0] : rot === 2 ? v[2] : 1 - v[2];
-            w = rot === 0 ? v[2] : rot === 1 ? 1 - v[2] : rot === 2 ? 1 - v[0] : v[0];
-          } else if (!F.n[1]) w = h;                // a side reaches up to the surface
-          smooth(px, y, pz, F.n, F.ao[i], i);
-          vi[i] = out.vert((lx + v[0]) * FP, y * FP + Math.round(h * FP), (lz + v[2]) * FP, k, SKY[i], BLK[i],
-            Math.round(u * TEX), Math.round(w * TEX), tl);
-        }
-        // split the top across the two corners closer in height: a smoother surface
-        out.quad(vi[0], vi[1], vi[2], vi[3], f === 2 && Math.abs(C[3] - C[0]) < Math.abs(C[2] - C[1]));
+        continue;
       }
+      const s = st & 7;
+      if (s >= 1 && s <= 4) {                      // against a wall: a quad just out from it
+        const [dx, , dz] = TORCH_SUPPORT[s], w = dx < 0 || dz < 0 ? FLAT_OUT : 1 - FLAT_OUT;
+        const at = (u: number): [number, number] => (dx ? [lx + w, lz + u] : [lx + u, lz + w]);
+        const [ax, az] = at(0), [bx, bz] = at(1);
+        sheet(out, pv(out, ax, y, az, kb, sky, blk, 0, 0, tl), pv(out, ax, y + 1, az, kt, sky, blk, 0, TEX, tl),
+          pv(out, bx, y + 1, bz, kt, sky, blk, TEX, TEX, tl), pv(out, bx, y, bz, kb, sky, blk, TEX, 0, tl));
+        continue;
+      }
+      // on the floor, or afloat on the water below, turned any of four ways
+      const h = y + (SUPPORT[id] === S_WATER ? -ON_WATER : FLAT_UP), rot = Math.floor(hash3(seed, x * 3 + 7, y, z - 7) * 4);
+      const F = FACES[2];
+      for (let i = 0; i < 4; i++) {
+        const c = F.v[i], q = F.uv[(i + rot) & 3];
+        vi[i] = pv(out, lx + c[0], h, lz + c[2], kt, sky, blk, q[0] * TEX, q[1] * TEX, tl);
+      }
+      sheet(out, vi[0], vi[1], vi[2], vi[3]);
       continue;
     }
 
     const j = 1 - b.jit * hash3(seed, x, y, z);
+    if (model === M_INSET) {
+      // the cactus: a box a little in from its block's sides; its top and bottom hide under more of it or an opaque block
+      const v = light[pi], sky = (v >> 4) * 17, blk = (v & 15) * 17;
+      for (let f = 0; f < 6; f++) {
+        const F = FACES[f], ny = y + F.n[1];
+        if (F.n[1] && (ny < 0 || (ny < H && (pad[PI(px, ny, pz)] === id || OPAQUE[pad[PI(px, ny, pz)]])))) continue;
+        const k = Math.round(F.s * j * 255), tl = tex[F.k];
+        for (let i = 0; i < 4; i++) {
+          const c = F.v[i], q = F.uv[i];
+          vi[i] = pv(out, lx + (c[0] ? 1 - INSET : INSET), y + c[1], lz + (c[2] ? 1 - INSET : INSET), k, sky, blk, q[0] * TEX, q[1] * TEX, tl);
+        }
+        out.quad(vi[0], vi[1], vi[2], vi[3], false);
+      }
+      continue;
+    }
+
     for (let f = 0; f < 6; f++) {
       const F = FACES[f], ny = y + F.n[1];
       if (ny < 0 || (ny < H && faceHidden(id, pad[PI(px + F.n[0], ny, pz + F.n[2])], opaqueLeaves))) continue; // hidden face

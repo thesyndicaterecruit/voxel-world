@@ -7,7 +7,9 @@ export const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, PLANKS 
   WATER = 10, GLASS = 11, TORCH = 12, SNOW = 13, ICE = 14, PACKED_ICE = 15, SANDSTONE = 16, RED_SAND = 17,
   /** Terracotta in 6 colours: TERRACOTTA + 0 … 5, plain, white, orange, yellow, red, brown (the Badlands' bands) */
   TERRACOTTA = 18, GRAVEL = 24, CLAY = 25, PODZOL = 26, COARSE_DIRT = 27, MUD = 28, MOSS = 29, BASALT = 30, OBSIDIAN = 31,
-  COAL_ORE = 32, COPPER_ORE = 33, IRON_ORE = 34, GOLD_ORE = 35, GLOW_CRYSTAL = 36;
+  COAL_ORE = 32, COPPER_ORE = 33, IRON_ORE = 34, GOLD_ORE = 35, GLOW_CRYSTAL = 36,
+  // plants and other blocks that aren't cubes (models: cross, inset, flat)
+  TALL_GRASS = 37, SEAGRASS = 38, CACTUS = 39, LILY_PAD = 40, VINES = 41;
 /** The terracotta colours' names, in id order from TERRACOTTA */
 export const TERRACOTTAS = ['Terracotta', 'White Terracotta', 'Orange Terracotta', 'Yellow Terracotta', 'Red Terracotta', 'Brown Terracotta'];
 
@@ -24,13 +26,29 @@ export const WATER_FRAMES = 16, T_WATER_STILL = 15, T_WATER_FLOW = T_WATER_STILL
 export const T_SNOW = 47, T_ICE = 48, T_PACKED_ICE = 49, T_SANDSTONE_TOP = 50, T_SANDSTONE = 51, T_SANDSTONE_BOTTOM = 52,
   T_RED_SAND = 53, T_TERRACOTTA = 54 /* … 59, one per colour */, T_GRAVEL = 60, T_CLAY = 61, T_PODZOL_TOP = 62, T_PODZOL_SIDE = 63,
   T_COARSE_DIRT = 64, T_MUD = 65, T_MOSS = 66, T_BASALT_TOP = 67, T_BASALT = 68, T_OBSIDIAN = 69, T_COAL_ORE = 70,
-  T_COPPER_ORE = 71, T_IRON_ORE = 72, T_GOLD_ORE = 73, T_GLOW_CRYSTAL = 74;
-export const NT = 75;
+  T_COPPER_ORE = 71, T_IRON_ORE = 72, T_GOLD_ORE = 73, T_GLOW_CRYSTAL = 74, T_TALL_GRASS = 75, T_SEAGRASS = 76, T_CACTUS_TOP = 77,
+  T_CACTUS = 78, T_CACTUS_BOTTOM = 79, T_LILY_PAD = 80, T_VINES = 81;
+export const NT = 82;
 
 /** Which mesh of a chunk a block's faces go into (see streaming.ts / textures.ts). */
 export type RenderPass = 'opaque' | 'cutout' | 'translucent';
-/** How a block is meshed: a full cube, the torch stick, or a liquid (lowered top, see mesher.ts). */
-export type Model = 'cube' | 'torch' | 'liquid';
+/**
+ * How a block is meshed (mesher.ts): a full cube, the torch stick, a liquid (lowered top), two crossed
+ * quads (plants), a cube a little smaller than its block (the cactus), or one thin quad on the floor,
+ * on the water or against a wall (lily pads, vines)
+ */
+export type Model = 'cube' | 'torch' | 'liquid' | 'cross' | 'inset' | 'flat';
+/** Model indices (MODEL): the order of Model */
+export const M_CUBE = 0, M_TORCH = 1, M_LIQUID = 2, M_CROSS = 3, M_INSET = 4, M_FLAT = 5;
+const MODELS: Model[] = ['cube', 'torch', 'liquid', 'cross', 'inset', 'flat'];
+/**
+ * What holds a block up (plants.ts): nothing; the block below (a solid cube, or more of itself if it
+ * stacks); water below; a wall — the block its state faces, or more of it above, facing the same way;
+ * or, for a torch, the block its state faces (see torch.ts). Without it, it pops off.
+ */
+export type Support = 'none' | 'floor' | 'water' | 'wall' | 'torch';
+const SUPPORTS: Support[] = ['none', 'floor', 'water', 'wall', 'torch'];
+export const S_NONE = 0, S_FLOOR = 1, S_WATER = 2, S_WALL = 3, S_TORCH = 4;
 
 export interface BlockType {
   id: number;
@@ -59,6 +77,23 @@ export interface BlockType {
   fastTex?: [number, number, number];
   /** Walking on it slides: the player's feet barely grip (ice) */
   slippery: boolean;
+  /** What holds it up: without it, it pops off */
+  support: Support;
+  /** It can stand on more of itself (the cactus) */
+  stacks: boolean;
+  /**
+   * Water: 'no', water washes it away; 'can', it can sit inside water (WATERLOGGED: the block is
+   * water too); 'only', it grows in water and nowhere else (seagrass)
+   */
+  waterlog: 'no' | 'can' | 'only';
+  /** Building there replaces it (grass, seagrass, vines) */
+  replaceable: boolean;
+  /** Drawn a little off the middle of its block, differently each time (grass): see plants.ts */
+  offset: boolean;
+  /** Moving through it is slower: × speed (1: not at all) */
+  slow: number;
+  /** It would hurt to touch (the cactus): the player tells playerEvents.touch, a hook for damage */
+  hurts: boolean;
 }
 
 export const B: BlockType[] = [];
@@ -66,8 +101,13 @@ export const B: BlockType[] = [];
 const def = (id: number, name: string, top: number, side: number, bot: number, o: Partial<BlockType> = {}) =>
   (B[id] = {
     id, name, tex: [side, top, bot], solid: true, opaque: true, renderPass: 'opaque', lightEmission: 0, lightFilter: 15,
-    model: 'cube', cullSame: false, jit: 0.06, icon: side, particle: side, slippery: false, ...o,
+    model: 'cube', cullSame: false, jit: 0.06, icon: side, particle: side, slippery: false, support: 'none', stacks: false, waterlog: 'no',
+    replaceable: false, offset: false, slow: 1, hurts: false, ...o,
   });
+/** A plant: not solid, lets light through, crossed quads in the cutout pass, held up by the block below */
+const plant = (id: number, name: string, tile: number, o: Partial<BlockType> = {}) =>
+  def(id, name, tile, tile, tile, { solid: false, opaque: false, renderPass: 'cutout', lightFilter: 0, model: 'cross', jit: 0.1,
+    support: 'floor', ...o });
 def(AIR,     'Air',     0, 0, 0, { solid: false, opaque: false, lightFilter: 0, jit: 0 });
 def(GRASS,   'Grass',   T_GRASS_TOP, T_GRASS_SIDE, T_DIRT);
 def(DIRT,    'Dirt',    T_DIRT,      T_DIRT,       T_DIRT);
@@ -87,7 +127,8 @@ def(GLASS,   'Glass',   T_GLASS,     T_GLASS,      T_GLASS,
   { opaque: false, renderPass: 'cutout', lightFilter: 0, cullSame: true, jit: 0 });
 // Torch: a thin stick, not a cube; standing or on a wall (facing in its block state, see torch.ts)
 def(TORCH,   'Torch',   T_TORCH,     T_TORCH,      T_TORCH,
-  { solid: false, opaque: false, renderPass: 'cutout', lightEmission: 14, lightFilter: 0, model: 'torch', jit: 0, particle: T_PLANKS });
+  { solid: false, opaque: false, renderPass: 'cutout', lightEmission: 14, lightFilter: 0, model: 'torch', jit: 0, particle: T_PLANKS,
+    support: 'torch' });
 def(SNOW,    'Snow',    T_SNOW,      T_SNOW,       T_SNOW,     { jit: 0.03 });
 // Ice: see-through like water (and shiny on top: no jitter, so the water shader reflects the sky), slippery
 def(ICE,     'Ice',     T_ICE,       T_ICE,        T_ICE,
@@ -110,6 +151,16 @@ def(IRON_ORE, 'Iron Ore', T_IRON_ORE, T_IRON_ORE,  T_IRON_ORE);
 def(GOLD_ORE, 'Gold Ore', T_GOLD_ORE, T_GOLD_ORE,  T_GOLD_ORE);
 // Glow Crystal: lights its surroundings, and its tile is drawn at full brightness (textures.ts)
 def(GLOW_CRYSTAL, 'Glow Crystal', T_GLOW_CRYSTAL, T_GLOW_CRYSTAL, T_GLOW_CRYSTAL, { lightEmission: 10, jit: 0 });
+// Plants (plants.ts): crossed quads unless they say otherwise. Seagrass only grows in water (it is
+// waterlogged: the water is still there); it filters light like the water round it.
+plant(TALL_GRASS, 'Tall Grass', T_TALL_GRASS, { replaceable: true, offset: true });
+plant(SEAGRASS, 'Seagrass', T_SEAGRASS, { waterlog: 'only', replaceable: true, lightFilter: 2 });
+// the cactus: a solid column a little thinner than a block, on the ground or on more cactus; it would hurt to touch
+def(CACTUS,  'Cactus',  T_CACTUS_TOP, T_CACTUS,     T_CACTUS_BOTTOM, { opaque: false, lightFilter: 0, model: 'inset', support: 'floor',
+  stacks: true, hurts: true, jit: 0.04 });
+// a lily pad lies on the water's surface (it floats in the block above the water); vines hang on a wall (their state faces it)
+plant(LILY_PAD, 'Lily Pad', T_LILY_PAD, { model: 'flat', support: 'water', jit: 0.08 });
+plant(VINES, 'Vines', T_VINES, { model: 'flat', support: 'wall', replaceable: true });
 
 // The hotbar a new world starts with (and every world saved before save version 7 had: their slot
 // numbers point at these). The block picker puts other blocks in its slots; each world keeps its own.
@@ -122,7 +173,7 @@ export const PICKER: readonly { name: string; blocks: readonly number[] }[] = [
   { name: 'Stone', blocks: [STONE, SANDSTONE, BASALT, OBSIDIAN, ...TERRACOTTAS.map((_, i) => TERRACOTTA + i), COAL_ORE, COPPER_ORE,
     IRON_ORE, GOLD_ORE, BRICK, GLASS, BEDROCK] },
   { name: 'Wood', blocks: [LOG, PLANKS] },
-  { name: 'Plants', blocks: [LEAVES, MOSS] },
+  { name: 'Plants', blocks: [LEAVES, MOSS, TALL_GRASS, CACTUS, VINES, LILY_PAD, SEAGRASS] },
   { name: 'Light', blocks: [TORCH, GLOW_CRYSTAL] },
   { name: 'Liquids', blocks: [WATER] },
 ];
@@ -142,6 +193,11 @@ export const FALLING = 8;
  * liquid on top (`above`), else 7/8 for a source down to 7/32 at level 7.
  */
 export const liquidHeight = (state: number, above = false) => (above || state & FALLING ? 1 : (28 - 3 * (state & LEVEL)) / 32);
+/**
+ * Block state bit: a plant sitting inside water (seagrass, kelp, coral fans). The block is water as
+ * well — a source: it is drawn with the water round it, and water flows from it (waterState).
+ */
+export const WATERLOGGED = 0x80;
 
 /* ---------- lookup tables for hot loops (meshing, collision), indexed by block id ---------- */
 const table = (f: (b: BlockType) => boolean | number) => {
@@ -152,8 +208,16 @@ const table = (f: (b: BlockType) => boolean | number) => {
 export const SOLID = table((b) => b.solid);
 /** Render pass index: 0 opaque, 1 cutout, 2 translucent */
 export const PASS = table((b) => ['opaque', 'cutout', 'translucent'].indexOf(b.renderPass));
-/** Model index: 0 cube, 1 torch, 2 liquid */
-export const MODEL = table((b) => ['cube', 'torch', 'liquid'].indexOf(b.model));
+/** Model index (M_CUBE, M_TORCH, …) */
+export const MODEL = table((b) => MODELS.indexOf(b.model));
+/** What holds it up (S_NONE, S_FLOOR, …) */
+export const SUPPORT = table((b) => SUPPORTS.indexOf(b.support));
+/** Stands on more of itself */
+export const STACKS = table((b) => b.stacks);
+/** Can sit inside water (WATERLOGGED) */
+export const LOGGABLE = table((b) => b.waterlog !== 'no');
+/** Drawn off the middle of its block (plants.ts plantOffset) */
+export const OFFSET = table((b) => b.offset);
 export const OPAQUE = table((b) => b.opaque);
 export const CULL_SAME = table((b) => b.cullSame);
 /** How much light a block takes away (15: opaque, light stops there) — see light.ts */
@@ -166,8 +230,16 @@ export const OCCLUDES = table((b) => b.id !== AIR && b.model === 'cube' && b.lig
 export const SLIPPERY = table((b) => b.slippery);
 /** Can be aimed at (to break or build against): everything but air and liquids */
 export const TARGETABLE = table((b) => b.id !== AIR && b.model !== 'liquid');
-/** A placed block may go here (replacing it): air and liquids */
-export const REPLACEABLE = table((b) => b.id === AIR || b.model === 'liquid');
+/** A placed block may go here (replacing it): air, liquids and the plants that make way (grass, seagrass, vines) */
+export const REPLACEABLE = table((b) => b.id === AIR || b.model === 'liquid' || b.replaceable);
+/** Blocks can be built against it: cubes and the cactus; not torches, plants or liquids */
+export const BUILD_ON = table((b) => b.id !== AIR && (b.model === 'cube' || b.model === 'inset'));
+
+/**
+ * The water in a block: its water state (level bits, see LEVEL and FALLING) for a water block, 0 (a
+ * source) for a waterlogged plant, −1 where there is no water.
+ */
+export const waterState = (id: number, state: number) => (id === WATER ? state : state & WATERLOGGED && LOGGABLE[id] ? 0 : -1);
 
 /**
  * Face culling: is the face of block `self` that touches block `nb` hidden? An opaque neighbour

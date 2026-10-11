@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { B, SOLID, MODEL, T_DIRT, T_GRASS_SIDE, T_WATER } from './blocks';
+import { B, SOLID, MODEL, OFFSET, SUPPORT, M_TORCH, M_CROSS, M_INSET, M_FLAT, S_WATER, T_DIRT, T_GRASS_SIDE, T_WATER } from './blocks';
 import { boxesGeometry } from './meshing';
 import { TEX } from './mesher';
-import { TORCH_MODELS, type TorchQuad } from './torch';
+import { TORCH_MODELS, TORCH_SUPPORT, type TorchQuad } from './torch';
+import { CROSS_IN, INSET, FLAT_UP, FLAT_OUT, ON_WATER, plantOffset } from './plants';
 import { world, inWater } from './world';
 import { radialFog } from './fog';
 import { lightColor } from './shading';
@@ -40,6 +41,30 @@ function modelGeometry(quads: TorchQuad[]): THREE.BufferGeometry {
   return g;
 }
 
+/** Quads (4 corners each, in order round them, block units) seen from both sides, the whole tile on each, as one geometry */
+function sheetsGeometry(quads: number[][][]): THREE.BufferGeometry {
+  const pos: number[] = [], uv: number[] = [], index: number[] = [];
+  for (const q of quads) {
+    const n = pos.length / 3;
+    q.forEach((p, i) => { pos.push(p[0], p[1], p[2]); uv.push(i >= 2 ? 1 : 0, i === 1 || i === 2 ? 1 : 0); });
+    index.push(n, n + 1, n + 2, n, n + 2, n + 3, n + 3, n + 2, n + 1, n + 3, n + 1, n);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(index);
+  return g;
+}
+const a = CROSS_IN, c = 1 - CROSS_IN;
+/** The ghosts of the plant models (see mesher.ts): crossed quads, a flat one on the floor, on the water, against each wall */
+const CROSS = sheetsGeometry([[[a, 0, a], [a, 1, a], [c, 1, c], [c, 0, c]], [[a, 0, c], [a, 1, c], [c, 1, a], [c, 0, a]]]);
+const floorAt = (h: number) => sheetsGeometry([[[0, h, 0], [0, h, 1], [1, h, 1], [1, h, 0]]]);
+const FLOOR = floorAt(FLAT_UP), ON_THE_WATER = floorAt(-ON_WATER);
+const WALLS = TORCH_SUPPORT.map(([dx, , dz]) => {
+  const w = dx < 0 || dz < 0 ? FLAT_OUT : 1 - FLAT_OUT;
+  return sheetsGeometry([dx ? [[w, 0, 0], [w, 1, 0], [w, 1, 1], [w, 0, 1]] : [[0, 0, w], [0, 1, w], [1, 1, w], [1, 0, w]]]);
+});
+
 /** A flying bit; `drop`: a splash drop, gone when it falls back into the water */
 interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number; drop: boolean }
 
@@ -66,6 +91,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
   scene.add(outline);
   const ghostMat = radialFog(new THREE.MeshBasicMaterial({ map: tex[T_GRASS_SIDE], transparent: true, opacity: 0.5, depthWrite: false }));
   const cube = new THREE.BoxGeometry(0.98, 0.98, 0.98).translate(0.5, 0.5, 0.5), torches = TORCH_MODELS.map(modelGeometry);
+  const inset = new THREE.BoxGeometry(1 - 2 * INSET, 0.98, 1 - 2 * INSET).translate(0.5, 0.5, 0.5);
   const ghost = new THREE.Mesh(cube, ghostMat);
   ghost.visible = false;
   scene.add(ghost);
@@ -138,9 +164,11 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     outline.position.set(x, y, z);
   }
   function showGhost(x: number, y: number, z: number, id: number, state: number): void {
+    const m = MODEL[id], s = state & 7, o = OFFSET[id] ? plantOffset(world.seed, x, y, z) : [0, 0];
     ghost.visible = true;
-    ghost.geometry = MODEL[id] === 1 ? torches[state <= 4 ? state : 0] : cube;
-    ghost.position.set(x, y, z);
+    ghost.geometry = m === M_TORCH ? torches[state <= 4 ? state : 0] : m === M_CROSS ? CROSS : m === M_INSET ? inset :
+      m === M_FLAT ? (s >= 1 && s <= 4 ? WALLS[s] : SUPPORT[id] === S_WATER ? ON_THE_WATER : FLOOR) : cube;
+    ghost.position.set(x + o[0], y, z + o[1]);
     lightColor(world.getLight(x, y, z), ghostMat.color);
   }
 

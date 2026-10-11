@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H } from '../src/config';
-import { STONE, GLASS, LEAVES, WATER, TORCH, T_WATER_STILL, T_WATER_FLOW, FALLING } from '../src/blocks';
+import { STONE, GLASS, LEAVES, WATER, TORCH, T_WATER_STILL, T_WATER_FLOW, FALLING, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES,
+  WATERLOGGED, T_TALL_GRASS, T_CACTUS } from '../src/blocks';
+import { INSET, FLAT_OUT, ON_WATER, CROSS_IN } from '../src/plants';
 import { PAD_VOL, PI, FP, TEX, meshChunk, type PassMesh } from '../src/mesher';
 import { TORCH_MODELS } from '../src/torch';
 
@@ -166,5 +168,68 @@ describe('water', () => {
     // above sea level (water the player put there) it has its side
     const high = mesh([[0, 60, 4, WATER]], false, [], undefined, [0, 256]);
     expect(high.map((p) => (p ? p.index.length / 6 : 0))).toEqual([0, 0, 6]);
+  });
+});
+
+describe('plants', () => {
+  it('meshes a plant as two crossed quads seen from both sides, in the cutout pass, a little off the middle', () => {
+    expect(quads([[4, 5, 4, STONE], [4, 6, 4, TALL_GRASS]])).toEqual([6, 4, 0]);   // the stone's top still shows
+    const vs = verts(mesh([[4, 6, 4, TALL_GRASS]])[1]!);
+    expect(vs.length).toBe(8);                                       // both sides share their corners
+    for (const v of vs) {
+      expect(v[5]).toBe(T_TALL_GRASS);
+      expect(v[0]).toBeGreaterThan(4 - 0.2);
+      expect(v[0]).toBeLessThan(5 + 0.2);
+      expect([6, 7]).toContain(v[1]);
+    }
+    // grass is drawn off the middle of its block (by a hash of where it is); seagrass isn't
+    const mid = (m: PassMesh) => verts(m).reduce((a, v) => a + v[0], 0) / (m.pos.length / 3);
+    expect(Math.abs(mid(mesh([[4, 6, 4, TALL_GRASS]])[1]!) - 4.5)).toBeGreaterThan(0.001);
+    expect(mid(mesh([[4, 6, 4, SEAGRASS]], false, [[4, 6, 4, WATERLOGGED]])[1]!)).toBeCloseTo(4.5);
+    // at a chunk's edge it never reaches out of the chunk on the low side (positions are unsigned)
+    for (let z = 0; z < CS; z++) for (const v of verts(mesh([[0, 6, z, TALL_GRASS]])[1]!)) expect(v[0]).toBeGreaterThanOrEqual(0);
+  });
+
+  it('lights a plant by its own block, a little darker at its foot', () => {
+    const m = mesh([[4, 6, 4, TALL_GRASS]], false, [], (x, y, z) => (x === 4 && y === 6 && z === 4 ? 0x95 : 0))[1]!;
+    const vs = vertices(m, () => true);
+    for (const [, sky, blk] of vs) expect([sky, blk]).toEqual([9 * 17, 5 * 17]);
+    const foot = vertices(m, (_x, y) => y === 6), tip = vertices(m, (_x, y) => y === 7);
+    expect(Math.max(...foot.map((v) => v[0]))).toBeLessThan(Math.min(...tip.map((v) => v[0])));
+  });
+
+  it('draws a waterlogged plant with the water round it, joined to the water next to it', () => {
+    // alone: the plant, and a block of water's faces
+    expect(quads([[4, 5, 4, SEAGRASS]], false, [[4, 5, 4, WATERLOGGED]])).toEqual([0, 4, 6]);
+    // beside more water: no faces between them, just like two water blocks
+    expect(quads([[4, 5, 4, SEAGRASS], [5, 5, 4, WATER]], false, [[4, 5, 4, WATERLOGGED]])).toEqual([0, 4, 10]);
+    // under water: no top face (it is full height), and the water above has no bottom face toward it
+    expect(quads([[4, 5, 4, SEAGRASS], [4, 6, 4, WATER]], false, [[4, 5, 4, WATERLOGGED]])).toEqual([0, 4, 10]);
+    // and its water is drawn exactly as a water source would be
+    for (const near of [[5, 5, 4, WATER], [4, 6, 4, WATER], [4, 4, 4, STONE]]) {
+      expect(verts(mesh([[4, 5, 4, SEAGRASS], near], false, [[4, 5, 4, WATERLOGGED]])[2]!)).toEqual(verts(mesh([[4, 5, 4, WATER], near])[2]!));
+    }
+    // not waterlogged (no water there), seagrass is just the plant, and the water beside it has a face toward it
+    expect(quads([[4, 5, 4, SEAGRASS], [5, 5, 4, WATER]])).toEqual([0, 4, 6]);
+  });
+
+  it('meshes the cactus as a column a little in from its block, in the opaque pass', () => {
+    expect(quads([[4, 5, 4, CACTUS]])).toEqual([6, 0, 0]);
+    const vs = verts(mesh([[4, 5, 4, CACTUS]])[0]!);
+    expect(new Set(vs.map((v) => v[0]))).toEqual(new Set([4 + INSET, 5 - INSET]));
+    expect(new Set(vs.map((v) => v[1]))).toEqual(new Set([5, 6]));
+    expect(vs.some((v) => v[5] === T_CACTUS)).toBe(true);
+    // stacked, the shared top and bottom go; its sides show even against stone (they are set in from it)
+    expect(quads([[4, 5, 4, CACTUS], [4, 6, 4, CACTUS]])).toEqual([10, 0, 0]);
+    expect(quads([[4, 5, 4, CACTUS], [5, 5, 4, STONE]])).toEqual([12, 0, 0]);
+  });
+
+  it('lays a lily pad on the water\'s surface, and hangs vines just out from their wall, seen from both sides', () => {
+    expect(quads([[4, 5, 4, WATER], [4, 6, 4, LILY_PAD]])).toEqual([0, 2, 6]);   // the water's (lowered) top still shows
+    for (const v of verts(mesh([[4, 5, 4, WATER], [4, 6, 4, LILY_PAD]])[1]!)) expect(v[1]).toBeCloseTo(6 - ON_WATER, 1);
+    expect(quads([[3, 6, 4, STONE], [4, 6, 4, VINES]], false, [[4, 6, 4, 1]])).toEqual([6, 2, 0]);
+    for (const v of verts(mesh([[4, 6, 4, VINES]], false, [[4, 6, 4, 1]])[1]!)) expect(v[0]).toBeCloseTo(4 + FLAT_OUT, 1);
+    for (const v of verts(mesh([[4, 6, 4, VINES]], false, [[4, 6, 4, 4]])[1]!)) expect(v[2]).toBeCloseTo(5 - FLAT_OUT, 1);
+    expect(CROSS_IN).toBeGreaterThan(0);
   });
 });

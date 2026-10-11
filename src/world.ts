@@ -1,6 +1,6 @@
 import { CB, CS, H, NCX, NCZ, CHUNK_VOL, CI, SB, SH, NSEC, SEC_VOL, inWorld } from './config';
-import { AIR, WATER, SOLID, TARGETABLE, MODEL, LEVEL, FALLING, liquidHeight } from './blocks';
-import { torchBox } from './torch';
+import { AIR, WATER, SOLID, TARGETABLE, LEVEL, FALLING, liquidHeight, waterState } from './blocks';
+import { blockBox } from './plants';
 
 /* ============================ CHUNKS ============================ */
 export interface Chunk {
@@ -87,6 +87,10 @@ export class World {
     const c = this.chunks[(x >> CB) + (z >> CB) * NCX];
     return c && c.state ? c.state[CI(x & (CS - 1), y, z & (CS - 1))] : 0;
   }
+  /** The water in a block: its water state (0 a source … see LEVEL, FALLING), −1 for none (a waterlogged plant is a source) */
+  water(x: number, y: number, z: number): number {
+    return waterState(this.getBlock(x, y, z), this.getState(x, y, z));
+  }
   /** Packed light at a block (skylight << 4 | block light); 0 where nothing is lit. */
   getLight(x: number, y: number, z: number): number {
     if (y < 0 || y >= H || !inWorld(x, z)) return y >= H ? 0xf0 : 0;
@@ -137,11 +141,10 @@ export class World {
 
 export const world = new World();
 
-/** Is point (x, y, z) in water: inside a water block, below its surface? */
+/** Is point (x, y, z) in water: inside a block of water (or a waterlogged plant), below its surface? */
 export function inWater(x: number, y: number, z: number): boolean {
-  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
-  if (world.getBlock(bx, by, bz) !== WATER) return false;
-  return y - by < liquidHeight(world.getState(bx, by, bz), world.getBlock(bx, by + 1, bz) === WATER);
+  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z), st = world.water(bx, by, bz);
+  return st >= 0 && y - by < liquidHeight(st, world.water(bx, by + 1, bz) >= 0);
 }
 
 /** How far point (x, y, z) is below the surface of the water it is in, in blocks; −1 if it isn't in water. */
@@ -149,8 +152,8 @@ export function waterDepth(x: number, y: number, z: number): number {
   if (!inWater(x, y, z)) return -1;
   const bx = Math.floor(x), bz = Math.floor(z);
   let top = Math.floor(y);
-  while (top + 1 < H && world.getBlock(bx, top + 1, bz) === WATER) top++;
-  return top + liquidHeight(world.getState(bx, top, bz)) - y;
+  while (top + 1 < H && world.water(bx, top + 1, bz) >= 0) top++;
+  return top + liquidHeight(world.water(bx, top, bz)) - y;
 }
 
 const flow = [0, 0];
@@ -160,13 +163,12 @@ const flow = [0, 0];
  */
 export function waterFlow(x: number, y: number, z: number): number[] {
   flow[0] = flow[1] = 0;
-  if (world.getBlock(x, y, z) !== WATER) return flow;
-  const st = world.getState(x, y, z);
-  if (st & FALLING || !(st & LEVEL)) return flow;
+  const st = world.water(x, y, z);
+  if (st < 0 || st & FALLING || !(st & LEVEL)) return flow;
   const h = liquidHeight(st);
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const nb = world.getBlock(x + dx, y, z + dz);
-    const drop = nb === WATER ? h - liquidHeight(world.getState(x + dx, y, z + dz)) : SOLID[nb] ? 0 : h;
+    const ns = world.water(x + dx, y, z + dz);
+    const drop = ns >= 0 ? h - liquidHeight(ns) : SOLID[world.getBlock(x + dx, y, z + dz)] ? 0 : h;
     if (drop > 0) { flow[0] += dx * drop; flow[1] += dz * drop; }
   }
   const l = Math.hypot(flow[0], flow[1]);
@@ -200,10 +202,11 @@ function rayBox(ox: number, oy: number, oz: number, dx: number, dy: number, dz: 
 
 /**
  * First block that can be aimed at (not air, not liquid) along the ray, plus the face normal it was
- * entered through. Torches only count where the ray meets their (small) hit box. Works across chunk
- * borders; unloaded chunks read as air. The result object is reused.
+ * entered through. Torches and plants only count where the ray meets their (small) hit box. `water`:
+ * water counts as well (a lily pad goes on it). Works across chunk borders; unloaded chunks read as
+ * air. The result object is reused.
  */
-export function raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): Hit | null {
+export function raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, water = false): Hit | null {
   let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
   const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
   const ddx = dx ? Math.abs(1 / dx) : Infinity, ddy = dy ? Math.abs(1 / dy) : Infinity, ddz = dz ? Math.abs(1 / dz) : Infinity;
@@ -213,12 +216,17 @@ export function raycast(ox: number, oy: number, oz: number, dx: number, dy: numb
   let nx = 0, ny = 0, nz = 0, t = 0;
   while (t <= max) {
     const id = world.getBlock(x, y, z);
+    if (water && id === WATER) {
+      hit.x = x; hit.y = y; hit.z = z; hit.nx = nx; hit.ny = ny; hit.nz = nz;
+      return hit;
+    }
     if (TARGETABLE[id]) {
-      if (MODEL[id] !== 1) {
+      const box = blockBox(id, world.getState(x, y, z), world.seed, x, y, z);
+      if (!box) {
         hit.x = x; hit.y = y; hit.z = z; hit.nx = nx; hit.ny = ny; hit.nz = nz;
         return hit;
       }
-      const n = rayBox(ox - x, oy - y, oz - z, dx, dy, dz, torchBox(world.getState(x, y, z)), max);
+      const n = rayBox(ox - x, oy - y, oz - z, dx, dy, dz, box, max);
       if (n) {
         hit.x = x; hit.y = y; hit.z = z; hit.nx = n[0]; hit.ny = n[1]; hit.nz = n[2];
         return hit;

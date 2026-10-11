@@ -3,7 +3,8 @@ import {
   AIR, GRASS, DIRT, STONE, SAND, LOG, PLANKS, LEAVES, BRICK, BEDROCK, WATER, GLASS, TORCH, B, HOTBAR, NT,
   SOLID, OPAQUE, PASS, MODEL, OCCLUDES, TARGETABLE, REPLACEABLE, SLIPPERY, faceHidden, PICKER, TERRACOTTAS,
   SNOW, ICE, PACKED_ICE, SANDSTONE, RED_SAND, TERRACOTTA, GRAVEL, CLAY, PODZOL, COARSE_DIRT, MUD, MOSS, BASALT, OBSIDIAN,
-  COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL, T_SNOW,
+  COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL, T_SNOW, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES, BUILD_ON, LOGGABLE,
+  SUPPORT, STACKS, OFFSET, S_NONE, S_FLOOR, S_WATER, S_WALL, S_TORCH, WATERLOGGED, waterState,
 } from '../src/blocks';
 import { TILE_PAINTERS } from '../src/textures';
 
@@ -22,7 +23,11 @@ describe('block registry', () => {
       COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL]).toEqual([13, 14, 15, 16, 17, 18, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
     expect(TERRACOTTAS.map((_, i) => B[TERRACOTTA + i].name)).toEqual(TERRACOTTAS);
     expect(TERRACOTTAS.length).toBe(6);
-    expect(B.length).toBe(37);
+  });
+
+  it('keeps the ids of the plants', () => {
+    expect([TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES]).toEqual([37, 38, 39, 40, 41]);
+    expect(B.length).toBe(42);
   });
 
   it('has a painter for every tile', () => {
@@ -33,7 +38,7 @@ describe('block registry', () => {
     B.forEach((b, id) => {
       expect(b.id).toBe(id);
       expect(['opaque', 'cutout', 'translucent']).toContain(b.renderPass);
-      expect(['cube', 'torch', 'liquid']).toContain(b.model);
+      expect(['cube', 'torch', 'liquid', 'cross', 'inset', 'flat']).toContain(b.model);
       expect(b.lightEmission).toBeGreaterThanOrEqual(0);
       expect(b.lightEmission).toBeLessThanOrEqual(15);
       expect([0, 1, 2, 15]).toContain(b.lightFilter);
@@ -84,7 +89,9 @@ describe('block registry', () => {
       expect(SOLID[b.id]).toBe(+b.solid);
       expect(OPAQUE[b.id]).toBe(+b.opaque);
       expect(PASS[b.id]).toBe(['opaque', 'cutout', 'translucent'].indexOf(b.renderPass));
-      expect(MODEL[b.id]).toBe(['cube', 'torch', 'liquid'].indexOf(b.model));
+      expect(MODEL[b.id]).toBe(['cube', 'torch', 'liquid', 'cross', 'inset', 'flat'].indexOf(b.model));
+      expect(SUPPORT[b.id]).toBe(['none', 'floor', 'water', 'wall', 'torch'].indexOf(b.support));
+      expect([STACKS[b.id], LOGGABLE[b.id], OFFSET[b.id]]).toEqual([+b.stacks, +(b.waterlog !== 'no'), +b.offset]);
     }
     // aim at anything but air and liquids; build into air and liquids only
     expect([AIR, WATER, TORCH, GLASS, STONE].map((id) => TARGETABLE[id])).toEqual([0, 0, 1, 1, 1]);
@@ -92,6 +99,46 @@ describe('block registry', () => {
     // ambient occlusion: opaque cubes and leaves darken corners; glass, water, ice and torches don't
     expect([STONE, LEAVES, GLASS, WATER, ICE, TORCH, AIR].map((id) => OCCLUDES[id])).toEqual([1, 1, 0, 0, 0, 0, 0]);
     expect([GLOW_CRYSTAL, ICE, OBSIDIAN].map((id) => [TARGETABLE[id], REPLACEABLE[id]])).toEqual([[1, 0], [1, 0], [1, 0]]);
+  });
+});
+
+describe('plants', () => {
+  const PLANTS = [TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES];
+
+  it('are models of their own, in the cutout pass (the cactus: a solid, inset column in the opaque one)', () => {
+    expect(PLANTS.map((id) => B[id].model)).toEqual(['cross', 'cross', 'inset', 'flat', 'flat']);
+    for (const id of PLANTS) {
+      expect(B[id]).toMatchObject({ opaque: false, solid: id === CACTUS, renderPass: id === CACTUS ? 'opaque' : 'cutout' });
+      expect(TARGETABLE[id]).toBe(1);                // they can be broken
+      expect(OCCLUDES[id]).toBe(0);                  // no ambient occlusion round them
+    }
+    // seagrass filters light like the water it grows in; the others let it through
+    expect(PLANTS.map((id) => B[id].lightFilter)).toEqual([0, 2, 0, 0, 0]);
+    expect(B[CACTUS].hurts).toBe(true);
+  });
+
+  it('need holding up: by the ground (the cactus by more cactus too), the water under a lily pad, a wall behind vines', () => {
+    expect(PLANTS.map((id) => SUPPORT[id])).toEqual([S_FLOOR, S_FLOOR, S_FLOOR, S_WATER, S_WALL]);
+    expect(PLANTS.map((id) => STACKS[id])).toEqual([0, 0, 1, 0, 0]);
+    expect([AIR, STONE, WATER, GLASS, LEAVES].map((id) => SUPPORT[id])).toEqual([S_NONE, S_NONE, S_NONE, S_NONE, S_NONE]);
+    expect(SUPPORT[TORCH]).toBe(S_TORCH);
+  });
+
+  it('make way for building (grass, seagrass, vines), and nothing is built against them', () => {
+    expect(PLANTS.map((id) => REPLACEABLE[id])).toEqual([1, 1, 0, 0, 1]);
+    expect(PLANTS.map((id) => BUILD_ON[id])).toEqual([0, 0, 1, 0, 0]);
+    expect([AIR, WATER, TORCH, STONE, GLASS, LEAVES].map((id) => BUILD_ON[id])).toEqual([0, 0, 0, 1, 1, 1]);
+  });
+
+  it('grow in water where they can: a waterlogged plant is a water source as well', () => {
+    expect(PLANTS.map((id) => B[id].waterlog)).toEqual(['no', 'only', 'no', 'no', 'no']);
+    expect(waterState(WATER, 0)).toBe(0);
+    expect(waterState(WATER, 3)).toBe(3);
+    expect(waterState(SEAGRASS, WATERLOGGED)).toBe(0);
+    expect(waterState(SEAGRASS, 0)).toBe(-1);                  // not waterlogged
+    expect(waterState(TALL_GRASS, WATERLOGGED)).toBe(-1);      // can't be
+    expect(waterState(STONE, WATERLOGGED)).toBe(-1);
+    expect(waterState(AIR, 0)).toBe(-1);
   });
 });
 

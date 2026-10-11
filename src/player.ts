@@ -1,6 +1,6 @@
 import { H, PR, PH, EYE, GRAV, JUMP, WALK, RUN, REACH, EPS } from './config';
 import { world, raycast, inWater, waterFlow, type Hit } from './world';
-import { SLIPPERY } from './blocks';
+import { B, SLIPPERY } from './blocks';
 
 /* ============================ PLAYER ============================ */
 /** Feet position (x, y, z). Mutated in place — never reassign. */
@@ -31,8 +31,15 @@ const WADE_FALL = -4;
 const CURRENT = 1.2;
 /** How quickly the player's speed follows the controls (1/s): on the ground, on slippery ground (ice), in the air, swimming */
 const GRIP = 14, ICE_GRIP = 1.6, AIR_GRIP = 5, SWIM_GRIP = 4;
-/** Told when the player hits the water fast: where (on the surface) and how fast (blocks a second) */
-export const playerEvents = { splash: (_x: number, _y: number, _z: number, _speed: number) => {} };
+/** How often (s) touching something that hurts tells playerEvents.touch again */
+const TOUCH_EVERY = 0.5;
+/**
+ * `splash`: the player hits the water fast: where (on the surface) and how fast (blocks a second).
+ * `touch`: the player is touching block `id`, which would hurt (a cactus): the hook for damage, once
+ * there is health; told every TOUCH_EVERY seconds while it lasts.
+ */
+export const playerEvents = { splash: (_x: number, _y: number, _z: number, _speed: number) => {}, touch: (_id: number) => {} };
+let touchT = 0;
 
 /** What the controls want this frame (see input.ts readControls). */
 export interface Controls {
@@ -84,6 +91,25 @@ export const overlapsPlayer = (x: number, y: number, z: number) =>
   y < P[1] + PH - EPS && y + 1 > P[1] + EPS &&
   z < P[2] + PR - EPS && z + 1 > P[2] - PR + EPS;
 
+/**
+ * The blocks round the player: returns how much what they're in slows them (× speed, the slowest
+ * block's), and tells playerEvents.touch about a block they touch that would hurt.
+ */
+function surroundings(dt: number): number {
+  const m = 0.05, x0 = Math.floor(P[0] - PR - m), x1 = Math.floor(P[0] + PR + m), z0 = Math.floor(P[2] - PR - m), z1 = Math.floor(P[2] + PR + m);
+  const y0 = Math.floor(P[1] - m), y1 = Math.floor(P[1] + PH + m);
+  let slow = 1, hurt = 0;
+  for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+    const b = B[world.getBlock(x, y, z)];
+    if (b.hurts) hurt = b.id;
+    // slowed only by what the player is inside, not what they brush past
+    if (b.slow < slow && x + 1 > P[0] - PR && x < P[0] + PR && z + 1 > P[2] - PR && z < P[2] + PR && y + 1 > P[1] && y < P[1] + PH) slow = b.slow;
+  }
+  touchT -= dt;
+  if (hurt && touchT <= 0) { touchT = TOUCH_EVERY; playerEvents.touch(hurt); }
+  return slow;
+}
+
 /** How deep in water the player is: 0 dry, 1 feet, 2 waist, 3 head under */
 function wetness(): number {
   if (inWater(P[0], P[1] + EYE, P[2])) return 3;
@@ -105,6 +131,8 @@ export function update(dt: number, ctl: Controls): void {
   const swim = player.wet >= 2;
   player.breath = player.wet === 3 ? Math.max(0, player.breath - dt) : Math.min(BREATH, player.breath + dt * 4);
 
+  // what the player is in (thick plants slow them down) and touching (something that hurts: the hook)
+  const slow = surroundings(dt);
   const ix = ctl.x, iz = ctl.z;
   const sp = (ctl.run ? RUN : WALK) * (swim ? SWIM_SPEED : player.wet ? WADE_SPEED : 1);
   const s = Math.sin(player.yaw), c = Math.cos(player.yaw), f = -iz;
@@ -136,7 +164,7 @@ export function update(dt: number, ctl: Controls): void {
   if (!wasWet && player.wet && vy0 < -6) playerEvents.splash(P[0], P[1] + FEET, P[2], -vy0);
 
   const n = Math.max(1, Math.ceil((Math.max(Math.abs(V[0]), Math.abs(vy), Math.abs(V[2])) * dt) / 0.3));
-  const h = dt / n;
+  const h = (dt / n) * slow;
   let bx = false, bz = false;
   player.onGround = false;
   for (let i = 0; i < n; i++) {
@@ -156,8 +184,8 @@ export function update(dt: number, ctl: Controls): void {
   }
 }
 
-/** The block under the crosshair, within reach. */
-export function aim(): Hit | null {
+/** The block under the crosshair, within reach; `water`: water counts too (to put a lily pad on it). */
+export function aim(water = false): Hit | null {
   const cp = Math.cos(player.pitch);
-  return raycast(P[0], P[1] + EYE, P[2], -Math.sin(player.yaw) * cp, Math.sin(player.pitch), -Math.cos(player.yaw) * cp, REACH);
+  return raycast(P[0], P[1] + EYE, P[2], -Math.sin(player.yaw) * cp, Math.sin(player.pitch), -Math.cos(player.yaw) * cp, REACH, water);
 }

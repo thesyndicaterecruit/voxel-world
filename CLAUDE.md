@@ -10,8 +10,8 @@ are islands of 14 biomes (meadows, forests, snowy peaks, deserts, badlands, jung
 volcano, three kinds of ocean…) with the sea at y = 48, whose grass, leaves and water take their
 biome's colours; worlds made before the world grew taller keep the first generator (sea at y = 20)
 so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and
-break/place 36 block types (glass, torches, ice, ores, a glowing crystal among them), any of them
-put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
+break/place 41 block types (glass, torches, ice, ores, a glowing crystal, plants among them), any
+of them put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
 plus the player state and hotbar, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
 Chrome are the target. All textures are painted procedurally at startup — there are no image assets
@@ -47,9 +47,9 @@ src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
                      biome teleport, biome haze, resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
-  blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery flags, lookup
-                     tables, faceHidden() culling rule, HOTBAR (a new world's), PICKER (the picker's tabs), rotatable
-                     tiles
+  blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery/support/waterlog
+                     flags, lookup tables, faceHidden() culling rule, waterState (waterlogged plants), HOTBAR (a new
+                     world's), PICKER (the picker's tabs), rotatable tiles
   noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise (2D and 3D), fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
                      RGBA tile texture array (grass, leaves, water turned grey), the biome tint map (setTints),
@@ -57,6 +57,8 @@ src/
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
                      time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
+  plants.ts          Blocks that aren't cubes (pure): plant offsets, hit boxes (blockBox), what holds a block up
+                     (holds) and popping what nothing holds any more (popUnsupported)
   light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relightMany() after edits
   water.ts           Flowing water (main thread): ticks, updates only where something disturbed it, the flow rules,
                      pending updates for saving
@@ -86,8 +88,9 @@ src/
   db.ts              Tiny promise wrapper over IndexedDB
   rle.ts             Run-length encoding of chunk data (varint run lengths)
   mesher.ts          Pure chunk mesher, a section at a time: padded chunk blocks + light + state → typed arrays per
-                     render pass (face culling, baked face shading, AO, smooth light, tile layer; cube, torch and
-                     liquid models: water surfaces shaped by their neighbours, flat ones merged); spliceSections
+                     render pass (face culling, baked face shading, AO, smooth light, tile layer; cube, torch,
+                     liquid, cross, inset and flat models: water surfaces shaped by their neighbours, flat ones
+                     merged, waterlogged plants with their water); spliceSections
   meshing.ts         paddedCopy (chunk + 1-block border: blocks, light or state), mesher output → BufferGeometry;
                      boxesGeometry
   environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
@@ -96,10 +99,11 @@ src/
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
                      splashes (the last three lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics (sliding on
-                     ice), swimming,
-                     auto-jump, aim(); playerEvents (splash)
+                     ice, slowed by what they're in), swimming, auto-jump, aim(); playerEvents (splash, touch: the
+                     hook for damage)
   audio.ts           Sound hooks (playSound), silent until the game has audio
-  interact.ts        Break/place logic (act; torch facing, torches popping off) and target highlighting (updateTarget)
+  interact.ts        Break/place logic (act; torch and vine facing, plants in water, what makes way) and target
+                     highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes / block picker (taps, swipes), mouse + keyboard
                      fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways; the world's blocks), block picker (tabs,
@@ -107,7 +111,8 @@ src/
                      Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
                      screen + world list, error display
   style.css          All styles
-tests/               Unit tests of the pure modules (Vitest): registry + face culling, light (spreading, removal,
+tests/               Unit tests of the pure modules (Vitest): registry + face culling, plants (popping off when
+                     unsupported, hit boxes, offsets), light (spreading, removal,
                      chunk borders, incremental = fresh, single and batched, high up), mesher (water surfaces too),
                      sections (meshing, splicing, counts, light worked out only as high as needed, water falling
                      through them), torch geometry, save format + migration, RLE, mipmaps, generation (generator
@@ -140,9 +145,11 @@ under the player are loaded) → `water.update()` (a tick every 0.2 s) → camer
 (apply finished meshes, unload, start worker jobs, rebuild water groups) → `updateTarget` →
 particles → environment → render. Edits go `world.setBlock` → `world.onChange`, which tells the
 water (`water.blockChanged`: schedule the water in and next to the block) and collects the change;
-a microtask then hands all the changes made together (one action, one tick of water) to
-`streamer.blocksChanged`, which relights around them on the spot and re-meshes the touched chunks
-(neighbours too, for borders) and every chunk whose light changed, ahead of everything else.
+a microtask then pops whatever the changed blocks held up that nothing holds any more
+(`popUnsupported`: torches, plants, and what those held up) and hands all the changes made together
+(one action, one tick of water, the popping) to `streamer.blocksChanged`, which relights around them
+on the spot and re-meshes the touched chunks (neighbours too, for borders) and every chunk whose
+light changed, ahead of everything else.
 
 ## Conventions
 
@@ -278,7 +285,13 @@ a microtask then hands all the changes made together (one action, one tick of wa
   mirrors the deep further out, fogged half as much as the rest. Out of water it stays single-sided,
   or a pond would show its far side through its near one. Water can't be aimed at (raycasts pass
   through it); placing a block into water replaces it, but torches refuse. The hotbar's Water places
-  a source (creative-style; buckets come with an inventory).
+  a source (creative-style; buckets come with an inventory). *Waterlogged:* a plant that can sit in
+  water (seagrass) carries the `WATERLOGGED` state bit (0x80) there; its block is water too, a source
+  — `waterState(id, state)` (and `world.water(x, y, z)`) gives the water in any block, and
+  everything that asks about water goes through it: the flow (water flows out of a waterlogged plant,
+  never into it; flowing water washes away plants that can't be waterlogged, like torches), swimming
+  and the camera, the mesher (it draws the water round the plant as a source, joined to the water
+  next to it). Breaking a waterlogged plant leaves its water.
 - **Swimming** (`player.ts`): `player.wet` says how deep the player is — 1 feet (0.1 up), 2 waist
   (0.9 up), 3 head (the eye) under. With the waist in, the player swims: 55% speed (80% wading with
   just the feet in), JUMP (held) swims up toward 3 blocks/s and without it they sink toward
@@ -290,7 +303,9 @@ a microtask then hands all the changes made together (one action, one tick of wa
   along its `waterFlow` at 1.2 blocks/s. Hitting the water faster than 6 blocks/s fires
   `playerEvents.splash` (main.ts: `fx.splash` and the silent `playSound('splash')` hook).
   `player.breath` counts seconds of air (`BREATH` 15) down with the head under water and back up
-  above it; nothing uses it until there is health.
+  above it; nothing uses it until there is health. Blocks the player is in slow them by their `slow`
+  (the slowest one's); touching a block that `hurts` (a cactus) tells `playerEvents.touch(id)` every
+  0.5 s — the hook for damage, also unused until there is health.
 - **Flowing water** (`water.ts`, main thread): water moves in ticks 0.2 s apart and only where
   something disturbed it — `world.onChange` schedules the water in and next to every changed block,
   a tick updates at most `MAX_UPDATES` (128) scheduled blocks, and what they change schedules its
@@ -311,20 +326,26 @@ a microtask then hands all the changes made together (one action, one tick of wa
 - **Block registry** (`blocks.ts`): every block type has an id (stored in chunks and saves, so ids
   never change; new blocks get new ids: 0–12 the first blocks, 13–36 the islands' — snow, ice,
   packed ice, sandstone, red sand, terracotta in 6 colours, gravel, clay, podzol, coarse dirt, mud,
-  moss, basalt, obsidian, coal/copper/iron/gold ore, glow crystal), a name, a tile per face kind
+  moss, basalt, obsidian, coal/copper/iron/gold ore, glow crystal — 37–41 plants: tall grass,
+  seagrass, cactus, lily pad, vines), a name, a tile per face kind
   (sandstone has a top, sides and bottom; basalt and podzol a top and sides), `solid` (collides), `opaque`
   (blocks light, hides neighbouring faces), `renderPass` ('opaque' | 'cutout' | 'translucent'),
   `lightEmission` (0–15), `lightFilter` (skylight removed: 0 air/glass, 1 leaves, 2 water, 15
-  opaque), `model` ('cube' | 'torch' | 'liquid'), `cullSame` (two of it hide their shared face:
-  glass, water), `jit` (brightness variation), `icon` (hotbar tile), `particle` (tile of the bits
-  that fly off when it breaks), `slippery` (the feet barely grip: ice and packed ice, see player.ts)
-  and optional `fastTex` (tiles when meshed as an opaque cube: leaves with Fancy leaves off).
+  opaque), `model` ('cube' | 'torch' | 'liquid' | 'cross' | 'inset' | 'flat', MODEL: M_CUBE …),
+  `cullSame` (two of it hide their shared face: glass, water), `jit` (brightness variation), `icon`
+  (hotbar tile), `particle` (tile of the bits that fly off when it breaks), `slippery` (the feet
+  barely grip: ice and packed ice, see player.ts), optional `fastTex` (tiles when meshed as an opaque
+  cube: leaves with Fancy leaves off), and for plants (see Plants) `support` ('none' | 'floor' |
+  'water' | 'wall' | 'torch'), `stacks`, `waterlog` ('no' | 'can' | 'only'), `replaceable` (building
+  there replaces it), `offset` (drawn off the middle of its block), `slow` (× the player's speed in
+  it) and `hurts` (touching it tells `playerEvents.touch`: the hook for damage).
   `lightEmission` and `lightFilter` drive the light (see Light); `lightFilter` also decides which
   cubes darken AO corners. Ice is a cube in the translucent pass (like water: `lightFilter` 2,
   `cullSame`, no jitter so its top reflects the sky in the water shader, which animates only the
   water's own tiles). The glow crystal is an opaque cube that gives off light 10, and its tile is
   drawn at full brightness (`TILE_KIND` 3 in `textures.ts`: the vertex shader sets its light to 1). Hot loops use the `Uint8Array` tables
-  (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, …) instead of the objects. Face culling is
+  (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, `REPLACEABLE` (air, liquids, plants that make way),
+  `BUILD_ON` (cubes and the cactus), `SUPPORT`, `LOGGABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
   `cullSame` blocks; leaves next to leaves still render unless leaves are meshed as opaque cubes. AO
   corners come from `OCCLUDES` (cubes that dim light: opaque blocks and leaves, not ice).
@@ -332,11 +353,28 @@ a microtask then hands all the changes made together (one action, one tick of wa
   of it, with the supporting block at −x, +x, −z, +z (`TORCH_SUPPORT`). The state comes from the face
   you build against (`torchStateFor`; never an underside), and the support must be a solid cube.
   Torches aren't solid, nothing builds against them, and the raycast only hits them inside their
-  small `torchBox` (rays past the stick reach the block behind). Breaking a block pops the torches it
-  holds (`popTorches` in `interact.ts`); that is the only way a support disappears today, so anything
-  new that removes blocks must do the same. The model is built in texels (1/32 block, uv = position
+  small `torchBox` (rays past the stick reach the block behind). A torch whose support goes pops off
+  (`support: 'torch'`, see Plants). The model is built in texels (1/32 block, uv = position
   in the torch tile), tilted 22.5° and turned per state in `TORCH_MODELS`; the mesher copies it into
   the cutout pass (flame and tip full-bright), and the placement ghost uses it too.
+- **Plants** (`plants.ts`, the models in `mesher.ts`): *cross* (grass, seagrass): two quads corner to
+  corner `CROSS_IN` in from the block's corners, each seen from both sides (the two windings share
+  their 4 vertices), in the cutout pass, lit by the light in their own block, 0.78 as bright at the
+  foot, no AO; `offset` plants sit up to 0.2 off the middle by a hash of where they are
+  (`plantOffset`, never toward −x/−z out of their chunk: vertex positions are unsigned). *inset* (the
+  cactus): a box `INSET` (1/16) in from its block's sides, its top and bottom hidden under more of it
+  or an opaque block, flat-lit. *flat* (lily pads, vines): one quad seen from both sides — state 0 on
+  the floor (`FLAT_UP` above it), or on the water's surface for a block held up by water (`ON_WATER`
+  below its own block's floor), turned one of four ways; states 1–4 against the wall at −x, +x, −z,
+  +z (`TORCH_SUPPORT`), `FLAT_OUT` from it. Hit boxes (`blockBox`, raycast and outline) are small,
+  so a tap past a plant reaches the block behind. *Support:* `holds()` — 'floor' needs a solid cube
+  below (or more of itself if it `stacks`: the cactus), 'water' water below, 'wall' a solid cube
+  where its state faces or the same vine above facing the same way (curtains hang), 'torch' a torch's
+  rule. After every change `popUnsupported` pops what lost its support, and what that held up in turn
+  (a waterlogged plant leaves its water). *Placing* (`interact.ts`): a replaceable target (grass,
+  seagrass, vines) is replaced where it stands; nothing is built against a torch or a plant; a plant
+  placed in water is waterlogged if it can be (`waterlog` 'can'/'only'), refused if not, and a
+  water-only plant is refused out of it; a lily pad aims at the water's surface (`aim(true)`).
 - **Fancy leaves** (menu toggle, default on, saved in localStorage): on, leaves use the see-through
   `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as opaque
   cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
