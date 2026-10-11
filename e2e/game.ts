@@ -57,7 +57,7 @@ export interface Voxel {
   biomeAt(x: number, z: number): string | null;
   teleport(id: number): number;
   stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number; genMs: number; genMax: number;
-    generated: number };
+    generated: number; prepMs: number };
 }
 declare global {
   interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }

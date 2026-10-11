@@ -27,6 +27,16 @@ export function vnoise(seed: number, x: number, z: number): number {
   return a + (b - a) * fx + (c - a) * fz + (a - b - c + d) * fx * fz;
 }
 
+/** 3D value noise (0–1): smooth, through a random value at every integer point */
+export function vnoise3(seed: number, x: number, y: number, z: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z), fx = sstep(x - ix), fy = sstep(y - iy), fz = sstep(z - iz);
+  const a = hash3(seed, ix, iy, iz), b = hash3(seed, ix + 1, iy, iz), c = hash3(seed, ix, iy + 1, iz), d = hash3(seed, ix + 1, iy + 1, iz);
+  const e = hash3(seed, ix, iy, iz + 1), f = hash3(seed, ix + 1, iy, iz + 1), g = hash3(seed, ix, iy + 1, iz + 1), h = hash3(seed, ix + 1, iy + 1, iz + 1);
+  const ab = a + (b - a) * fx, cd = c + (d - c) * fx, ef = e + (f - e) * fx, gh = g + (h - g) * fx;
+  const lo = ab + (cd - ab) * fy, hi = ef + (gh - ef) * fy;
+  return lo + (hi - lo) * fz;
+}
+
 export const fbm = (seed: number, x: number, z: number) =>
   vnoise(seed, x, z) * 0.55 + vnoise(seed, x * 2.03 + 17.3, z * 2.03 - 9.1) * 0.3 + vnoise(seed, x * 4.1 - 5.7, z * 4.1 + 23.9) * 0.15;
 

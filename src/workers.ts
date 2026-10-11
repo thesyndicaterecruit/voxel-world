@@ -22,8 +22,8 @@ export type WorkerRequest =
   | { type: 'mesh'; id: number; seed: number; cx: number; cz: number; sections: number[]; pad: Uint8Array; light: Uint8Array;
       state: Uint8Array | null; opaqueLeaves: boolean; seaLevel: number };
 export type WorkerResponse =
-  /** `ms`: how long the generation took in the worker */
-  | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array; ms: number }
+  /** `ms`: how long the generation took in the worker; `prep`: how long working out what the seed's chunks share took first (once per worker) */
+  | { type: 'gen'; id: number; cx: number; cz: number; data: Uint8Array; ms: number; prep: number }
   /** `ms`: how long the lighting took in the worker */
   | { type: 'light'; id: number; cx: number; cz: number; light: Uint8Array; blocks: Uint8Array; ms: number }
   /** `meshes`: one per section asked for, in the same order */

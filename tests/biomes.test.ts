@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CS, CI, H } from '../src/config';
-import { B, AIR, WATER, SOLID } from '../src/blocks';
+import { CS, CI, H, W, D } from '../src/config';
+import { B, LOG, LEAVES } from '../src/blocks';
 import { BIOMES, NBIOMES, GN, CELL, DEEP_OCEAN, WARM_REEF, FROZEN_OCEAN, TROPICAL, TAIGA, SNOWY_PEAKS, DESERT, BADLANDS, JUNGLE,
   biomeMap, biomeAt, islands, coast, findBiome, tintMap, weights } from '../src/biomes';
-import { generator, column2 } from '../src/gen';
+import { generator, column2, newCol } from '../src/gen';
 
 const SEEDS = [4242, 777, 123, 1, 99];
 
@@ -13,7 +13,11 @@ describe('biomes', () => {
     expect(new Set(BIOMES.map((b) => b.name)).size).toBe(NBIOMES);
     BIOMES.forEach((b, i) => {
       expect(b.id).toBe(i);
-      for (const id of [b.top, b.fill, b.bed, b.shore]) expect(B[id], `${b.name}: block ${id}`).toBeDefined();
+      for (const id of [b.top, b.fill, b.under, b.bed, b.shore, b.cliff, b.patch]) expect(B[id], `${b.name}: block ${id}`).toBeDefined();
+      expect(['rolling', 'hills', 'peaks', 'dunes', 'mesa', 'marsh', 'volcano']).toContain(b.shape);
+      expect(['plain', 'trench', 'bars']).toContain(b.seaShape);
+      for (const v of [b.cliffChance, b.patchAmount, b.freeze]) expect(v >= 0 && v <= 1).toBe(true);
+      expect(b.snowLine === 0 || (b.snowLine > 48 && b.snowLine < H)).toBe(true);
       for (const c of [b.grass, b.foliage, b.water]) expect(c >= 0 && c <= 0xffffff).toBe(true);
       expect(b.hazeAmount >= 0 && b.hazeAmount <= 1).toBe(true);
       expect(Array.isArray(b.decorations)).toBe(true);
@@ -62,21 +66,25 @@ describe('biomes', () => {
   });
 
   it('blend across their borders: a border is never steeper than the ground inside the biomes', () => {
-    const seed = 4242, x0 = 128, z0 = 128, n = 256;
-    const h = new Int16Array(n * n), bm = new Uint8Array(n * n);
-    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) { const c = column2(seed, x0 + x, z0 + z); h[x + z * n] = c.h; bm[x + z * n] = c.biome; }
-    let border = 0, inside = 0, borders = 0;
-    for (let z = 0; z < n - 1; z++) for (let x = 0; x < n - 1; x++) {
-      const i = x + z * n;
-      for (const j of [i + 1, i + n]) {
-        if (h[i] < 48 && h[j] < 48) continue;                    // the sea floor
-        const d = Math.abs(h[i] - h[j]);
-        if (bm[i] !== bm[j]) { border = Math.max(border, d); borders++; } else inside = Math.max(inside, d);
+    for (const seed of [4242, 777]) {
+      const n = W, h = new Int16Array(n * n), bm = new Uint8Array(n * n), skip = new Uint8Array(n * n), c = newCol();
+      for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+        column2(seed, x, z, c);
+        h[x + z * n] = c.h; bm[x + z * n] = c.biome;
+        skip[x + z * n] = +(Math.abs(c.t) < 10 || c.rock > 0);        // the coast's own cliffs and stacks are no border's doing
       }
+      let border = 0, inside = 0, borders = 0;
+      for (let z = 0; z < n - 1; z++) for (let x = 0; x < n - 1; x++) {
+        const i = x + z * n;
+        for (const j of [i + 1, i + n]) {
+          if ((h[i] < 48 && h[j] < 48) || skip[i] || skip[j]) continue;   // the sea floor, the coast
+          const d = Math.abs(h[i] - h[j]);
+          if (bm[i] !== bm[j]) { border = Math.max(border, d); borders++; } else inside = Math.max(inside, d);
+        }
+      }
+      expect(borders, `seed ${seed}`).toBeGreaterThan(1000);
+      expect(border).toBeLessThanOrEqual(inside);
     }
-    expect(borders).toBeGreaterThan(1000);
-    expect(border).toBeLessThanOrEqual(inside);
-    expect(border).toBeLessThanOrEqual(8);
   }, 60000);
 
   it('weigh the biomes around a column, adding up to one', () => {
@@ -120,27 +128,32 @@ describe('generator 2', () => {
     expect(g.generateChunk(777, 14, 17)).toEqual(a);
   });
 
-  it('is continuous across chunk and section borders: every column is its ground and the sea, nothing else', () => {
-    const seed = 4242;
-    for (const [cx, cz] of [[15, 15], [16, 15], [15, 16], [16, 16]]) {
-      const d = g.generateChunk(seed, cx, cz);
-      for (let lz = 0; lz < CS; lz++) for (let lx = 0; lx < CS; lx++) {
-        const { h } = column2(seed, cx * CS + lx, cz * CS + lz);
-        for (let y = 0; y < h; y++) expect(SOLID[d[CI(lx, y, lz)]], `${lx},${y},${lz} in ${cx},${cz}`).toBe(1);
-        for (let y = h; y < H; y++) {
-          const b = d[CI(lx, y, lz)];
-          // above the ground: the sea, and trees
-          if (y < g.seaLevel) expect(b).toBe(WATER);
-          else if (b !== AIR) expect(B[b].name === 'Log' || B[b].name === 'Leaves').toBe(true);
-        }
-      }
-    }
-    // across a chunk border the ground goes on as smoothly as inside a chunk
+  it('is continuous across chunk borders: the ground goes on, and trees reach over them', () => {
+    const seed = 4242, c = newCol();
+    // the ground steps across chunk borders no more than it does between the columns inside chunks
     let across = 0, within = 0;
-    for (let z = 240; z < 272; z++) {
-      across = Math.max(across, Math.abs(column2(seed, 255, z).h - column2(seed, 256, z).h));
-      within = Math.max(within, Math.abs(column2(seed, 250, z).h - column2(seed, 251, z).h));
+    for (let z = 0; z < D; z++) for (let x = 1; x < W; x++) {
+      const d = Math.abs(column2(seed, x, z, c).h - column2(seed, x - 1, z, newCol()).h);
+      if (x % CS === 0) across = Math.max(across, d); else within = Math.max(within, d);
     }
-    expect(across).toBeLessThanOrEqual(Math.max(3, within + 2));
+    expect(across).toBeLessThanOrEqual(within);
+    // a tree by a chunk border has its crown on both sides: its trunk in one chunk, leaves 2 out in the next
+    const chunk = new Map<number, Uint8Array>(), at = (x: number, y: number, z: number) => {
+      const k = (x >> 4) + (z >> 4) * 32;
+      if (!chunk.has(k)) chunk.set(k, g.generateChunk(seed, x >> 4, z >> 4));
+      return chunk.get(k)![CI(x & 15, y, z & 15)];
+    };
+    let trees = 0;
+    for (let cz = 8; cz <= 23; cz++) for (let cx = 8; cx <= 23; cx++) for (const [lx, dx] of [[14, 2], [15, 2], [0, -2], [1, -2]]) for (let lz = 2; lz < 14; lz++) {
+      const x = cx * CS + lx, z = cz * CS + lz;
+      let y = 1;
+      while (y < H - 1 && !(at(x, y, z) === LOG && at(x, y - 1, z) !== LOG)) y++;
+      if (y >= H - 1) continue;
+      let top = y;
+      while (at(x, top + 1, z) === LOG) top++;
+      trees++;
+      expect(at(x + dx, top - 1, z), `the tree at ${x},${y},${z}`).toBe(LEAVES);   // across the border, at the top of its trunk
+    }
+    expect(trees).toBeGreaterThan(5);
   });
 });

@@ -13,8 +13,11 @@ const ctx = self as unknown as {
 ctx.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'gen') {
-    const t0 = performance.now(), data = generator(m.gen).generateChunk(m.seed, m.cx, m.cz), ms = performance.now() - t0;
-    ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data, ms }, [data.buffer]);
+    // what the seed's chunks share is worked out with the first one (timed on its own)
+    const g = generator(m.gen), t0 = performance.now();
+    g.prepare(m.seed);
+    const t1 = performance.now(), data = g.generateChunk(m.seed, m.cx, m.cz), ms = performance.now() - t1;
+    ctx.postMessage({ type: 'gen', id: m.id, cx: m.cx, cz: m.cz, data, ms, prep: t1 - t0 }, [data.buffer]);
   } else if (m.type === 'light') {
     const t0 = performance.now(), light = lightChunk(m.blocks, m.present, m.height), ms = performance.now() - t0;
     ctx.postMessage({ type: 'light', id: m.id, cx: m.cx, cz: m.cz, light, blocks: m.blocks, ms }, [light.buffer, m.blocks.buffer]);

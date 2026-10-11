@@ -1,5 +1,13 @@
 import { W, D } from './config';
-import { AIR, GRASS, DIRT, STONE, SAND, GRAVEL, CLAY, PODZOL, MUD, MOSS, SNOW, SANDSTONE, RED_SAND, TERRACOTTA, BASALT, COARSE_DIRT } from './blocks';
+import { AIR, GRASS, DIRT, STONE, SAND, GRAVEL, CLAY, PODZOL, MUD, MOSS, SANDSTONE, RED_SAND, TERRACOTTA, BASALT, COARSE_DIRT } from './blocks';
+
+/**
+ * The shape of a biome's ground (landform in gen.ts): rolling country, steep hills, jagged peaks,
+ * dunes, terraced mesas, a marsh with pools, or a volcano round its island's middle
+ */
+export type Shape = 'rolling' | 'hills' | 'peaks' | 'dunes' | 'mesa' | 'marsh' | 'volcano';
+/** The shape of its sea floor: plain, with trenches, or with sandbars */
+export type SeaShape = 'plain' | 'trench' | 'bars';
 import { hash2, vnoise } from './noise';
 
 /* ============================ BIOMES ============================ */
@@ -29,12 +37,18 @@ export interface Biome {
   readonly name: string;
   /** A sea biome (its ground is the sea floor) */
   readonly ocean: boolean;
-  /** Land: how far the ground rises inland (blocks above the coast), how much it rolls, and how often (1/blocks) */
+  /** Land: its shape; how far the ground rises inland (blocks above the coast), how much more it rises and falls, and how often (1/blocks) */
+  readonly shape: Shape;
   readonly lift: number;
   readonly amp: number;
   readonly freq: number;
-  /** Sea: how deep its floor goes below sea level, offshore */
+  /** Sea: how deep its floor goes below sea level offshore, and its shape */
   readonly depth: number;
+  readonly seaShape: SeaShape;
+  /** How likely its islands are to have sea cliffs instead of beaches (0–1) */
+  readonly cliffChance: number;
+  /** How far its slopes and cliffs lean out (overhangs, blocks; 0: none) */
+  readonly overhang: number;
   /**
    * Its blocks, top down: the surface block, `fill` for fillDepth blocks under it, then `under` for
    * underDepth more, then stone; `bed` is its ground under water (3 deep), `shore` its ground at the
@@ -50,6 +64,12 @@ export interface Biome {
   /** Patches of another surface block (podzol, mud, clay on the sea floor…) on this much of its ground (0–1) */
   readonly patch: number;
   readonly patchAmount: number;
+  /** The block its steep faces show (cliffs, the sides of hills) */
+  readonly cliff: number;
+  /** Terracotta in bands by height in place of `under` and on its faces (the badlands) */
+  readonly bands: boolean;
+  /** Snow lies on its ground from this height up (0: never) */
+  readonly snowLine: number;
   /** How much of its sea's surface is ice (0–1) */
   readonly freeze: number;
   /** The colours (0xRRGGBB) its grass, leaves and water have: their tiles are grey and take these (textures.ts) */
@@ -65,52 +85,56 @@ export interface Biome {
 
 /** What a biome has unless it says otherwise */
 const BASE: Omit<Biome, 'id' | 'name'> = {
-  ocean: false, lift: 6, amp: 6, freq: 1 / 30, depth: 10, top: GRASS, fill: DIRT, fillDepth: 3, under: STONE, underDepth: 0,
-  bed: SAND, shore: SAND, patch: AIR, patchAmount: 0, freeze: 0, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8,
-  haze: 0, hazeAmount: 0, decorations: [],
+  ocean: false, shape: 'rolling', lift: 6, amp: 6, freq: 1 / 30, depth: 10, seaShape: 'plain', cliffChance: 0.3, overhang: 0,
+  top: GRASS, fill: DIRT, fillDepth: 3, under: STONE, underDepth: 0, bed: SAND, shore: SAND, patch: AIR, patchAmount: 0,
+  cliff: STONE, bands: false, snowLine: 0, freeze: 0, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8, haze: 0, hazeAmount: 0,
+  decorations: [],
 };
 const biome = (id: number, name: string, o: Partial<Biome>): Biome => ({ ...BASE, ...o, id, name });
 
 export const BIOMES: readonly Biome[] = [
   biome(DEEP_OCEAN, 'Deep Ocean', {
-    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 26, top: SAND, fill: SAND, bed: GRAVEL, patch: CLAY, patchAmount: 0.15,
+    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 26, seaShape: 'trench', top: SAND, fill: SAND, bed: GRAVEL, patch: CLAY, patchAmount: 0.15,
     grass: 0x55a032, foliage: 0x3f8a2a, water: 0x2c5fa8 }),
   biome(WARM_REEF, 'Warm Reef Ocean', {
-    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 9, top: SAND, fill: SAND, under: SANDSTONE, underDepth: 3, bed: SAND,
+    ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 9, seaShape: 'bars', top: SAND, fill: SAND, under: SANDSTONE, underDepth: 3, bed: SAND,
     grass: 0x8db84a, foliage: 0x5aa03a, water: 0x2fb5b0 }),
   biome(FROZEN_OCEAN, 'Frozen Ocean', {
     ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 16, top: GRAVEL, fill: GRAVEL, bed: GRAVEL, shore: GRAVEL, patch: CLAY, patchAmount: 0.15,
     freeze: 0.55, grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x6a8fb0, haze: 0xdfe8f0, hazeAmount: 0.25 }),
   biome(TROPICAL, 'Tropical Beach', {
-    lift: 1.5, amp: 2, freq: 1 / 18, depth: 5, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 4,
+    lift: 1.5, amp: 2.5, freq: 1 / 16, depth: 5, cliffChance: 0, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 4,
     grass: 0x8db84a, foliage: 0x5aa03a, water: 0x35b8b8, decorations: ['oak-sparse'] }),
   biome(MEADOW, 'Meadow', {
-    lift: 6, amp: 8, freq: 1 / 40, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8, decorations: ['oak-sparse'] }),
+    lift: 6, amp: 9, freq: 1 / 40, cliffChance: 0.35, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8, decorations: ['oak-sparse'] }),
   biome(FOREST, 'Forest', {
-    lift: 5, amp: 5, freq: 1 / 24, grass: 0x4a8f30, foliage: 0x2f7524, water: 0x3a78b8, decorations: ['oak'] }),
+    lift: 4, amp: 4, freq: 1 / 15, grass: 0x4a8f30, foliage: 0x2f7524, water: 0x3a78b8, decorations: ['oak'] }),
   biome(CHERRY, 'Cherry Grove', {
-    lift: 9, amp: 10, freq: 1 / 34, grass: 0x7cb85a, foliage: 0x5a9a3c, water: 0x4088c8, haze: 0xf4d6e4, hazeAmount: 0.12,
+    lift: 9, amp: 10, freq: 1 / 34, cliffChance: 0.4, grass: 0x7cb85a, foliage: 0x5a9a3c, water: 0x4088c8, haze: 0xf4d6e4, hazeAmount: 0.12,
     decorations: ['oak-sparse'] }),
   biome(TAIGA, 'Taiga', {
-    lift: 8, amp: 10, freq: 1 / 30, depth: 12, bed: GRAVEL, shore: GRAVEL, patch: PODZOL, patchAmount: 0.35,
+    lift: 8, amp: 10, freq: 1 / 30, depth: 12, cliffChance: 0.6, bed: GRAVEL, shore: GRAVEL, patch: PODZOL, patchAmount: 0.35, snowLine: 96,
     grass: 0x4f7f5c, foliage: 0x3a6650, water: 0x3a6a98, haze: 0xc8d8e8, hazeAmount: 0.15 }),
   biome(SNOWY_PEAKS, 'Snowy Peaks', {
-    lift: 32, amp: 36, freq: 1 / 44, depth: 14, top: SNOW, fill: STONE, fillDepth: 1, bed: GRAVEL, shore: GRAVEL,
+    shape: 'peaks', lift: 6, amp: 78, depth: 14, cliffChance: 0.7, overhang: 4, top: STONE, fill: STONE, fillDepth: 1, bed: GRAVEL,
+    shore: GRAVEL, patch: GRAVEL, patchAmount: 0.2, snowLine: 76,
     grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x5a80a8, haze: 0xe8f0f8, hazeAmount: 0.3 }),
   biome(DESERT, 'Desert Dunes', {
-    lift: 4, amp: 6, freq: 1 / 20, depth: 8, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 6,
+    shape: 'dunes', lift: 3, amp: 9, depth: 8, cliffChance: 0, cliff: SANDSTONE, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 6,
     grass: 0xb5a94e, foliage: 0x8a8a3a, water: 0x3aa0a8, haze: 0xf0dcb0, hazeAmount: 0.25 }),
   biome(BADLANDS, 'Badlands', {
-    lift: 14, amp: 12, freq: 1 / 40, top: RED_SAND, fill: RED_SAND, fillDepth: 2, under: TERRACOTTA, underDepth: 14, bed: RED_SAND,
+    shape: 'mesa', lift: 3, amp: 26, freq: 1 / 52, cliffChance: 0.5, top: RED_SAND, fill: RED_SAND, fillDepth: 1, under: TERRACOTTA,
+    underDepth: 40, bands: true, bed: RED_SAND,
     shore: RED_SAND, grass: 0xa58a48, foliage: 0x8a7a3a, water: 0x7a7a60, haze: 0xf0c8a0, hazeAmount: 0.25 }),
   biome(JUNGLE, 'Jungle', {
-    lift: 14, amp: 18, freq: 1 / 30, fillDepth: 4, patch: MOSS, patchAmount: 0.12,
+    shape: 'hills', lift: 8, amp: 28, freq: 1 / 26, cliffChance: 0.35, fillDepth: 4, patch: MOSS, patchAmount: 0.12,
     grass: 0x3aa028, foliage: 0x2a8a1e, water: 0x3a8a78, haze: 0xc8e0c0, hazeAmount: 0.2 }),
   biome(SWAMP, 'Swamp', {
-    lift: 0.6, amp: 1.5, freq: 1 / 18, depth: 4, bed: CLAY, shore: MUD, patch: MUD, patchAmount: 0.3,
+    shape: 'marsh', lift: 0.7, amp: 1.4, freq: 1 / 18, depth: 4, cliffChance: 0, bed: CLAY, shore: MUD, patch: MUD, patchAmount: 0.3,
     grass: 0x6a7a3a, foliage: 0x4e6630, water: 0x4a6a3a, haze: 0xb8c4a0, hazeAmount: 0.3, decorations: ['oak-sparse'] }),
   biome(VOLCANIC, 'Volcanic Island', {
-    lift: 20, amp: 4, freq: 1 / 16, depth: 18, top: BASALT, fill: BASALT, fillDepth: 4, bed: GRAVEL, shore: GRAVEL,
+    shape: 'volcano', lift: 18, amp: 3, depth: 18, cliffChance: 0.8, overhang: 1.5, cliff: BASALT, top: BASALT, fill: BASALT, fillDepth: 4,
+    bed: GRAVEL, shore: GRAVEL,
     patch: COARSE_DIRT, patchAmount: 0.2, grass: 0x5f6e44, foliage: 0x4e5a3a, water: 0x4a6070, haze: 0xa8a4a0, hazeAmount: 0.3 }),
 ];
 
@@ -121,7 +145,7 @@ export const BIOMES: readonly Biome[] = [
 // coastline is pushed in and out by warped noise. coast() says how far a column is from the nearest
 // coast: positive inland, negative out at sea.
 const K_ISLE = 0x45d9f3b7, K_IX = 0x1b873593, K_IZ = 0x5c6e1a2b, K_IR = 0x3a7c51d3, K_WX = 0x6c8e9cf5, K_WZ = 0x2f4a7b1d;
-const K_SHORE = 0x7f4a7c15, K_TEMP = 0x9e3779b9, K_HUM = 0x85ebca6b, K_SEC = 0xc2b2ae35;
+const K_SHORE = 0x7f4a7c15, K_TEMP = 0x9e3779b9, K_HUM = 0x85ebca6b, K_SEC = 0xc2b2ae35, K_CLIFF = 0x27d4eb2f;
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Open sea along the edge (blocks), and the island grid inside it */
 const MARGIN = 40, ISLES = 5, ICELL = (W - 2 * MARGIN) / ISLES;
@@ -134,6 +158,8 @@ export interface Island {
   temp: number; hum: number;
   /** Its dominant biome, and the one it has in patches or by height (see biomeOf) */
   primary: number; secondary: number;
+  /** How high its sea cliffs are (0: beaches all round) */
+  cliff: number;
 }
 
 /** The island of grid cell (gx, gz), or null where the sea is open */
@@ -149,7 +175,7 @@ function islandIn(seed: number, gx: number, gz: number): Island | null {
   const z = MARGIN + (gz + 0.5) * ICELL + (spawn ? 0 : (hash2(seed ^ K_IZ, gx, gz) - 0.5) * 2 * Math.max(0, j));
   const sx = spawn ? 1 : 0.75 + hash2(seed ^ K_IX, gx + 7, gz) * 0.5, sz = spawn ? 1 : 1.75 - sx;
   const k = spawn ? 0 : (hash2(seed ^ K_IZ, gx + 7, gz) - 0.5) * 0.8;
-  return { gx, gz, x, z, r, sx, sz, k, temp: 0, hum: 0, primary: MEADOW, secondary: FOREST };
+  return { gx, gz, x, z, r, sx, sz, k, temp: 0, hum: 0, primary: MEADOW, secondary: FOREST, cliff: 0 };
 }
 
 /** 0 frozen … 1 tropical: colder toward the north (−z), with slow wobbles */
@@ -197,6 +223,10 @@ export function islands(seed: number): { list: Island[]; grid: (Island | null)[]
     else set(i, k % 2 ? JUNGLE : TROPICAL, k % 2 ? TROPICAL : JUNGLE);
   });
   if (!hot.some((i) => i.primary === TROPICAL)) { const s = hot.slice().sort((a, b) => a.r - b.r)[0]; if (s && hot.length > 2) set(s, TROPICAL, TROPICAL); }
+  // sea cliffs on some islands (by their biome), beaches on the rest and on the start island
+  for (const i of list) {
+    if (i !== spawn && hash2(seed ^ K_CLIFF, i.gx, i.gz) < BIOMES[i.primary].cliffChance) i.cliff = 6 + Math.floor(hash2(seed ^ K_CLIFF, i.gx + 7, i.gz) * 8);
+  }
   islandSeed = seed; islandList = list; islandGrid = grid;
   return { list, grid };
 }

@@ -50,7 +50,7 @@ src/
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery flags, lookup
                      tables, faceHidden() culling rule, HOTBAR (a new world's), PICKER (the picker's tabs), rotatable
                      tiles
-  noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise, fbm (all take the seed); urlSeed()
+  noise.ts           Seeded hash2/hash3, mulberry PRNG, value noise (2D and 3D), fbm (all take the seed); urlSeed()
   textures.ts        Procedural 32×32 pixel-art tile painters (animated water: frames) → canvases, CanvasTextures,
                      RGBA tile texture array (grass, leaves, water turned grey), the biome tint map (setTints),
                      chunk materials per render pass (the water shader, tints), setUnderwater
@@ -62,15 +62,20 @@ src/
                      pending updates for saving
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
-  gen.ts             World generators by version (generator(v): sea level, cloud height, generateChunk(seed, cx, cz),
-                     findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2 (column2: the
-                     biomes' landforms blended, layer2: their blocks, trees)
+  gen.ts             World generators by version (generator(v): sea level, cloud height, prepare, generateChunk(seed,
+                     cx, cz), findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2: landforms
+                     per biome shape, column2 (blended, then the coast: cliffs, sea stacks, arches), overhangs,
+                     the blocks top down (rock faces, snow line, terracotta bands, crater), sea ice, trees
+  caves.ts           Generator 2's underground (pure): the cave network per seed (worm tunnels, caverns under the
+                     islands, hillside entrances) filed by chunk, carving that never reaches water, glow crystals on
+                     deep caverns' walls, ore veins
   biomes.ts          Generator 2's biomes (pure): the BIOMES table (data), the islands and their climate, coast()
                      (distance from the coast), the coarse biome map, weights() (blending), findBiome (teleport),
                      tintMap (grass/foliage/water colours over the world)
   gen1.ts            Generator 1, FROZEN (worlds made before generator versions): columnHeight, waterLevel (sea,
                      lakes), layering, trees, generateChunk, findSpawn; floodSea (old saves get the sea)
-  worker.ts          Web Worker entry: runs generateChunk, lightChunk and meshSection off the main thread
+  worker.ts          Web Worker entry: runs generateChunk (timing the seed's prepare on its own), lightChunk and
+                     meshSection off the main thread
   workers.ts         Worker pool (least-busy dispatch, transferable typed arrays) + message types
   streaming.ts       Chunk streaming: load/light/mesh/unload regions, job priorities, upload budget, edits (relight +
                      re-mesh the sections they touch), sections' meshes spliced into one per chunk and pass
@@ -109,7 +114,11 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      1's fingerprints, determinism, sea fill, lakes that hold), biomes (data, every biome in 3 of
                      5 seeds' worlds, one or two per island, cold never next to hot, borders no steeper than the
                      ground inside, teleport targets, smooth tints; generator 2 deterministic and continuous
-                     across chunk and section borders), flowing water (spreading, falling,
+                     across chunk borders, trees over them), terrain (two whole worlds: peaks to y 120 with snow
+                     and rock faces, terraced mesas with all six bands, dunes, swamp pools, the crater, trenches,
+                     sandbars, cliffs and beaches, stacks and arches, overhangs, caves with hillside entrances,
+                     no cave touching water, a cave carved alike across chunk and section borders, ore veins at
+                     their depths, crystals only on deep caverns' walls), flowing water (spreading, falling,
                      draining, infinite sources, chunk borders, saved updates), sliding on ice, swimming physics (sinking,
                      swimming up, bobbing, braking, climbing out)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
@@ -119,7 +128,8 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      screenshots, torchlight, frame time at night), water (a channel dug from the sea fills, a
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
-                     teleport by touch, then a screenshot of every biome; generation time per chunk)
+                     teleport by touch, then every biome pictured from the air; generation time per chunk)
+docs/                Pictures for pull requests (not part of the game)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
 .github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact
@@ -142,9 +152,13 @@ a microtask then hands all the changes made together (one action, one tick of wa
   not a drive-by bump.
 - **Generation is a pure function of (seed, chunkX, chunkZ).** Every block a generator makes comes
   from hashes/noise of the seed and *world* coordinates — no `Math.random`, no shared PRNG state, no
-  trig (engines may round it differently) — so a chunk is identical whichever order chunks are
-  generated in, on any thread. Trees use one candidate per 6×6 cell; a chunk stamps every tree whose
-  canopy reaches into it, including trees rooted in neighbouring chunks.
+  trig, `pow` or `exp` (engines may round them differently; `Math.sqrt` is exact) — so a chunk is
+  identical whichever order chunks are generated in, on any thread. What chunks share is worked out
+  once per seed and thread and kept (the islands, the biome map, the cave network, the terracotta
+  bands, sea stacks): caches of pure functions, never state. Anything that reaches over a chunk
+  border is made by both chunks alike: trees use one candidate per 6×6 cell and a chunk stamps every
+  tree whose canopy reaches into it, caves are filed under every chunk they touch, and a chunk walks
+  the ore veins started in its 8 neighbours too, keeping the blocks that land in it.
 - **Generator versions** (`gen.ts`): a world record keeps the `generatorVersion` that made it, and
   its unexplored chunks always come from that generator (`generator(v)`: also its sea level, cloud
   height, spawn), so the ground never shifts next to what a save holds. Generator 1 (`gen1.ts`) is
@@ -169,13 +183,16 @@ a microtask then hands all the changes made together (one action, one tick of wa
   blocks square, `GN` × `GN` (128 × 128) cells, worked out once per seed and thread (`biomeMap`; a
   worker's first chunk pays for it, which is the worst case in the generation timings).
   *A biome is data:* an entry of `BIOMES` (`Biome`; its index is its id, and the teleport list's
-  order) with `name`, `ocean`, its landform (`lift`: how far the ground rises above the coast inland,
-  `amp` and `freq`: how much and how often it rolls; `depth`: how far its sea floor sinks), its
-  blocks top down (`top`, `fill` `fillDepth` deep, `under` `underDepth` deep — sandstone under the
-  desert's sand, terracotta under the badlands' red sand — then stone; `bed` under water, `shore`
-  where the land meets the sea; `patch` on `patchAmount` of its ground in noise patches: podzol in
-  the taiga, mud in the swamp, clay on the sea floor), `freeze` (how much of its sea's surface is ice
-  floes: the frozen ocean's), its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours),
+  order) with `name`, `ocean`, its landform (`shape`: rolling, hills, peaks, dunes, mesa, marsh or
+  volcano; `lift`: how far the ground rises above the coast inland, `amp` and `freq`: how much more
+  and how often; `depth` and `seaShape`, plain, trench or bars: its sea floor; `cliffChance`: how
+  likely its islands have sea cliffs; `overhang`: how far its slopes lean out), its blocks top down
+  (`top`, `fill` `fillDepth` deep, `under` `underDepth` deep — sandstone under the desert's sand,
+  terracotta under the badlands' red sand — then stone; `bed` under water, `shore` where the land
+  meets the sea; `patch` on `patchAmount` of its ground in noise patches: podzol in the taiga, mud in
+  the swamp, clay on the sea floor; `cliff`: what its steep faces show; `bands`: terracotta in bands
+  by height instead of `under` and on faces; `snowLine`: snow on its ground above that height),
+  `freeze` (how much of its sea's surface is ice floes: the frozen ocean's), its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours),
   `haze` and `hazeAmount` (what the fog and sky lean toward there) and `decorations` (names of what
   grows on it: `oak` and `oak-sparse` trees for now; part 2 fills in the rest). Fields left out take
   `BASE`'s values (grass on dirt, a sandy bed and shore). *Blending:* `weights(seed, x, z, out)`
@@ -187,13 +204,49 @@ a microtask then hands all the changes made together (one action, one tick of wa
   average; hotbar icons keep their painted colours) and take their colour per vertex from the tint
   map (`tintMap(seed)` → `setTints`: a `GN` × `GN` texture array with a layer per kind, each texel
   the average of the biomes within 2 cells, sampled linearly by world x/z in the vertex shader; the
-  `tintKinds` uniform says which layer a tile takes, if any). The grass side's alpha marks its grass
+  `tileKinds` uniform, `TILE_KIND`, says which layer a tile takes, if any). The grass side's alpha marks its grass
   texels, the only ones the tint touches. Worlds without biomes (generator 1) keep `CLASSIC_TINTS`
   (the colours the tiles were painted) everywhere, so they look as they always did. *Haze:* every 6
   frames `main.ts` weighs the biomes around the camera and `env.setHaze` eases the fog and sky
   toward their haze colour (darkened with the sky at dusk and night). *Teleport* (menu → Teleport,
   `__voxel.teleport(id)`): `findBiome` finds the nearest cell well inside the biome (its 8
   neighbours the same), and the player lands on its ground or afloat on its sea.
+- **Generator 2's ground** (`gen.ts`). *Landforms* (`landform`, by the biome's `shape`; t is the
+  coast distance, everything rises from sea level at the coast): rolling country (fbm), hills
+  (sharpened fbm: the jungle), peaks (warped ridged noise, squared, rising over 26 blocks inland: up
+  to the cap at y = 120), dunes (asymmetric ridges across a per-world wind, one of 8 rational
+  directions), mesa (a plateau mask, the height floored to 4-block terraces), marsh (barely above the
+  sea, pools sunk below it), volcano (a concave cone round its island's middle, a crater inside
+  `CRATER`); offshore the sea floor sinks over `SHELF` blocks to the biome's depth, with trenches
+  (deep ocean: ridged lines, at least y = 6) or sandbars (warm reef, some just above the water).
+  *The coast* (`column2`, after blending): islands with `cliff` > 0 rise by that much within 2.5
+  blocks of the coast where the local biomes have cliffs (none in swamps, deserts, on beaches), deep
+  water at their foot; sea stacks stand in cells of 11 blocks 4–18 blocks off them (`stackIn`,
+  rock of the island's cliff block, grass on top), and some reach back to the cliff as arches (a
+  fin of rock, `lo`…`hi` above the water, its underside an arc). *Overhangs:* above y = S + 2 a
+  column whose `lean` > 0 (peaks, the volcano, cliff coasts) is solid where y is below the ground
+  height looked up a little to the side — offsets from smooth 3D noise on a 4-block lattice, times
+  `lean` (at most 4) — so faces bulge and recede with height; the chunk keeps the ground of 4
+  columns round it for that (2 otherwise). *Blocks* (`generateChunk2`): each column top down, a
+  block's depth under the open air above it picks it: the sea floor's blocks under water, the shore's
+  at the water's edge, the cliff block (or bands) on steep columns (a step of 3+ to a neighbour, 6+
+  above the snow line), snow above the snow line (±3), obsidian on a crater floor, the patch or top,
+  then fill, under and stone; bedrock at y = 0; the air below sea level is water (sources), and a
+  frozen sea's top layer ice floes. Then ore, caves and trees.
+- **Underground** (`caves.ts`, generator 2). *The cave network* (`network`, once per seed): worm
+  tunnels — in most 32-block cells one, deep down, 60–140 steps of 1.2 blocks, 1.3–2.7 wide,
+  turning on smooth noise and mostly level; in some an entrance that sets off uphill into a slope,
+  slowly going down — and caverns under the islands of radius 16 or more (one, two under the
+  biggest; three ellipsoids at y 12–28, with three tunnels leading off). Every ellipsoid is filed
+  under each chunk its box reaches (`fileShape`), and a chunk carves just its own (`carveCaves`).
+  *Dry:* caves stay 2 blocks below any water within 2 columns (the chunk's `DRY` limits), so they
+  never touch the sea or a pool and can't drain it (a test checks two whole worlds). *Glow crystals*
+  grow in patches (3D noise) on rock next to the air of the deep caverns (centre y ≤ 26).
+  *Ore veins* (`placeOres`): per chunk and ore, a number of random walks replacing stone — coal 20
+  of 12 blocks at y 16–96, copper 8 of 8 at 12–64, iron 7 of 7 at 6–56, gold 2 of 5 at 4–28 — and
+  a chunk also walks its neighbours' veins, keeping what lands in it. Timings: `__voxel.stream()`
+  reports the worker's time per chunk (`genMs` average, `genMax`) and the seed's preparation
+  (`prepMs`: islands, biome map, bands, cave network, once per worker).
 - **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
@@ -368,7 +421,7 @@ a microtask then hands all the changes made together (one action, one tick of wa
   `data[CI(x & 15, y, z & 15)]` — x fastest, then z, then y — in section y >> SB. The world is `H` =
   128 high. Block (x, y, z) occupies [x, x+1)×[y, y+1)×[z, z+1). Player `P` is the feet position;
   the eye is at `P[1] + EYE`. `yaw = 0` looks toward −Z.
-- **Workers only run pure code.** `gen.ts`, `gen1.ts`, `biomes.ts`, `light.ts`, `mesher.ts`,
+- **Workers only run pure code.** `gen.ts`, `gen1.ts`, `biomes.ts`, `caves.ts`, `light.ts`, `mesher.ts`,
   `torch.ts`, `noise.ts`, `blocks.ts`, `config.ts` are imported by `worker.ts`: no three.js, no DOM, no `world`.
   `meshChunk` only sees a padded copy of the chunk (one block of each neighbour, see `paddedCopy`).
   Per-block hashes use world coordinates.
@@ -438,7 +491,8 @@ a microtask then hands all the changes made together (one action, one tick of wa
   `seaLevel`, `generator`, `yaw`, `pitch`, `mode`, `onGround`, `wet`, `breath`, `pixelRatio`,
   `ready` (world loaded, play enabled), `count()` (non-air blocks in loaded chunks), `stream()`
   (loaded/lit/meshed/visible counts, draw calls, worker time per lighting job, the last relight's
-  cost, chunks generated and the worker's time per chunk: `genMs` on average, `genMax` at most),
+  cost, chunks generated and the worker's time per chunk: `genMs` on average, `genMax` at most, and
+  `prepMs`, the longest a worker took to work out what the seed's chunks share),
   `chunk(cx, cz)` (one chunk's streaming state, lit or not, its non-empty sections, mesh
   versions per section, triangles per pass), `light(x, y, z)` ([skylight, block light]),
   `verifyLight(cx, cz)` (cells that differ from a fresh lighting), `time` (the world clock, days)
