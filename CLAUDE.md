@@ -134,7 +134,8 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      lake swum across and climbed out of by touch, underwater screenshots by day, deep down and
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
                      teleport by touch, then every biome pictured from the air; generation time per chunk)
-docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan)
+docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
+                     CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
 .github/workflows/e2e.yml      Browser tests on every push; the report (with the screenshots) is a run artifact

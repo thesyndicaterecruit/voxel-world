@@ -11,8 +11,8 @@ systems on top of it.
 
 ## How to use this plan
 
-1. Start a fresh session for each milestone. Paste the **session prompt** below with the milestone
-   number filled in.
+1. Start a fresh session for each milestone. Paste the matching prompt from
+   [CHRISTMAS_PROMPTS.md](CHRISTMAS_PROMPTS.md) (or the generic **session prompt** below).
 2. Let it plan first and read the plan before it codes. Push back if it wants to touch things the
    milestone doesn't need.
 3. When it's done: `npm test`, `npm run build`, then **play it on your phone** (the Pages URL
