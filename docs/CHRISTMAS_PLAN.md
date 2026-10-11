@@ -95,7 +95,8 @@ Decide once, so no session re-litigates them:
 
 - **Story world = its own world type.** The start card gets a **"Bentley's Christmas"** button
   that creates (or continues) the story world. `WorldRecord` gains `story` (story id, e.g.
-  `'xmas'`) and `progress` (story flags, found items, baubles, checkpoint). `SAVE_VERSION` 8 with a
+  `'xmas'`) and `progress` (story flags, found items, baubles, checkpoint). Saving Bentley
+  (Milestone 4) bumps `SAVE_VERSION` to 8 and the story world (Milestone 6) to 9, each with a
   migration and a fixture, as CLAUDE.md says.
 - **Winter generator = generator 3.** Same machinery as generator 2, but every island takes winter
   biomes (snowy meadow, taiga, snowy peaks, a cherry grove dusted with snow), snow on all open
@@ -183,7 +184,8 @@ states (a browser test captures each one).
 - **Pet**: tap Bentley (raycast hits entities before blocks) → hearts, a happy snort, a wag. Works
   in break mode and place mode, and never breaks the block behind him.
 - **Sit / Come** toggle by tapping him twice, or a small button when he's close.
-- Bentley is saved with the world (position, state, wearing the jumper or not) in `WorldRecord`.
+- Bentley is saved with the world (position, state, wearing the jumper or not) in `WorldRecord`:
+  `SAVE_VERSION` 8, with a migration and a fixture.
 
 **Done when:** on a phone, Bentley follows you round an island, across water and up hills, comes
 when you walk far away, and you can pet him.
@@ -213,7 +215,7 @@ him and pans left/right with headphones, and the game stays silent until the fir
 - Pick the **story seed**: a script/test that lists seeds whose start island has 4 neighbouring
   islands within ~120 blocks, one of them big enough for Starlight Peak. Hard-code the chosen
   one.
-- **Story world**: `WorldRecord.story` + `progress`, `SAVE_VERSION` 8 (migration + fixture), a
+- **Story world**: `WorldRecord.story` + `progress`, `SAVE_VERSION` 9 (migration + fixture), a
   "Bentley's Christmas" button on the start card (one story world; "Continue" if it exists,
   "Start over" with a confirm), a curated story hotbar, picker hidden until free play.
 - Story-controlled clock: the story sets the time of day; the normal clock is paused until free
