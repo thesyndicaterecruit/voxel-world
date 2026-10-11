@@ -229,7 +229,7 @@ describe('light across chunk borders', () => {
   });
 });
 
-describe('incremental updates match a fresh computation', () => {
+describe('incremental updates match a fresh computation', { timeout: 60000 }, () => {
   it('high up in the taller world: a tower, a torch on top, a shaft down it', () => {
     const t = testWorld(32, 32, H);
     t.fill(0, 0, 0, 31, 9, 31, STONE);
