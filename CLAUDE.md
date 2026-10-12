@@ -179,7 +179,8 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      (spawned from the menu by touch in front of you, one draw call, the Pose button cycling his
                      states; a picture of each state, fawn and black in every one; Zs asleep, walking round; darker at
                      night, warm by a torch)
-docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
+docs/                Pictures for pull requests (not part of the game; bentley-poses.jpg: Bentley in each state, from
+                     the browser test); CHRISTMAS_PLAN.md (the current plan) and
                      CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
 .github/workflows/deploy.yml   Unit tests + build + deploy to GitHub Pages on every push
