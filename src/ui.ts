@@ -23,6 +23,7 @@ export const els = {
   leavesBtn: $('leavesBtn'),
   br: $('br'),
   dl: $('dl'),
+  snow: $('snow'),
   dayBtn: $('dayBtn'),
   clock: $('clock'),
   tpOpt: $('tpOpt'),
@@ -246,24 +247,27 @@ export function setFancyLeaves(on: boolean, notify = true): void {
 }
 export const toggleFancyLeaves = () => setFancyLeaves(!fancyLeaves);
 /** A menu stepper through named steps, shown in `el`: init() with the start step, the names and a
- *  function told about every change; step(±1). */
+ *  function told about every change; step(±1), or set() a step. */
 function namedStepper(el: HTMLElement) {
   let i = 0, names: string[] = [], apply: (i: number) => void = () => {};
+  const set = (j: number): void => {
+    j = Math.max(0, Math.min(names.length - 1, j));
+    if (j === i) return;
+    i = j;
+    el.textContent = names[i];
+    apply(i);
+  };
   return {
     init(start: number, list: string[], f: (i: number) => void): void { i = start; names = list; apply = f; el.textContent = names[i]; },
-    step(delta: number): void {
-      const j = Math.max(0, Math.min(names.length - 1, i + delta));
-      if (j === i) return;
-      i = j;
-      el.textContent = names[i];
-      apply(i);
-    },
+    step: (delta: number) => set(i + delta),
+    set,
   };
 }
-const brightness = namedStepper(els.br), dayLength = namedStepper(els.dl);
-/** Menu: Brightness and Day length steppers */
+const brightness = namedStepper(els.br), dayLength = namedStepper(els.dl), snow = namedStepper(els.snow);
+/** Menu: Brightness, Day length and Snow steppers */
 export const initBrightness = brightness.init, stepBrightness = brightness.step;
 export const initDayLength = dayLength.init, stepDayLength = dayLength.step;
+export const initSnow = snow.init, stepSnow = snow.step, setSnow = snow.set;
 let alwaysDay = false, onAlwaysDay: (on: boolean) => void = () => {};
 /** Wire the menu's Always day toggle. `apply` is told about every change. */
 export function initAlwaysDay(on: boolean, apply: (on: boolean) => void): void {

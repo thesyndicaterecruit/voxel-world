@@ -56,6 +56,13 @@ export interface Voxel {
   biome(): string | null;
   biomeAt(x: number, z: number): string | null;
   teleport(id: number): number;
+  /** Snow: the setting, how hard the biomes round the camera say it snows (Auto), how hard it snows now, flakes drawn */
+  snow(): { setting: string; here: number; amount: number; flakes: number; visible: boolean };
+  /** Set the Snow setting (as the menu does: 'off' | 'auto' | 'on'); draw the snow or not, whatever the setting */
+  setSnow(s: string): void;
+  showSnow(on: boolean): void;
+  /** Where snow stops in column (x, z) near the camera (the cover grid) */
+  cover(x: number, z: number): number;
   stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number; genMs: number; genMax: number;
     generated: number; prepMs: number };
 }

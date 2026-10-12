@@ -13,7 +13,8 @@ so their ground never shifts. You walk around with an on-screen joystick, look b
 break/place 61 block types (glass, torches, ice, ores, a glowing crystal, plants, presents, candy canes and Christmas decorations among them), any
 of them put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
 plus the player state and hotbar, picked
-from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
+from a list on the start card. The sea and inland lakes are water blocks, and snow falls in snowy places (or
+everywhere, a menu setting). Mid-range Android phones in
 Chrome are the target. All textures are painted procedurally at startup — there are no image assets
 and no runtime network requests. WebGL 2 is required (texture arrays).
 
@@ -45,7 +46,7 @@ block picker).
 index.html           Markup for the HUD and start screen; loads src/style.css and src/main.ts
 src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
-                     biome teleport, biome haze, resize, frame loop, window.__voxel
+                     biome teleport, the haze (biomes', winter's), the Snow setting, resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery/support/waterlog
                      flags, lookup tables, faceHidden() culling rule, waterState (waterlogged plants), HOTBAR (a new
@@ -65,6 +66,11 @@ src/
                      pending updates for saving
   mipmaps.ts         Coverage-preserving mip levels + colour bleeding for cutout tiles (pure)
   fog.ts             Radial-fog shader patch for built-in materials
+  snow.ts            Falling snow, the pure part: the Snow setting (Off/Auto/On → how hard it snows), where flakes
+                     stop in a column (ceiling), the cover grid of ceilings round the camera (wraps round, updated
+                     a column or a chunk at a time), the flakes' layout, the winter haze
+  weather.ts         Falling snow, drawn: one Points draw call moved by its vertex shader round the camera, hidden
+                     under cover (the cover grid as a texture), lit by the time of day, fogged
   gen.ts             World generators by version (generator(v): sea level, cloud height, prepare, generateChunk(seed,
                      cx, cz), findSpawn, surfaceHeight); GENERATOR_VERSION for new worlds; generator 2: landforms
                      per biome shape, column2 (blended, then the coast: cliffs, sea stacks, arches), overhangs,
@@ -74,7 +80,7 @@ src/
                      deep caverns' walls, ore veins
   biomes.ts          Generator 2's biomes (pure): the BIOMES table (data), the islands and their climate, coast()
                      (distance from the coast), the coarse biome map, weights() (blending), findBiome (teleport),
-                     tintMap (grass/foliage/water colours over the world)
+                     tintMap (grass/foliage/water colours over the world); how hard it snows in each (snowfall)
   gen1.ts            Generator 1, FROZEN (worlds made before generator versions): columnHeight, waterLevel (sea,
                      lakes), layering, trees, generateChunk, findSpawn; floodSea (old saves get the sea)
   worker.ts          Web Worker entry: runs generateChunk (timing the seed's prepare on its own), lightChunk and
@@ -96,7 +102,7 @@ src/
                      boxesGeometry
   environment.ts     Sky (gradient + sunset glow shader), sun, moon, stars, the sea beyond the world's edge, clouds
                      around the camera, all following the time of day (setTime); fog + underwater look; daylight,
-                     sky tint and the sky colour water reflects; the biome haze (setHaze)
+                     sky tint and the sky colour water reflects; the haze and the softer fog where it snows (setHaze)
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
                      splashes (the last three lit like the spot they're at)
   player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics (sliding on
@@ -109,7 +115,7 @@ src/
                      fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways; the world's blocks), block picker (tabs,
                      search, 3D block icons), menu (view distance, Fancy leaves,
-                     Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
+                     Brightness, Snow, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
                      screen + world list, error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, tiles (painted in Node: every
@@ -129,7 +135,9 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      no cave touching water, a cave carved alike across chunk and section borders, ore veins at
                      their depths, crystals only on deep caverns' walls), flowing water (spreading, falling,
                      draining, infinite sources, chunk borders, saved updates), sliding on ice (and puzzle ice), swimming physics (sinking,
-                     swimming up, bobbing, braking, climbing out)
+                     swimming up, bobbing, braking, climbing out), snow (the setting, snowfall only in the
+                     snowy biomes, where flakes stop, the cover grid after any moves = a fresh one, edits and
+                     chunk loads, wrapping round, the flakes' layout, the winter haze)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
                      blocks, torches, hotbar, the block picker (tabs, search, a swipe scrolls it, a tap fills the
@@ -142,7 +150,10 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      and at night, each the colour it should be, frosted glass half see-through), the Christmas
                      decorations (a bauble hung under leaves, the star on a tree, paw prints the way you look,
                      things on a wall, each broken by its own hit box and popping off with its support; a
-                     decorated tree by day and at night, the star and fairy lights glowing, a paw-print trail)
+                     decorated tree by day and at night, the star and fairy lights glowing, a paw-print trail),
+                     snow (the menu setting by touch and kept after a reload, Auto in the Snowy Peaks, Taiga and
+                     desert; none under a glass roof, there once it's gone, none under water; screenshots by
+                     day and at night, the flakes dimmer at night; frame time at night with and without it)
 docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
                      CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
@@ -210,7 +221,9 @@ light changed, ahead of everything else.
   the swamp, clay on the sea floor; `cliff`: what its steep faces show; `bands`: terracotta in bands
   by height instead of `under` and on faces; `snowLine`: snow on its ground above that height),
   `freeze` (how much of its sea's surface is ice floes: the frozen ocean's), its tints (`grass`, `foliage`, `water`: absolute 0xRRGGBB colours),
-  `haze` and `hazeAmount` (what the fog and sky lean toward there) and `decorations` (names of what
+  `haze` and `hazeAmount` (what the fog and sky lean toward there), `snowfall` (how hard it snows there
+  with the Snow setting on Auto, 0–1: Snowy Peaks 1, Frozen Ocean 0.85, Taiga 0.7; nothing generated
+  reads it) and `decorations` (names of what
   grows on it: `oak` and `oak-sparse` trees for now; part 2 fills in the rest). Fields left out take
   `BASE`'s values (grass on dirt, a sandy bed and shore). *Blending:* `weights(seed, x, z, out)`
   weighs the cells within `BLEND` (8) blocks with a smooth kernel; a column's height (`column2` in
@@ -224,8 +237,9 @@ light changed, ahead of everything else.
   `tileKinds` uniform, `TILE_KIND`, says which layer a tile takes, if any). The grass side's alpha marks its grass
   texels, the only ones the tint touches. Worlds without biomes (generator 1) keep `CLASSIC_TINTS`
   (the colours the tiles were painted) everywhere, so they look as they always did. *Haze:* every 6
-  frames `main.ts` weighs the biomes around the camera and `env.setHaze` eases the fog and sky
-  toward their haze colour (darkened with the sky at dusk and night). *Teleport* (menu → Teleport,
+  frames `main.ts` weighs the biomes around the camera (`climate`) and `env.setHaze` eases the fog and
+  sky toward their haze colour (darkened with the sky at dusk and night); where it snows, winter's
+  haze is mixed in (see Snow). *Teleport* (menu → Teleport,
   `__voxel.teleport(id)`): `findBiome` finds the nearest cell well inside the biome (its 8
   neighbours the same), and the player lands on its ground or afloat on its sea.
 - **Generator 2's ground** (`gen.ts`). *Landforms* (`landform`, by the biome's `shape`; t is the
@@ -417,6 +431,34 @@ light changed, ahead of everything else.
   `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as opaque
   cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
   Switching re-meshes the chunks with leaves and their neighbours as normal jobs.
+- **Snow** (`snow.ts` pure, `weather.ts` draws it). *The setting* (menu → Snow, a stepper OFF / AUTO /
+  ON, saved in localStorage as `voxel-island.snow`, default Auto): `snowAmount(setting, here)` is how
+  hard it snows, 0–1 — On 1, Off 0, Auto `here`, the `snowfall` of the biomes round the camera by
+  weight (worked out every 6 frames with the haze; 0 in worlds without biomes), so it sets in and
+  stops at biome borders. The story world will pass `here` = 1 (Milestone 6). The snowfall eases
+  toward the amount over 2 s, and the amount is how many of the `FLAKES` (2400) are drawn. *The
+  flakes:* one `Points` (a `PointsMaterial` patched in `onBeforeCompile`, `radialFogVertex`), each
+  flake a start in the `SNOW_BOX` (36 × 28 × 36 blocks, its bottom 10 below the eye) and a speed,
+  sway and size (`flakeLayout`, from the seed); the vertex shader moves it on with its own clock
+  (falling 0.9–1.7 blocks/s, swaying, the wind `SNOW_WIND`) and wraps it into the box round the
+  camera, so flakes stay put in the world as the camera moves and no CPU work is done per flake.
+  Soft round dots (`gl_PointCoord`), smaller far off, none right at the eye, faded toward the box's
+  edges; drawn after the water (`renderOrder` 1, no depth writes), `frustumCulled` off. Their colour
+  is set every frame: full skylight now (`lightColor(0xf0)`: white by day), but never darker than
+  the fog's colour (or they'd look like ash against a sunset) or moonlit snow (`MOONLIT`). *Cover:*
+  no snow under a roof, a tree, glass, in a cave or under water — every column has a ceiling, on
+  top of its highest block (`world.topY`; at the foot of a plant, torch or flat block so grass
+  doesn't stop it in mid-air; the sea's surface past the world's edge; `NO_SNOW` where the chunk
+  isn't loaded). The ceilings of the `COVER` × `COVER` (64) columns round the camera are a grid that
+  wraps round (`createCover`: a column's cell is x and z modulo 64): moving on works out only the
+  columns that came into the window (64 per block crossed), `world.onChange` refreshes an edited
+  column and `world.onLoad` a loaded chunk's. The grid is an R8 `DataTexture` with repeat wrapping,
+  uploaded on frames when it changed; the shader reads a flake's column and hides it below the
+  ceiling, fading it out over the last half block. Under water (the camera) nothing is drawn.
+  *Winter atmosphere:* where it snows, `winterHaze` mixes a pale, cold haze (`WINTER_HAZE`,
+  `WINTER_AMOUNT` 0.22 at full snow) into the biomes' and `env.setHaze(…, soft)` starts the fog
+  nearer (up to half as far: `SOFT`), so a snowy place looks colder and softer, darkening with the
+  sky at night as the haze does.
 - **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
   scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
@@ -580,7 +622,11 @@ light changed, ahead of everything else.
   `tiles` (the tile canvases), `hotbar()` (the block in each slot), `sel()` (the selected slot),
   `pick(id)` (the picker's tap: that block into the selected slot), `worldId`, `save()`, `biomes` (the biomes' names, by id; empty
   without biomes), `biome()` / `biomeAt(x, z)` (the biome's name there) and `teleport(id)` (the
-  menu's Teleport: to the nearest place of that biome; returns how far, −1 if there is none). Keep it working: the browser tests drive the
+  menu's Teleport: to the nearest place of that biome; returns how far, −1 if there is none), `snow()` (the
+  Snow setting, `here`: how hard the biomes round the camera say it snows, `amount`: how hard it
+  snows now, `flakes` drawn, `visible`), `setSnow(s)` ('off' | 'auto' | 'on', as the menu sets it),
+  `showSnow(on)` (draw the snow or not, whatever the setting: to time it or compare pictures) and
+  `cover(x, z)` (where snow stops in a column near the camera). Keep it working: the browser tests drive the
   game through it; `?seed=123` in the URL gives a fixed world.
 - **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and

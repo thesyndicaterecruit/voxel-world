@@ -522,7 +522,7 @@ Fill these in as you go; drop them into the script and letter files:
 
 - [x] Milestone 1a — Christmas blocks: the cubes
 - [x] Milestone 1b — Christmas blocks: decorations
-- [ ] Milestone 2 — Snowfall and winter atmosphere
+- [x] Milestone 2 — Snowfall and winter atmosphere
 - [ ] Milestone 3 — Entity system and Bentley's model
 - [ ] Milestone 4 — Bentley follows, swims, gets petted
 - [ ] Milestone 5 — Sound

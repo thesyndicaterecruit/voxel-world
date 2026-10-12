@@ -79,6 +79,8 @@ export interface Biome {
   /** The fog and sky lean toward this colour, this much, while you're in the biome */
   readonly haze: number;
   readonly hazeAmount: number;
+  /** How hard it snows there (0–1) when the Snow setting is Auto (snow.ts; nothing generated reads it) */
+  readonly snowfall: number;
   /** What grows on it (trees, plants): filled in by part 2 */
   readonly decorations: readonly string[];
 }
@@ -88,7 +90,7 @@ const BASE: Omit<Biome, 'id' | 'name'> = {
   ocean: false, shape: 'rolling', lift: 6, amp: 6, freq: 1 / 30, depth: 10, seaShape: 'plain', cliffChance: 0.3, overhang: 0,
   top: GRASS, fill: DIRT, fillDepth: 3, under: STONE, underDepth: 0, bed: SAND, shore: SAND, patch: AIR, patchAmount: 0,
   cliff: STONE, bands: false, snowLine: 0, freeze: 0, grass: 0x5aa835, foliage: 0x3f8a2a, water: 0x3b80c8, haze: 0, hazeAmount: 0,
-  decorations: [],
+  snowfall: 0, decorations: [],
 };
 const biome = (id: number, name: string, o: Partial<Biome>): Biome => ({ ...BASE, ...o, id, name });
 
@@ -101,7 +103,7 @@ export const BIOMES: readonly Biome[] = [
     grass: 0x8db84a, foliage: 0x5aa03a, water: 0x2fb5b0 }),
   biome(FROZEN_OCEAN, 'Frozen Ocean', {
     ocean: true, lift: 1, amp: 1, freq: 1 / 20, depth: 16, top: GRAVEL, fill: GRAVEL, bed: GRAVEL, shore: GRAVEL, patch: CLAY, patchAmount: 0.15,
-    freeze: 0.55, grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x6a8fb0, haze: 0xdfe8f0, hazeAmount: 0.25 }),
+    freeze: 0.55, grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x6a8fb0, haze: 0xdfe8f0, hazeAmount: 0.25, snowfall: 0.85 }),
   biome(TROPICAL, 'Tropical Beach', {
     lift: 1.5, amp: 2.5, freq: 1 / 16, depth: 5, cliffChance: 0, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 4,
     grass: 0x8db84a, foliage: 0x5aa03a, water: 0x35b8b8, decorations: ['oak-sparse'] }),
@@ -114,11 +116,11 @@ export const BIOMES: readonly Biome[] = [
     decorations: ['oak-sparse'] }),
   biome(TAIGA, 'Taiga', {
     lift: 8, amp: 10, freq: 1 / 30, depth: 12, cliffChance: 0.6, bed: GRAVEL, shore: GRAVEL, patch: PODZOL, patchAmount: 0.35, snowLine: 96,
-    grass: 0x4f7f5c, foliage: 0x3a6650, water: 0x3a6a98, haze: 0xc8d8e8, hazeAmount: 0.15 }),
+    grass: 0x4f7f5c, foliage: 0x3a6650, water: 0x3a6a98, haze: 0xc8d8e8, hazeAmount: 0.15, snowfall: 0.7 }),
   biome(SNOWY_PEAKS, 'Snowy Peaks', {
     shape: 'peaks', lift: 6, amp: 78, depth: 14, cliffChance: 0.7, overhang: 4, top: STONE, fill: STONE, fillDepth: 1, bed: GRAVEL,
     shore: GRAVEL, patch: GRAVEL, patchAmount: 0.2, snowLine: 76,
-    grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x5a80a8, haze: 0xe8f0f8, hazeAmount: 0.3 }),
+    grass: 0x8fb09a, foliage: 0x6a8a78, water: 0x5a80a8, haze: 0xe8f0f8, hazeAmount: 0.3, snowfall: 1 }),
   biome(DESERT, 'Desert Dunes', {
     shape: 'dunes', lift: 3, amp: 9, depth: 8, cliffChance: 0, cliff: SANDSTONE, top: SAND, fill: SAND, fillDepth: 4, under: SANDSTONE, underDepth: 6,
     grass: 0xb5a94e, foliage: 0x8a8a3a, water: 0x3aa0a8, haze: 0xf0dcb0, hazeAmount: 0.25 }),

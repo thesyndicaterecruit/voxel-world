@@ -1,7 +1,7 @@
 import { B } from './blocks';
 import { player, bufferJump, type Controls } from './player';
 import { els, hud, setMode, selectSlot, slotAt, toast, toggleFullscreen, showMenu, menuOpen, stepRenderDistance, toggleFancyLeaves,
-  stepBrightness, stepDayLength, toggleAlwaysDay, showTeleport, showPicker, pickerOpen, setPickerTab, pickBlock } from './ui';
+  stepBrightness, stepDayLength, stepSnow, toggleAlwaysDay, showTeleport, showPicker, pickerOpen, setPickerTab, pickBlock } from './ui';
 
 /* ======================= TOUCH CONTROLS ======================= */
 // Left half = floating joystick, right half = drag-to-look (+ tap to act), buttons handled by data-act.
@@ -76,6 +76,7 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
       else if (a === 'rd-' || a === 'rd+') stepRenderDistance(a === 'rd+' ? 1 : -1);
       else if (a === 'br-' || a === 'br+') stepBrightness(a === 'br+' ? 1 : -1);
       else if (a === 'dl-' || a === 'dl+') stepDayLength(a === 'dl+' ? 1 : -1);
+      else if (a === 'sn-' || a === 'sn+') stepSnow(a === 'sn+' ? 1 : -1);
       else if (a === 'aday') toggleAlwaysDay();
       else if (a === 'quit') quit();
       else if (a === 'tp' || a === 'tpback') showTeleport(a === 'tp');

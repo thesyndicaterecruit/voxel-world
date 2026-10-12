@@ -21,6 +21,8 @@ const CLOUD_BOX = 320;
 const TILT = (30 * Math.PI) / 180;
 /** Skylight at night (moonlight): enough to see by */
 const NIGHT_LIGHT = 0.38;
+/** Soft fog (where it snows) starts this much nearer the camera */
+const SOFT = 0.5;
 
 const col = (hex: number) => new THREE.Color(hex);
 // colours by day, around sunrise/sunset, and at night
@@ -88,8 +90,11 @@ export interface Environment {
   setFog(near: number, far: number): void;
   /** Time of day, 0–1 (0 midnight, 0.5 noon): moves the sun, recolours everything, sets the light uniforms. */
   setTime(t: number): void;
-  /** The biome haze where the camera is: fog and sky lean toward `color` by `amount` (0–1), easing over a second or two */
-  setHaze(color: THREE.Color, amount: number): void;
+  /**
+   * The haze where the camera is: fog and sky lean toward `color` by `amount` (0–1), and the fog
+   * starts nearer by `soft` (0–1: where it snows), easing over a second or two
+   */
+  setHaze(color: THREE.Color, amount: number, soft?: number): void;
 }
 
 /**
@@ -180,7 +185,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
   let day = 1, deep = 0, dim = -1;
   // biome haze: what the fog and sky lean toward, easing to the target set by setHaze
   const haze = new THREE.Color(), hazeTo = new THREE.Color(), hazeLit = new THREE.Color();
-  let hazeAmt = 0, hazeAmtTo = 0;
+  let hazeAmt = 0, hazeAmtTo = 0, soft = 0, softTo = 0;
   const DAY_LUMA = SKY.horizon[0].r * 0.3 + SKY.horizon[0].g * 0.59 + SKY.horizon[0].b * 0.11;
   /** c = by-day colour blended toward night by `day`, then toward the sunrise/sunset one by `dusk` */
   const blend = (out: THREE.Color, set: THREE.Color[], dusk: number) =>
@@ -199,6 +204,7 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       const u = depth >= 0, ease = 1 - Math.exp(-dt / 1.2);
       haze.lerp(hazeTo, ease);
       hazeAmt += (hazeAmtTo - hazeAmt) * ease;
+      soft += (softTo - soft) * ease;
       const cam = camera.position;
       for (const c of clouds) {
         c.position.x = wrap(c.position.x + dt * 0.9, cam.x);
@@ -219,13 +225,13 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
       const entered = u && !under;
       if (u !== under) {
         under = u;
-        fog.near = u ? UNDER_NEAR : fogNear;
         fog.far = u ? UNDER_FAR : fogFar;
         sky.visible = stars.visible = !u;
         for (const c of clouds) c.visible = !u;
         tint.toggle('under', u);
         applyFog();
       }
+      fog.near = u ? UNDER_NEAR : fogNear * (1 - SOFT * soft);
       // deeper is darker and murkier
       const dp = u ? THREE.MathUtils.smoothstep(depth, 0, DEEP) : 0;
       if (u && (entered || Math.abs(dp - deep) > 0.004)) {
@@ -234,14 +240,15 @@ export function createEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRende
         applyFog();
       }
     },
-    setHaze(color, amount) {
+    setHaze(color, amount, s = 0) {
       if (hazeAmt < 0.002 && hazeAmtTo < 0.002) haze.copy(color);      // no haze yet: take its colour straight away
       hazeTo.copy(color);
       hazeAmtTo = amount;
+      softTo = s;
     },
     setFog(near, far) {
       fogNear = near; fogFar = far;
-      if (!under) { fog.near = near; fog.far = far; }
+      if (!under) { fog.near = near * (1 - SOFT * soft); fog.far = far; }
     },
     setTime(t) {
       // the sun rises in +x (t = 0.25), is highest at noon (toward −z), sets in −x; the moon opposite

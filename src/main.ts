@@ -9,6 +9,8 @@ import { BIOMES, NBIOMES, findBiome, biomeAt, weights, tintMap } from './biomes'
 import { createWorkerPool } from './workers';
 import { createStreamer, RENDER_DISTANCE } from './streaming';
 import { createEnvironment } from './environment';
+import { createSnowfall } from './weather';
+import { SNOW_SETTINGS, snowAmount, columnCeiling, winterHaze, type SnowSetting } from './snow';
 import { createEffects } from './effects';
 import { createWater } from './water';
 import { P, V, player, playerEvents, spawn, update, collides, aim } from './player';
@@ -17,14 +19,15 @@ import { createInteraction } from './interact';
 import { popUnsupported } from './plants';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
-  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock } from './ui';
+  setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock, initSnow,
+  setSnow } from './ui';
 import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
 /** Play is enabled once everything within this many blocks of the start point is meshed. */
 const READY_RADIUS = 24;
 const RD_KEY = 'voxel-island.renderDistance', LEAVES_KEY = 'voxel-island.fancyLeaves', BRIGHT_KEY = 'voxel-island.brightness';
-const DAY_KEY = 'voxel-island.dayLength', ALWAYS_DAY_KEY = 'voxel-island.alwaysDay';
+const DAY_KEY = 'voxel-island.dayLength', ALWAYS_DAY_KEY = 'voxel-island.alwaysDay', SNOW_KEY = 'voxel-island.snow';
 /** Day length setting: real minutes for a whole day */
 const DAY_MINUTES = [5, 10, 20, 40, 60], DEFAULT_DAY = 2;
 
@@ -112,6 +115,8 @@ async function boot(): Promise<void> {
   const streamer = createStreamer(scene, chunkMaterials, pool, save);
   const env = createEnvironment(scene, renderer, seed, home.x, home.z, gen.seaLevel, gen.cloudY);
   const fx = createEffects(scene, textures);
+  // falling snow round the camera, stopping on the highest block of each column
+  const snow = createSnowfall(scene, seed, (x, z) => columnCeiling(world, gen.seaLevel, x, z));
   // flowing water: torches it reaches pop off; a chunk with water updates pending has something to save
   const water = createWater(world, { onWash: (x, y, z, id) => fx.burst(x, y, z, id), onPending: (cx, cz) => save.touch(cx, cz) });
   // block changes: the water around them moves, whatever they held up pops off (torches, plants: and
@@ -130,9 +135,10 @@ async function boot(): Promise<void> {
     moved.push(x, y, z);
     save.touch(x >> CB, z >> CB);
     water.blockChanged(x, y, z, old);
+    snow.cover.refresh(x, z);
     if (!flushing) { flushing = true; queueMicrotask(flush); }
   };
-  world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); };
+  world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); snow.cover.refreshChunk(c.cx, c.cz); };
   // hitting the water fast throws up a splash
   playerEvents.splash = (x, y, z, speed) => { fx.splash(x, y, z, speed); playSound('splash', Math.min(1, speed / 20)); };
 
@@ -177,6 +183,14 @@ async function boot(): Promise<void> {
   initAlwaysDay(alwaysDay, (on) => {
     alwaysDay = on;
     try { localStorage.setItem(ALWAYS_DAY_KEY, on ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  });
+
+  // Snow: Off, Auto (in snowy biomes) or On
+  let snowSetting: SnowSetting = 'auto';
+  try { const v = localStorage.getItem(SNOW_KEY); if (SNOW_SETTINGS.includes(v as SnowSetting)) snowSetting = v as SnowSetting; } catch (e) { /* storage unavailable */ }
+  initSnow(SNOW_SETTINGS.indexOf(snowSetting), SNOW_SETTINGS.map((s) => s.toUpperCase()), (i) => {
+    snowSetting = SNOW_SETTINGS[i];
+    try { localStorage.setItem(SNOW_KEY, snowSetting); } catch (e) { /* storage unavailable */ }
   });
 
   const interaction = createInteraction(fx);
@@ -237,20 +251,30 @@ async function boot(): Promise<void> {
   /* ============================ LOOP ============================ */
   const look = new THREE.Vector3(), lastState = [NaN, NaN, NaN, NaN, NaN];
   let last = performance.now(), orbit = 0, fpsT = 0, fpsN = 0, streamMs = 0, frames = 0;
-  /** The haze of the biomes around the camera (their colours by weight and how much haze each has) */
-  const hw = new Float32Array(NBIOMES), hazeCol = new THREE.Color(), part = new THREE.Color();
-  const biomeHaze = (x: number, z: number) => {
-    weights(seed, Math.floor(x), Math.floor(z), hw);
+  /**
+   * The haze around the camera: the biomes' (their colours by weight and how much haze each has), and
+   * where it snows, winter's, with a softer fog. Also how hard the biomes round it say it snows.
+   */
+  const hw = new Float32Array(NBIOMES), haze = [0, 0, 0], hazeCol = new THREE.Color();
+  let snowHere = 0;
+  const climate = (x: number, z: number) => {
     let amount = 0;
-    hazeCol.setRGB(0, 0, 0);
-    for (let i = 0; i < NBIOMES; i++) {
-      const a = hw[i] * BIOMES[i].hazeAmount;
-      if (a <= 0) continue;
-      hazeCol.add(part.setHex(BIOMES[i].haze).multiplyScalar(a));
-      amount += a;
+    haze.fill(0);
+    snowHere = 0;
+    if (biomes) {
+      weights(seed, Math.floor(x), Math.floor(z), hw);
+      for (let i = 0; i < NBIOMES; i++) {
+        const a = hw[i] * BIOMES[i].hazeAmount, c = BIOMES[i].haze;
+        snowHere += hw[i] * BIOMES[i].snowfall;
+        if (a <= 0) continue;
+        haze[0] += (((c >> 16) & 255) / 255) * a; haze[1] += (((c >> 8) & 255) / 255) * a; haze[2] += ((c & 255) / 255) * a;
+        amount += a;
+      }
+      if (amount > 0) for (let k = 0; k < 3; k++) haze[k] /= amount;
     }
-    if (amount > 0) hazeCol.multiplyScalar(1 / amount);
-    env.setHaze(hazeCol, amount);
+    const s = snowAmount(snowSetting, snowHere);
+    amount = winterHaze(haze, amount, s);
+    env.setHaze(hazeCol.setRGB(haze[0], haze[1], haze[2]), amount, s);
   };
   function frame(now: number): void {
     requestAnimationFrame(frame);
@@ -294,8 +318,9 @@ async function boot(): Promise<void> {
     interaction.updateTarget(playing);
     fx.updateParticles(dt);
     const depth = waterDepth(camera.position.x, camera.position.y, camera.position.z);
-    if (biomes && frames++ % 6 === 0) biomeHaze(camera.position.x, camera.position.z);
+    if (frames++ % 6 === 0) climate(camera.position.x, camera.position.z);
     env.update(dt, camera, depth);
+    snow.update(dt, camera, snowAmount(snowSetting, snowHere), depth >= 0);
     setUnderwater(chunkMaterials[2], depth >= 0);
     streamer.sortTranslucent(camera.position);
     renderer.render(scene, camera);
@@ -335,6 +360,10 @@ async function boot(): Promise<void> {
     teleport, biome: () => (biomes ? BIOMES[biomeAt(seed, Math.floor(P[0]), Math.floor(P[2]))].name : null),
     biomeAt: (x: number, z: number) => (biomes ? BIOMES[biomeAt(seed, Math.floor(x), Math.floor(z))].name : null),
     biomes: biomes ? BIOMES.map((b) => b.name) : [],
+    snow: () => ({ setting: snowSetting, here: +snowHere.toFixed(3), ...snow.stats() }),
+    setSnow: (s: SnowSetting) => setSnow(SNOW_SETTINGS.indexOf(s)),
+    cover: (x: number, z: number) => snow.cover.at(x, z),
+    showSnow: (on: boolean) => snow.show(on),
   };
 }
 
