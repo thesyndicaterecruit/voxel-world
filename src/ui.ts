@@ -310,6 +310,8 @@ export function initTeleport(names: string[] | null): void {
     els.tpList.appendChild(b);
   });
 }
+/** Show the Pose button (temporary: it cycles Bentley's poses until Milestone 4 has him follow you) */
+export function showPoseButton(on: boolean): void { document.body.classList.toggle('bentley', on); }
 /** Show the list of biomes to teleport to in place of the menu's options, or go back */
 export function showTeleport(open: boolean): void { document.body.classList.toggle('tp', open); }
 export function stepRenderDistance(delta: number): void {

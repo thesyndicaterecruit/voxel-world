@@ -12,6 +12,9 @@ import { createEnvironment } from './environment';
 import { createSnowfall } from './weather';
 import { SNOW_SETTINGS, snowAmount, columnCeiling, winterHaze, type SnowSetting } from './snow';
 import { createEffects } from './effects';
+import { createEntities, type Entity } from './entities';
+import { BENTLEY, BENTLEY_STATES } from './bentley';
+import { boxCollides } from './physics';
 import { createWater } from './water';
 import { P, V, player, playerEvents, spawn, update, collides, aim } from './player';
 import { playSound } from './audio';
@@ -20,7 +23,7 @@ import { popUnsupported } from './plants';
 import { initInput, readControls, setSensitivity } from './input';
 import { els, hud, initHotbar, initMenu, initLeavesToggle, initBrightness, initDayLength, initAlwaysDay, initStartScreen, selectSlot,
   setFancyLeaves, setMode, setNote, setClock, showError, showWorlds, toast, menuOpen, initTeleport, initPicker, pickBlock, initSnow,
-  setSnow } from './ui';
+  setSnow, showPoseButton } from './ui';
 import { lightUniforms, BRIGHTNESS } from './shading';
 import { openSaves, listWorlds, createWorld, deleteWorld, openWorld, type WorldRecord } from './saves';
 
@@ -103,7 +106,7 @@ async function boot(): Promise<void> {
   const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 320);
   camera.rotation.order = 'YXZ';
 
-  let playing = false, ready = false;
+  let playing = false, ready = false, targetShown = true;
   /** The world clock: days since the world began (the fraction is the time of day), saved with it */
   let days = record.time;
   const save = await openWorld(record, (cx, cz) => world.chunk(cx, cz),
@@ -139,6 +142,44 @@ async function boot(): Promise<void> {
     if (!flushing) { flushing = true; queueMicrotask(flush); }
   };
   world.onLoad = (c, flow) => { if (flow) water.restore(c.cx, c.cz, flow); snow.cover.refreshChunk(c.cx, c.cz); };
+  // things that move about: Bentley (for now spawned by hand, from the menu or __voxel.spawnBentley)
+  const entities = createEntities(scene, fx, (x, z) => streamer.areaLoaded(x, z));
+  let bentley: Entity | null = null;
+  /** Put Bentley on the ground in front of the player, facing them (the nearest free spot up to 2.5 blocks off); returns where */
+  const spawnBentley = () => {
+    const dx = -Math.sin(player.yaw), dz = -Math.cos(player.yaw);
+    let at = [P[0], P[1], P[2]];
+    find: for (const d of [2.5, 2, 1.5, 1]) for (const up of [0, 1]) {
+      const x = P[0] + dx * d, y = Math.floor(P[1]) + up, z = P[2] + dz * d;
+      if (!boxCollides(x, y, z, BENTLEY.r, BENTLEY.h)) { at = [x, y, z]; break find; }
+    }
+    if (bentley) entities.remove(bentley);
+    bentley = entities.add(BENTLEY, at[0], at[1], at[2], player.yaw + Math.PI);
+    showPoseButton(true);
+    return at;
+  };
+  // temporary, until Milestone 4 has him follow: the Pose button cycles what he's doing
+  const POSE_NAMES: Record<string, string> = { idle: 'standing about', walk: 'waddling', sit: 'sitting', sleep: 'asleep', wag: 'wagging' };
+  const nextPose = () => {
+    if (!bentley) return;
+    const states: readonly string[] = BENTLEY_STATES;
+    entities.setState(bentley, states[(states.indexOf(bentley.state) + 1) % states.length]);
+    toast(`Bentley: ${POSE_NAMES[bentley.state]}`, 1200);
+  };
+  /** __voxel.bentley: where he is and what he's doing; setting `state` changes what he's doing */
+  const bentleyInfo = {
+    states: BENTLEY_STATES,
+    /** His feet position (his body's own array: a test can move him) */
+    get p() { return bentley!.body.p; },
+    get yaw() { return bentley!.yaw; },
+    get state() { return bentley!.state; },
+    set state(s: string) { entities.setState(bentley!, s); },
+    get onGround() { return bentley!.body.onGround; },
+    get frozen() { return bentley!.frozen; },
+    /** Zs rising now (his, while he sleeps) */
+    get zzz() { return fx.zCount(); },
+  };
+
   // hitting the water fast throws up a splash
   playerEvents.splash = (x, y, z, speed) => { fx.splash(x, y, z, speed); playSound('splash', Math.min(1, speed / 20)); };
 
@@ -223,7 +264,7 @@ async function boot(): Promise<void> {
     return d;
   };
   initTeleport(biomes ? BIOMES.map((b) => b.name) : null);
-  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit, teleport });
+  initInput({ canvas: renderer.domElement, isPlaying: () => playing, act: interaction.act, quit, teleport, spawnBentley, nextPose });
 
   /* ============================ RESIZE ============================ */
   function resize(): void {
@@ -285,6 +326,7 @@ async function boot(): Promise<void> {
       // physics waits until the chunks under the player are loaded (unloaded chunks are solid)
       if (streamer.areaLoaded(P[0], P[2])) update(dt, readControls());
       if (!menuOpen()) water.update(dt);
+      entities.update(dt, menuOpen());
       camera.position.set(P[0], P[1] + EYE, P[2]);
       camera.rotation.set(player.pitch, player.yaw, 0);
       // moving or looking around counts as a change worth saving
@@ -315,7 +357,7 @@ async function boot(): Promise<void> {
     if (playing && !menuOpen()) days = alwaysDay ? Math.floor(days) + 0.5 : days + dt / (dayMin * 60);
     env.setTime(days % 1);
     if (menuOpen()) setClock(days);
-    interaction.updateTarget(playing);
+    interaction.updateTarget(playing && targetShown);
     fx.updateParticles(dt);
     const depth = waterDepth(camera.position.x, camera.position.y, camera.position.z);
     if (frames++ % 6 === 0) climate(camera.position.x, camera.position.z);
@@ -364,6 +406,8 @@ async function boot(): Promise<void> {
     setSnow: (s: SnowSetting) => setSnow(SNOW_SETTINGS.indexOf(s)),
     cover: (x: number, z: number) => snow.cover.at(x, z),
     showSnow: (on: boolean) => snow.show(on),
+    showTarget: (on: boolean) => { targetShown = on; },
+    spawnBentley, get bentley() { return bentley && bentleyInfo; },
   };
 }
 

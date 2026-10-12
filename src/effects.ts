@@ -23,6 +23,10 @@ export interface Effects {
   burst(x: number, y: number, z: number, id: number): void;
   /** Drops thrown up where something hits the water at (x, y, z) at `speed` blocks a second. */
   splash(x: number, y: number, z: number, speed: number): void;
+  /** A "Z" rising from (x, y, z): something asleep there (entities.ts) */
+  zzz(x: number, y: number, z: number): void;
+  /** Zs in the air now */
+  zCount(): number;
   updateParticles(dt: number): void;
 }
 
@@ -71,6 +75,28 @@ const WALLS = TORCH_SUPPORT.map(([dx, , dz]) => {
   return sheetsGeometry([dx ? [[w, 0, 0], [w, 1, 0], [w, 1, 1], [w, 0, 1]] : [[0, 0, w], [0, 1, w], [1, 1, w], [1, 0, w]]]);
 });
 
+/* ---------- the "Z"s of something asleep ---------- */
+/** A Z's texels: 16 × 16, a fat Z with a dark rim, the rest clear */
+const ZSIZE = 16;
+/** Seconds a Z lasts, how fast it rises (blocks a second), its size when it starts and when it goes (blocks) */
+const ZLIFE = 2.6, ZRISE = 0.42, Z0 = 0.2, Z1 = 0.42;
+/** A Z is never darker than this, so it reads at night */
+const ZFLOOR = 0.62;
+export function paintZ(): Uint8Array<ArrayBuffer> {
+  const d = new Uint8Array(ZSIZE * ZSIZE * 4);
+  // the Z's strokes (texel rows top down): the top bar, the diagonal, the bottom bar
+  const inZ = (x: number, y: number) => x >= 3 && x <= 12 && y >= 3 && y <= 12 &&
+    (y <= 4 || y >= 11 || Math.abs(x - (15 - y)) <= 1);
+  for (let y = 0; y < ZSIZE; y++) for (let x = 0; x < ZSIZE; x++) {
+    let rim = false;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inZ(x + dx, y + dy)) rim = true;
+    const i = ((ZSIZE - 1 - y) * ZSIZE + x) * 4, c = inZ(x, y) ? [250, 252, 255, 255] : rim ? [52, 62, 96, 210] : [0, 0, 0, 0];
+    d.set(c, i);
+  }
+  return d;
+}
+interface Zed { s: THREE.Sprite; life: number; x: number; y: number; z: number; phase: number }
+
 /** A flying bit; `drop`: a splash drop, gone when it falls back into the water */
 interface Particle { m: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>; v: number[]; life: number; max: number; drop: boolean }
 
@@ -110,7 +136,37 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     parts.push({ m, v: [0, 0, 0], life: 0, max: 1, drop: false });
   }
 
+  const zTex = new THREE.DataTexture(paintZ(), ZSIZE, ZSIZE, THREE.RGBAFormat), zeds: Zed[] = [];
+  zTex.needsUpdate = true;
+  for (let i = 0; i < 8; i++) {
+    const s = new THREE.Sprite(radialFog(new THREE.SpriteMaterial({ map: zTex, transparent: true, depthWrite: false })));
+    s.visible = false;
+    s.renderOrder = 1;                             // after the water
+    scene.add(s);
+    zeds.push({ s, life: 0, x: 0, y: 0, z: 0, phase: 0 });
+  }
+
   const lit = new THREE.Color();
+  function zzz(x: number, y: number, z: number): void {
+    const q = zeds.find((q) => q.life <= 0) ?? zeds.reduce((a, b) => (a.life < b.life ? a : b));
+    q.life = ZLIFE; q.x = x; q.y = y; q.z = z; q.phase = Math.random() * 6.28;
+    q.s.visible = true;
+  }
+  function updateZeds(dt: number): void {
+    for (const q of zeds) {
+      if (q.life <= 0) continue;
+      q.life -= dt;
+      if (q.life <= 0) { q.s.visible = false; continue; }
+      // rises, sways, grows, fades in and out; lit like where it is, but never too dark to read
+      const k = 1 - q.life / ZLIFE, m = q.s.material;
+      q.s.position.set(q.x + Math.sin(k * 5 + q.phase) * 0.12 + k * 0.25, q.y + k * ZLIFE * ZRISE, q.z);
+      q.s.scale.setScalar(Z0 + (Z1 - Z0) * k);
+      m.rotation = Math.sin(k * 4 + q.phase) * 0.25;
+      m.opacity = Math.min(1, k * 8, q.life / 0.8);
+      lightColor(world.getLight(Math.floor(q.s.position.x), Math.floor(q.s.position.y), Math.floor(q.s.position.z)), lit);
+      m.color.setRGB(Math.max(lit.r, ZFLOOR), Math.max(lit.g, ZFLOOR), Math.max(lit.b, ZFLOOR + 0.04));
+    }
+  }
   function burst(x: number, y: number, z: number, id: number): void {
     const map = tex[B[id].particle];
     lightColor(world.getLight(x, y, z), lit);          // as bright as the spot they fly from
@@ -148,6 +204,7 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     }
   }
   function updateParticles(dt: number): void {
+    updateZeds(dt);
     for (const p of parts) {
       if (p.life <= 0) continue;
       p.life -= dt;
@@ -178,5 +235,6 @@ export function createEffects(scene: THREE.Scene, tex: THREE.Texture[]): Effects
     lightColor(world.getLight(x, y, z), ghostMat.color);
   }
 
-  return { outline, ghost, ghostMat, showOutline, showGhost, burst, splash, updateParticles };
+  const zCount = () => zeds.filter((q) => q.life > 0).length;
+  return { outline, ghost, ghostMat, showOutline, showGhost, burst, splash, zzz, zCount, updateParticles };
 }

@@ -14,7 +14,8 @@ break/place 61 block types (glass, torches, ice, ores, a glowing crystal, plants
 of them put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
 plus the player state and hotbar, picked
 from a list on the start card. The sea and inland lakes are water blocks, and snow falls in snowy places (or
-everywhere, a menu setting). Mid-range Android phones in
+everywhere, a menu setting). Things that move about are entities with box models: so far Bentley, a blocky
+pug, put in front of you from the menu for now. Mid-range Android phones in
 Chrome are the target. All textures are painted procedurally at startup — there are no image assets
 and no runtime network requests. WebGL 2 is required (texture arrays).
 
@@ -46,7 +47,8 @@ block picker).
 index.html           Markup for the HUD and start screen; loads src/style.css and src/main.ts
 src/
   main.ts            Boot: pick the world, renderer, scene, wiring of all modules, view distance, autosave triggers,
-                     biome teleport, the haze (biomes', winter's), the Snow setting, resize, frame loop, window.__voxel
+                     biome teleport, the haze (biomes', winter's), the Snow setting, the entities (spawning Bentley, the
+                     temporary Pose button), resize, frame loop, window.__voxel
   config.ts          Chunk size, world size (chunks/blocks), height, sections, player & physics constants, sky colours
   blocks.ts          Block registry (B): ids, tiles, solid/opaque/renderPass/light/model/slippery/support/waterlog
                      flags, lookup tables, faceHidden() culling rule, waterState (waterlogged plants), HOTBAR (a new
@@ -104,19 +106,30 @@ src/
                      around the camera, all following the time of day (setTime); fog + underwater look; daylight,
                      sky tint and the sky colour water reflects; the haze and the softer fog where it snows (setHaze)
   effects.ts         Target outline (around a block or a torch's hit box), placement ghost, block-break particles,
-                     splashes (the last three lit like the spot they're at)
-  player.ts          Player state (P, V, yaw/pitch, how wet, breath), AABB collision, movement physics (sliding on
-                     ice, slowed by what they're in), swimming, auto-jump, aim(); playerEvents (splash, touch: the
+                     splashes (the last three lit like the spot they're at), the "Z"s rising from something asleep
+  physics.ts         Bodies, shared by the player and the entities: a box (feet position, velocity, half-width, height,
+                     on the ground) that falls and stops flush against solid blocks (boxCollides, moveAxis, moveBody,
+                     unstick, stepBody)
+  player.ts          Player state (P, V, yaw/pitch, how wet, breath; the player is a body), movement physics (sliding
+                     on ice, slowed by what they're in), swimming, auto-jump, aim(); playerEvents (splash, touch: the
                      hook for damage)
+  boxmodel.ts        Box models (pure): cuboid parts hanging from pivots, the skin's box unwrap, poses (turn, shift,
+                     scale a part; blend two), posing on the CPU into one geometry's positions and face shading,
+                     painting a skin a face at a time
+  entities.ts        The entity system: kinds (model, skin, size, states, think, pose), a list of entities each one mesh
+                     and one draw call, physics through a body, poses eased between states, lit like the block they
+                     stand in, frozen where the chunks aren't loaded, still while the menu is open
+  bentley.ts         Bentley the pug (pure): his model, his skin (its own PRNG), his poses (idle with snorts, a waddling
+                     walk, sit, asleep on his side, wag) and what he does in each (walking round a circle, Zs asleep)
   audio.ts           Sound hooks (playSound), silent until the game has audio
   interact.ts        Break/place logic (act; torch and vine facing, plants in water, what makes way) and target
                      highlighting (updateTarget)
   input.ts           Touch joystick / look / buttons / hotbar swipes / block picker (taps, swipes), mouse + keyboard
                      fallback, gesture blocking
   ui.ts              HUD DOM: toast, mode button, hotbar (scrolls sideways; the world's blocks), block picker (tabs,
-                     search, 3D block icons), menu (view distance, Fancy leaves,
-                     Brightness, Snow, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
-                     screen + world list, error display
+                     search, 3D block icons), menu (Bentley: spawn, view distance, Fancy leaves,
+                     Brightness, Snow, Day length, Always day, clock, Teleport to a biome, save & exit), the Pose button,
+                     fullscreen, start screen + world list, error display
   style.css          All styles
 tests/               Unit tests of the pure modules (Vitest): registry + face culling, tiles (painted in Node: every
                      approved tile unchanged, how the Christmas tiles look), plants (popping off when unsupported,
@@ -137,7 +150,16 @@ tests/               Unit tests of the pure modules (Vitest): registry + face cu
                      draining, infinite sources, chunk borders, saved updates), sliding on ice (and puzzle ice), swimming physics (sinking,
                      swimming up, bobbing, braking, climbing out), snow (the setting, snowfall only in the
                      snowy biomes, where flakes stop, the cover grid after any moves = a fresh one, edits and
-                     chunk loads, wrapping round, the flakes' layout, the winter haze)
+                     chunk loads, wrapping round, the flakes' layout, the winter haze), bodies (the player's run
+                     the same bit for bit as before bodies were shared; falling, landing at any frame rate, walls,
+                     sliding, a body's size deciding where it fits, getting unstuck), box models (the unwrap,
+                     outward faces, pivots, hiding, blending, yaw, shading the way a face points now, painting), Bentley
+                     (the skin's colours: fawn, a darker back, the black mask, muzzle and ears, wrinkles, eyes with a
+                     glint, shut eyes under them, the tongue; every pose on the ground, his size, sitting, asleep on
+                     his side, the tongue only panting, the waddle, the wag, snorts, no jumps from frame to frame;
+                     walking round a circle, Zs only asleep), entities (one mesh each, falling, lit like their block
+                     by day, at night and by a torch, frozen when unloaded, still when paused, easing into a state,
+                     Bentley hopping up a step he walks into)
 e2e/                 Browser tests (Playwright, phone emulation): game.ts drives the game (deterministic clock,
                      aiming, taps, joystick, several fingers at once, pixel captures, frame timing); see-through
                      blocks, torches, hotbar, the block picker (tabs, search, a swipe scrolls it, a tap fills the
@@ -153,7 +175,10 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      decorated tree by day and at night, the star and fairy lights glowing, a paw-print trail),
                      snow (the menu setting by touch and kept after a reload, Auto in the Snowy Peaks, Taiga and
                      desert; none under a glass roof, there once it's gone, none under water; screenshots by
-                     day and at night, the flakes dimmer at night; frame time at night with and without it)
+                     day and at night, the flakes dimmer at night; frame time at night with and without it), Bentley
+                     (spawned from the menu by touch in front of you, one draw call, the Pose button cycling his
+                     states; a picture of each state, fawn and black in every one; Zs asleep, walking round; darker at
+                     night, warm by a torch)
 docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
                      CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
@@ -162,7 +187,8 @@ vitest.config.ts, playwright.config.ts
 ```
 
 Data flow per frame (`main.ts` → `frame`): `readControls()` → `player.update()` (only once the chunks
-under the player are loaded) → `water.update()` (a tick every 0.2 s) → camera → `streamer.update()`
+under the player are loaded) → `water.update()` (a tick every 0.2 s) → `entities.update()` (think,
+move, pose, light) → camera → `streamer.update()`
 (apply finished meshes, unload, start worker jobs, rebuild water groups) → `updateTarget` →
 particles → environment → render. Edits go `world.setBlock` → `world.onChange`, which tells the
 water (`water.blockChanged`: schedule the water in and next to the block) and collects the change;
@@ -283,7 +309,8 @@ light changed, ahead of everything else.
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
   texture changes. `tests/textures.test.ts` paints every tile in Node (`paintTile`) and keeps
   fingerprints of every tile approved so far (up to the Christmas cubes'), so a painter inserted in
-  the middle fails it; extend it once a milestone's new tiles are approved.
+  the middle fails it; extend it once a milestone's new tiles are approved. Entity skins aren't tiles:
+  each paints with its own `mulberry` seed (Bentley's `SKIN_SEED`), so they never touch `trand`.
 - **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
   deep water gets darker, model 'liquid'). Generation fills the air below the sea level
   (`world.seaLevel`, the generator's) with still water (sources); generator 1 also digs lakes into
@@ -346,7 +373,7 @@ light changed, ahead of everything else.
   loaded wait. Pending updates are saved with their chunk (`pendingIn` / `restore`).
 - **Module style:** plain functions and module-level state. Modules that need the scene or
   renderer expose a `createX(deps)` factory returning a small interface (`Streamer`, `WorkerPool`,
-  `Environment`, `Effects`, `Interaction`). Don't add classes or a framework unless it really pays off — `World`
+  `Environment`, `Effects`, `Interaction`, `Entities`). Don't add classes or a framework unless it really pays off — `World`
   (the exported `world` singleton) is the one deliberate class. `P` and `V` are arrays mutated in
   place, so never reassign them.
 - **Block registry** (`blocks.ts`): every block type has an id (stored in chunks and saves, so ids
@@ -459,6 +486,72 @@ light changed, ahead of everything else.
   `WINTER_AMOUNT` 0.18 at full snow) into the biomes' and `env.setHaze(…, soft)` starts the fog
   nearer (by up to a third: `SOFT`), so a snowy place looks colder and softer, darkening with the
   sky at night as the haze does.
+- **Bodies** (`physics.ts`): the player and every entity move the same way. A `Body` is a box: `p`
+  (its feet: the middle of its bottom), `v`, `r` (half-width), `h` (height) and `onGround`.
+  `moveBody` moves it by its velocity in steps of at most 0.3 blocks (x, then z, then y), stopping
+  flush against solid blocks (`world.isSolid`: unloaded chunks and the world's edge too) and setting
+  `onGround`; it returns which horizontal axes hit something. `unstick` lifts a body out of solid
+  blocks, `stepBody` is gravity plus the move (what an entity does each frame, its horizontal `v`
+  set by what it wants). `player` is itself a body (`p` is `P`, `v` is `V`, `r` PR, `h` PH): its
+  swimming, ice, auto-jump and climbing stay in `player.ts`, on top of the shared moves.
+  `tests/physics.test.ts` replays a recorded run of the player and checks it hashes the same, bit
+  for bit, as before the move to bodies; keep that hash unless the player's physics is meant to change.
+- **Entities** (`entities.ts`): things that move about and aren't blocks — Bentley now, NPCs, props
+  and pickups later. `createEntities(scene, fx, loaded)` keeps a list; an entity is a `Creature`
+  (body, yaw, `state`, `t` seconds in that state, `age` seconds alive, `bumped`: walked into
+  something last frame) plus its kind and mesh. An `EntityKind` is data and two functions: its box
+  model, `paint()` for its skin (once per kind), body size, `states` (the first is where it starts),
+  `think(c, dt, fx)` before physics (its wanted horizontal velocity, its yaw, effects such as
+  `fx.zzz`) and `pose(c, out)`. Each frame (`entities.update(dt, paused)`, after the water): an
+  entity whose chunks aren't loaded (`streamer.areaLoaded`, as the player waits for) is `frozen`
+  — it doesn't move or age and isn't drawn; while the menu is open (`paused`) they stand still;
+  otherwise think → `stepBody` → pose. A new state (`entities.setState`) eases in over `BLEND`
+  (0.35 s) from wherever the pose was (Bentley flops over into sleep). Every entity is one `Mesh`:
+  one geometry whose positions and shading are written on the CPU each frame (`poseModel`, a few
+  hundred vertices), one `MeshBasicMaterial` (the kind's skin as a `DataTexture`, vertex colours for
+  the face shading, `radialFog`), so one draw call. Its material's colour is
+  `lightColor(world.getLight(…))` of the block it stands in (the one above if that's opaque), set
+  every frame, so it follows the time of day, the Brightness setting and torchlight like the
+  chunks. Its bounding sphere is fixed (1.2 blocks round its middle) for frustum culling. Entities
+  aren't saved yet (Milestone 4 saves Bentley), and a tap on one reaches the block behind it
+  (Milestone 4 checks entities first).
+- **Box models** (`boxmodel.ts`, pure): a model is a table of cuboid parts (`PartDef`: name,
+  parent, pivot in the parent's space, box from/size relative to the pivot, uv) in texels, 1/32 of
+  a block like the tiles, the model's origin at the feet with its front toward −z (yaw 0 faces −z,
+  like the player). Skins use the box unwrap (Minecraft's: top and bottom on a first row, then +x
+  side, front, −x side, back), drawn upright from outside, the front's left being the model's +x.
+  A pose is 9 numbers a part (`POSE`): rotation x, y, z (radians, x first: R = Rz·Ry·Rx), offset
+  (in the parent's space) and scale about the pivot (0 hides a part: the tongue, the eyes asleep);
+  children follow their parents. `poseModel` writes positions in blocks from the feet, turned by
+  the yaw, and each face's shade from the way it points *now* (the world's face shading from
+  `FACES`, so a creature lying on its side is shaded like the ground). Skins are painted into a
+  plain RGBA array (`newSkin`, `paintFace` a face at a time from its image's top-left), each with its
+  **own seeded PRNG** — never as `TILE_PAINTERS` entries, which would shift `trand` and change every
+  tile.
+- **Bentley** (`bentley.ts`): a blocky pug, 14 parts (body, head, muzzle, tongue, two bulging eyes,
+  two ears, four legs, a tail and its curl): 0.6 of a block at the shoulder, 0.8 to the top of his
+  head, 0.9 long (bigger than life, so he reads on a phone); body 0.6 wide, 0.85 high. His skin
+  (128 × 64, `SKIN_SEED`): fawn `#C8A15A` with a darker back and a darker stripe down it, a pale belly,
+  a black mask over the lower face and round the eyes (wrapping round the face's edge), wrinkles
+  and the thumbprint on his forehead and the top of his head, a black muzzle with the nose, a
+  wrinkle roll over it and the mouth, black ears, dark round eyes with a glint (shut-eye lines are
+  painted on the mask under them, seen while he sleeps), a pink tongue, toes and pads, a hook of a
+  tail curling over his rump. States (`BENTLEY_STATES`, the order the Pose button cycles them):
+  *idle* (breathing, looking about, a head-shake snort every 6 s or so: `snortAt`), *walk* (a
+  waddle: diagonal legs together, the body rolling and bobbing, tongue out; for now he walks round
+  a circle of 1.6 blocks, hopping when he bumps into a step), *sit* (leaning back 0.62 rad on his
+  rear, front legs straight, back legs folded beside him, head up), *sleep* (on his side, breathing
+  slowly, eyes shut, a "Z" every 1.5 s from over his head: `zzzFrom`, `fx.zzz`) and *wag* (the tail
+  swinging fast with his rear, panting). Poses are pure functions of the state and his age, so they
+  are continuous (a unit test checks no part moves more than 3.5 texels a frame). *For now*
+  (until Milestone 4 has him follow): Menu → Bentley → SPAWN (`spawnBentley` in `main.ts`) stands
+  him on the nearest free spot up to 2.5 blocks in front of the player, facing them (a second
+  spawn replaces him), and shows the pink **🐾 POSE** HUD button (`#pose`, above BREAK/PLACE) that
+  cycles his state with a toast; both are temporary.
+- **"Z" particles** (`effects.ts`, `fx.zzz(x, y, z)`): a pool of 8 sprites of a Z painted in texels
+  (`paintZ`: white with a dark rim, no font), each rising 0.42 blocks/s for 2.6 s, swaying, growing
+  from 0.2 to 0.42 blocks and fading in and out, lit like where it is but never darker than 0.62
+  (they read at night), drawn after the water.
 - **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe
   scrolls, a tap picks the nearest slot (gaps included). The end with more slots past it fades.
@@ -626,9 +719,14 @@ light changed, ahead of everything else.
   Snow setting, `here`: how hard the biomes round the camera say it snows, `amount`: how hard it
   snows now, `flakes` drawn, `visible`), `setSnow(s)` ('off' | 'auto' | 'on', as the menu sets it),
   `showSnow(on)` (draw the snow or not, whatever the setting: to time it or compare pictures) and
-  `cover(x, z)` (where snow stops in a column near the camera). Keep it working: the browser tests drive the
+  `cover(x, z)` (where snow stops in a column near the camera), `showTarget(on)` (draw the target outline
+  and placement ghost or not: pictures without them), `spawnBentley()` (Bentley on the ground in front
+  of the player, facing them, in any world; returns where) and `bentley` (null until he's spawned: `p`
+  his feet — his body's own array, so a test can move him —, `yaw`, `state` (set it to change what he's
+  doing, eased in), `states`, `onGround`, `frozen`, `zzz`: Zs rising now). Keep it working: the browser tests drive the
   game through it; `?seed=123` in the URL gives a fixed world.
-- **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL). Browser
+- **Tests:** pure modules get unit tests in `tests/` (they run in Node: no DOM, no WebGL; three.js
+  objects work there without rendering, so `tests/entities.test.ts` drives the entity system). Browser
   tests go through `e2e/game.ts`, which replaces the page's clock, `requestAnimationFrame` and
   `Math.random` so the game only advances when a test calls `ticks()`: wait for game state in frames
   (`until`, or `settle` for streaming to finish), never in wall time, and read pixels with `capture`

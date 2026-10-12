@@ -64,7 +64,14 @@ export interface Voxel {
   /** Where snow stops in column (x, z) near the camera (the cover grid) */
   cover(x: number, z: number): number;
   stream(): { loaded: number; lit: number; meshed: number; passes: number[]; queued: number; edits: number; genMs: number; genMax: number;
-    generated: number; prepMs: number };
+    generated: number; prepMs: number; calls: number };
+  /** Draw the target outline (and placement ghost) or not: pictures without them */
+  showTarget(on: boolean): void;
+  /** Put Bentley on the ground in front of the player, facing them; returns where */
+  spawnBentley(): number[];
+  /** Bentley (null until he's spawned): his feet (his own array: moving it moves him), yaw, what he's doing (set it to change
+   *  that), his states, on the ground, frozen (his chunk isn't loaded), Zs rising now */
+  bentley: { p: number[]; yaw: number; state: string; states: string[]; onGround: boolean; frozen: boolean; zzz: number } | null;
 }
 declare global {
   interface Window { __voxel: Voxel; __tick(n: number): void; __realNow(): number; __shots: Record<string, Uint8ClampedArray> }

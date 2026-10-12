@@ -43,9 +43,12 @@ export interface InputOptions {
   quit: () => void;
   /** Menu → Teleport → a biome (its index) */
   teleport: (biome: number) => void;
+  /** Menu → Bentley, and the Pose button (temporary, until he follows you: Milestone 4) */
+  spawnBentley: () => void;
+  nextPose: () => void;
 }
 
-export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptions): void {
+export function initInput({ canvas, isPlaying, act, quit, teleport, spawnBentley, nextPose }: InputOptions): void {
   const { joy: joyEl, knob } = els;
 
   function down(id: PointerId, x: number, y: number, target: EventTarget | null, ts: number): void {
@@ -81,6 +84,8 @@ export function initInput({ canvas, isPlaying, act, quit, teleport }: InputOptio
       else if (a === 'quit') quit();
       else if (a === 'tp' || a === 'tpback') showTeleport(a === 'tp');
       else if (a && a.startsWith('tp:')) { showMenu(false); teleport(+a.slice(3)); }
+      else if (a === 'bentley') { showMenu(false); spawnBentley(); }
+      else if (a === 'pose') nextPose();
       else if (a === 'pick') showPicker(!pickerOpen());
       else if (a === 'pclose') showPicker(false);
       else if (a && a.startsWith('cat:')) setPickerTab(+a.slice(4));

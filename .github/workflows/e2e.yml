@@ -31,7 +31,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:e2e
       # the report holds the screenshots (day and night: e2e/lighting.spec.ts; water: e2e/water.spec.ts;
-      # snow: e2e/snow.spec.ts)
+      # snow: e2e/snow.spec.ts; Bentley in each of his states: e2e/bentley.spec.ts)
       # and, after a failure, traces
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

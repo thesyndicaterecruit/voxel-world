@@ -25,6 +25,10 @@ body.playing #ui{display:block}
 #mode .ic{font-size:19px;line-height:1;text-shadow:none}
 #mode.break{background:rgba(200,58,42,.7)}
 #mode.place{background:rgba(40,150,72,.7)}
+/* temporary (until Bentley follows you, Milestone 4): cycles his poses, shown once he's spawned */
+#pose{display:none;right:calc(18px + env(safe-area-inset-right));bottom:calc(188px + env(safe-area-inset-bottom));width:88px;height:40px;
+  border-radius:20px;font-size:11px;background:rgba(214,112,150,.72)}
+body.bentley #pose{display:flex}
 #fs{top:calc(10px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
 #menuBtn{top:calc(10px + env(safe-area-inset-top));right:calc(62px + env(safe-area-inset-right));width:42px;height:42px;border-radius:12px}
 /* hotbar and the block picker's button beside it: centred between the corner buttons; the hotbar
