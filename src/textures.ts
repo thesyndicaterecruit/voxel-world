@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mulberry, sstep } from './noise';
 import { radialFogVertex } from './fog';
 import { B, NT, T_GRASS_TOP, T_GRASS_SIDE, T_LEAVES, T_LEAVES_CUT, T_WATER_STILL, T_WATER_FLOW, WATER_FRAMES, T_GLOW_CRYSTAL, T_TALL_GRASS,
-  T_VINES } from './blocks';
+  T_VINES, T_STAR, T_FAIRY_LIGHTS } from './blocks';
 import { W, D } from './config';
 import { GN } from './biomes';
 import { TEX } from './mesher';
@@ -619,6 +619,136 @@ const puzzleIce: Painter = (put, each) => {
   });
 };
 
+/* ---------- Christmas decorations (cutout tiles: clear round them) ---------- */
+/** Is texel (x, y) inside the ellipse round (cx, cy), radii rx, ry? */
+const inEllipse = (x: number, y: number, cx: number, cy: number, rx: number, ry: number) =>
+  ((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1;
+/** A paw print (toes toward the tile's top): four toes, a pad */
+const PAW = ['...##.##...', '...##.##...', '...........', '.##.....##.', '.##.....##.', '....###....', '..#######..', '.#########.',
+  '.#########.', '..#######..', '...#####...'];
+/** Two paw prints a tile, left then right, 16 texels apart so a trail of them keeps step from block to block: their top left corners */
+const PAWS = [[4, 18], [17, 2]];
+const onPaw = (x: number, y: number) => PAWS.some(([px, py]) => PAW[y - py]?.[x - px] === '#');
+/** Paw prints pressed into snow: each hollow shadowed on the side the light comes from (top left), lit on the other */
+function paws(put: Put, each: Each): void {
+  each((x, y) => {
+    if (!onPaw(x, y)) return;
+    put(x, y, hx(!onPaw(x - 1, y - 1) ? 0x8ea2b9 : !onPaw(x + 1, y + 1) ? 0xd2deea : 0xb0c1d4), 0.97 + 0.05 * thash(x, y, 117));
+  });
+}
+const pawPrints: Painter = (put, each) => { clear(put, each, hx(0xb0c1d4)); paws(put, each); };
+/** The paw prints' icon: the same prints in a square of snow */
+const pawIcon: Painter = (put, each) => { snow(put, each); paws(put, each); };
+/** A bauble's colour and its cap's (blocks.ts BAUBLES order) */
+const BAUBLE_COLOURS = [[0xee5fa6, 0xd9b34c], [0xd61f2e, 0xd9b34c], [0xe6ae2a, 0xcfd5dc]];
+/** A bauble: a glossy ball hanging by a thread from the top of the tile, a cap where the thread meets it */
+const bauble = ([c, capC]: number[]): Painter => (put, each) => {
+  const ball = hx(c), cap = hx(capC), cx = 15.5, cy = 17, r = 8.2;
+  clear(put, each, ball);
+  for (let y = 0; y < 6; y++) put(15, y, hx(0x8a7448));                  // the thread
+  for (let y = 6; y < 9; y++) for (let x = 13; x < 19; x++) put(x, y, cap, y === 6 ? 1.15 : x === 13 ? 0.8 : x === 14 ? 1.2 : 1);
+  each((x, y) => {
+    const dx = (x + 0.5 - cx) / r, dy = (y + 0.5 - cy) / r, d2 = dx * dx + dy * dy;
+    if (d2 > 1) return;
+    // lit from the top left, in front: a soft shade, a darker rim, a highlight
+    const nz = Math.sqrt(1 - d2), lit = Math.max(0, -0.5 * dx - 0.55 * dy + 0.67 * nz);
+    put(x, y, ball, 0.5 + 0.65 * lit - (d2 > 0.8 ? 0.12 : 0));
+  });
+  for (const [x, y] of [[11, 13], [12, 13], [11, 14], [12, 14], [13, 12]]) put(x, y, hx(0xffffff), x === 13 ? 0.9 : 1);   // a glint
+};
+const BULBS = [0xff3b3b, 0x3ee061, 0x4b8dff, 0xffd447, 0xff6ec7];
+/** Fairy lights: two strands sagging across the tile (16 texels a swag, so a row of them joins up), coloured bulbs under them */
+const fairyLights: Painter = (put, each) => {
+  clear(put, each, hx(0x1d3b22));
+  const wire = (x: number, y0: number, ph: number) => { const t = (((x + ph) % 16) + 0.5 - 8) / 8; return y0 + 4.5 * (1 - t * t); };
+  for (const [y0, ph, first] of [[3, 0, 0], [18, 8, 2]]) {
+    for (let x = 0; x < TS; x++) {
+      const a = Math.round(wire(x, y0, ph)), b = Math.round(wire(x + 1, y0, ph));
+      for (let y = Math.min(a, b); y <= Math.max(a, b); y++) put(x, y, hx(0x1d3b22));
+    }
+    for (let i = 0; i < 4; i++) {                // a bulb half way down each side of a swag: socket, glass, a bright middle
+      const bx = (i * 8 + 4 - ph + TS) % TS, by = Math.round(wire(bx, y0, ph)) + 1, col = hx(BULBS[(first + i) % BULBS.length]);
+      put(bx, by, hx(0x2b2b2b)); put(bx + 1, by, hx(0x2b2b2b));
+      for (let y = by + 1; y < by + 5; y++) for (let x = bx - 1; x < bx + 3; x++) {
+        if ((y === by + 4 || y === by + 1) && (x === bx - 1 || x === bx + 2)) continue;   // rounded
+        put(x, y, col, x === bx && y === by + 2 ? 1.6 : x === bx + 2 || y === by + 4 ? 0.8 : 1.1);
+      }
+    }
+  }
+};
+const P_FIR = pal(0x173d1f, 0x1f4d27, 0x285e30, 0x31703a, 0x3d8446);
+/** A wreath: a ring of fir with red berries and a red bow at the bottom */
+const wreath: Painter = (put, each) => {
+  clear(put, each, P_FIR[1]);
+  const cx = 15.5, cy = 14.5;
+  each((x, y) => {
+    const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy), edge = d + 1.3 * (tn(x, y, 4, 4, 114) - 0.5);
+    if (edge < 6 || edge > 12.8) return;
+    const lit = -(x + 0.5 - cx) - (y + 0.5 - cy);
+    put(x, y, pick(P_FIR, 0.2 + 0.35 * tn(x, y, 2, 2, 115) + 0.3 * trand() + 0.02 * lit), edge < 6.8 || edge > 12 ? 0.75 : 1);
+  });
+  for (let i = 0; i < 7; i++) {                  // berries round the ring, three to a sprig
+    const a = (i / 7) * 2 * Math.PI + 0.4, bx = Math.round(cx + 9.3 * Math.cos(a)), by = Math.round(cy + 9.3 * Math.sin(a));
+    if (by > 21) continue;
+    for (const [dx, dy] of [[0, 0], [1, 1], [-1, 1]]) { put(bx + dx, by + dy, hx(0xd61f2c)); }
+    put(bx, by, hx(0xff8a8a));
+  }
+  // the bow: two loops, a knot, two tails
+  const red = hx(0xd21f2d);
+  each((x, y) => {
+    const loop = inEllipse(x, y, 11.5, 24.5, 3.6, 2.4) || inEllipse(x, y, 20.5, 24.5, 3.6, 2.4);
+    const hole = inEllipse(x, y, 11.5, 24.5, 1.4, 0.8) || inEllipse(x, y, 20.5, 24.5, 1.4, 0.8);
+    const tail = y > 25 && y < 31 && (Math.abs(x + 0.5 - (15.5 - (y - 25) * 0.7)) < 1.2 || Math.abs(x + 0.5 - (16.5 + (y - 25) * 0.7)) < 1.2);
+    const knot = x >= 14 && x <= 17 && y >= 23 && y <= 26;
+    if (knot) put(x, y, red, x === 14 || y === 23 ? 1.25 : 1.05);
+    else if (loop) put(x, y, red, hole ? 0.55 : 1 - 0.1 * (y - 23) / 3);
+    else if (tail) put(x, y, red, 0.85);
+  });
+};
+/** A stocking: red knit, a white furry cuff with a loop to hang it by, white heel and toe, the toe to the left */
+const stocking: Painter = (put, each) => {
+  const red = hx(0xc81e2b), white = hx(0xf4f1ee);
+  clear(put, each, red);
+  const leg = (x: number, y: number) => x >= 11 && x <= 21 && y >= 9 && y <= 22;
+  const foot = (x: number, y: number) => inEllipse(x, y, 13, 24.5, 9, 4.6) && y >= 19;
+  const inSock = (x: number, y: number) => leg(x, y) || foot(x, y) || (x >= 10 && x <= 22 && y >= 2 && y <= 8);
+  each((x, y) => {
+    if (!inSock(x, y)) return;
+    const rim = !inSock(x - 1, y) || !inSock(x + 1, y) || !inSock(x, y + 1) || !inSock(x, y - 1);
+    if (y <= 8) { put(x, y, white, (rim ? 0.82 : 0.92) + 0.12 * tn(x, y, 2, 2, 116)); return; }   // the cuff
+    const heel = x >= 18 && y >= 20 && foot(x, y), toe = x <= 7 && foot(x, y);
+    const knit = (x + (y & 1)) % 3 === 0 ? 0.9 : 1;                  // little rows of stitches
+    put(x, y, heel || toe ? white : red, (rim ? 0.72 : 1) * (heel || toe ? 0.95 : knit));
+  });
+  for (const [x, y] of [[9, 0], [10, 0], [8, 1], [11, 1], [8, 2], [11, 2]]) put(x, y, white, 0.85);   // the loop
+  for (const [x, y] of [[14, 12], [18, 15], [13, 17], [17, 19]]) put(x, y, white);                   // snowflakes knitted in
+};
+/** A five-pointed star (a point up) on a short stem: a tree topper, its facets lit alternately, drawn at full brightness */
+const star: Painter = (put, each) => {
+  clear(put, each, hx(0xffd23f));
+  const cx = 15.5, cy = 12.5, R = 12.6, r = 5.1;
+  const pts = Array.from({ length: 10 }, (_, i) => {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5, d = i & 1 ? r : R;
+    return [cx + d * Math.cos(a), cy + d * Math.sin(a)];
+  });
+  const inside = (px: number, py: number) => {
+    let c = false;
+    for (let i = 0, j = 9; i < 10; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  for (let y = 21; y < TS; y++) for (let x = 14; x < 18; x++) put(x, y, hx(0xd9a020), x === 14 ? 1.15 : x === 17 ? 0.8 : 1);   // the stem
+  each((x, y) => {
+    if (!inside(x + 0.5, y + 0.5)) return;
+    const edge = !inside(x - 0.5, y + 0.5) || !inside(x + 1.5, y + 0.5) || !inside(x + 0.5, y - 0.5) || !inside(x + 0.5, y + 1.5);
+    const a = Math.atan2(y + 0.5 - cy, x + 0.5 - cx) + Math.PI / 2, facet = Math.floor((((a / (Math.PI / 5)) % 10) + 10) % 10);
+    const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+    put(x, y, hx(edge ? 0xc98a12 : d < 2.6 ? 0xfff6c8 : facet & 1 ? 0xf3b52e : 0xffe066));
+  });
+};
+
 // Order must match the T_* tile ids in blocks.ts, and new tiles go at the end: all tiles share
 // `trand`, so inserting or reordering would change every texture after that point.
 export const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand, logSide, logTop, planks, leaves, brick, bedrock, water,
@@ -627,7 +757,8 @@ export const TILE_PAINTERS: Painter[] = [grassTop, grassSide, dirt, stone, sand,
   podzolTop, podzolSide, coarseDirt, mud, moss, basaltTop, basaltSide, obsidian, ore(P_COAL), ore(P_COPPER), ore(P_IRON), ore(P_GOLD),
   glowCrystal, tallGrass, seagrass, cactusEnd(1, true), cactusSide, cactusEnd(0.85, false), lilyPad, vines,
   ...PRESENT_COLOURS.flatMap((c) => [presentTop(c), presentSide(c)]), candyCane(0xd0202c, 0xd0202c), candyCane(0xec5c9f, 0xf08cbd),
-  gingerbread, icing, icedGingerbread, snowBricks, frostedGlass, puzzleIce];
+  gingerbread, icing, icedGingerbread, snowBricks, frostedGlass, puzzleIce,
+  pawPrints, pawIcon, ...BAUBLE_COLOURS.map(bauble), fairyLights, wreath, stocking, star];
 
 export interface Textures {
   /** Source canvases (also used for the hotbar icons) */
@@ -668,7 +799,7 @@ const TILE_KIND = new Float32Array(Math.ceil(NT / 4) * 4).fill(-1);
 TILE_KIND[T_GRASS_TOP] = TILE_KIND[T_GRASS_SIDE] = TILE_KIND[T_TALL_GRASS] = 0;
 TILE_KIND[T_LEAVES] = TILE_KIND[T_LEAVES_CUT] = TILE_KIND[T_VINES] = 1;
 TILE_KIND[T_WATER_STILL] = TILE_KIND[T_WATER_FLOW] = 2;
-TILE_KIND[T_GLOW_CRYSTAL] = 3;
+TILE_KIND[T_GLOW_CRYSTAL] = TILE_KIND[T_STAR] = TILE_KIND[T_FAIRY_LIGHTS] = 3;
 /** The world's tints (biomes.ts tintMap: GN × GN RGBA per layer, grass, foliage, water; the colours they show) */
 export function setTints(data: Uint8Array): void {
   tintData.set(data);

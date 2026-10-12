@@ -10,6 +10,8 @@ const CHRISTMAS = [PRESENT, PRESENT + 1, PRESENT + 2, PRESENT + 3, CANDY_CANE, P
   SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE];
 const NAMES = ['Red Present', 'Green Present', 'Gold Present', 'Pink Present', 'Candy Cane Block', 'Pink Candy Cane Block', 'Gingerbread',
   'Icing', 'Gingerbread with Icing', 'Snow Bricks', 'Frosted Glass', 'Puzzle Ice'];
+/** The decorations after them on the Christmas tab (Milestone 1b: e2e/christmas-decorations.spec.ts) */
+const DECOR_NAMES = ['Star', 'Pink Bauble', 'Red Bauble', 'Gold Bauble', 'Fairy Lights', 'Wreath', 'Stocking', 'Paw Prints'];
 // times of day (0 midnight, 0.5 noon, 0.75 sunset)
 const NOON = 0.5, SUNSET = 0.745, MIDNIGHT = 0;
 
@@ -39,7 +41,7 @@ test('the Christmas tab: every Christmas block, picked by touch, placed and brok
   await expect(page.locator('.ptab')).toHaveText(['NATURAL', 'STONE', 'WOOD', 'PLANTS', 'LIGHT', 'LIQUIDS', 'CHRISTMAS']);
   await page.locator('[data-act="cat:6"]').tap();
   await expect(page.locator('.ptab.on')).toHaveText('CHRISTMAS');
-  await expect(page.locator('.pitem:visible span')).toHaveText(NAMES);
+  await expect(page.locator('.pitem:visible span')).toHaveText([...NAMES, ...DECOR_NAMES]);
   for (const it of await page.locator('.pitem:visible').all()) {           // big touch targets
     const b = (await it.boundingBox())!;
     expect(Math.min(b.width, b.height)).toBeGreaterThanOrEqual(64);
@@ -63,7 +65,7 @@ test('the Christmas tab: every Christmas block, picked by touch, placed and brok
   await page.locator('#psearch').fill('candy');
   await expect(page.locator('.pitem:visible span')).toHaveText(['Candy Cane Block', 'Pink Candy Cane Block']);
   await page.locator('[data-act="cat:6"]').tap();
-  await expect(page.locator('.pitem:visible')).toHaveCount(12);
+  await expect(page.locator('.pitem:visible')).toHaveCount(20);
 
   // in portrait the tabs wrap, and the Christmas tab is still a big target
   await page.setViewportSize({ width: 412, height: 915 });
@@ -71,7 +73,7 @@ test('the Christmas tab: every Christmas block, picked by touch, placed and brok
   const tab = (await page.locator('[data-act="cat:6"]').boundingBox())!;
   expect(tab.height).toBeGreaterThanOrEqual(40);
   expect(tab.x + tab.width).toBeLessThanOrEqual(412);
-  await expect(page.locator('.pitem:visible')).toHaveCount(12);
+  await expect(page.locator('.pitem:visible')).toHaveCount(20);
   await pageShot(page, 'picker-christmas-portrait');
   await page.setViewportSize(devices['Pixel 7 landscape'].viewport);
   await ticks(page, 4);

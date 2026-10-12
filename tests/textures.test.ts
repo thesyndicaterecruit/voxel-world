@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { B, NT, PRESENT, PRESENTS, CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD, SNOW_BRICKS, FROSTED_GLASS,
-  PUZZLE_ICE, SNOW, T_PRESENT } from '../src/blocks';
+  PUZZLE_ICE, SNOW, T_PRESENT, PAW_PRINTS, BAUBLE, BAUBLES, FAIRY_LIGHTS, WREATH, STOCKING, STAR, T_PAW_PRINTS, T_PAW_ICON, T_BAUBLE,
+  T_FAIRY_LIGHTS, T_STAR } from '../src/blocks';
 import { TILE_PAINTERS, paintTile } from '../src/textures';
 
 // Every tile painted the way the game paints them (in order: they share one random sequence), as
@@ -28,16 +29,70 @@ const edge = (x: number, y: number) => Math.min(x, y, TS - 1 - x, TS - 1 - y);
 const side = (id: number) => B[id].tex[0];
 
 describe('tiles', () => {
-  it('has a painter per tile, and paints the tiles before the Christmas ones exactly as before (new tiles go at the end)', () => {
+  it('has a painter per tile, and paints every tile approved so far exactly as before (new tiles go at the end)', () => {
     expect(tiles.length).toBe(NT);
-    let h = 0x811c9dc5;                                        // FNV-1a of every texel of tiles 0 … T_PRESENT − 1
-    for (const t of tiles.slice(0, T_PRESENT)) for (const v of t) h = Math.imul(h ^ v, 16777619);
-    expect((h >>> 0).toString(16)).toBe('b86ec56d');
+    const fnv = (n: number) => {                               // FNV-1a of every texel of tiles 0 … n − 1
+      let h = 0x811c9dc5;
+      for (const t of tiles.slice(0, n)) for (const v of t) h = Math.imul(h ^ v, 16777619);
+      return (h >>> 0).toString(16);
+    };
+    expect(fnv(T_PRESENT)).toBe('b86ec56d');                   // up to the Christmas tiles
+    expect(fnv(98)).toBe('6cc79739');                          // and the Christmas cubes' (Milestone 1a)
   });
 
   it('paints the Christmas cubes solid: no see-through texels but frosted glass\'s', () => {
-    const ids = B.filter((b) => b.id >= PRESENT && b.id !== FROSTED_GLASS).map((b) => b.id);
+    const ids = B.filter((b) => b.id >= PRESENT && b.id <= PUZZLE_ICE && b.id !== FROSTED_GLASS).map((b) => b.id);
     for (const t of new Set(ids.flatMap((id) => [...B[id].tex, B[id].icon]))) expect(all((x, y) => px(t, x, y)[3] === 255), `tile ${t}`).toBe(true);
+  });
+});
+
+describe('the Christmas decorations\' tiles', () => {
+  const DECOR = [PAW_PRINTS, ...BAUBLES.map((_, i) => BAUBLE + i), FAIRY_LIGHTS, WREATH, STOCKING, STAR];
+  const solid = (c: number[]) => c[3] > 127;
+
+  it('are cut out: clear round the decoration, every texel solid or clear; the bits that fly off are solid', () => {
+    for (const id of DECOR) {
+      const t = B[id].tex[0], s = share(t, solid);
+      expect(s, B[id].name).toBeGreaterThan(0.04);
+      expect(s, B[id].name).toBeLessThan(0.6);
+      expect(all((x, y) => [0, 255].includes(px(t, x, y)[3]))).toBe(true);
+      expect(all((x, y) => px(B[id].particle, x, y)[3] === 255), `${B[id].name}'s bits`).toBe(true);
+    }
+  });
+
+  it('press paw prints into snow: the prints alone in the world, the same prints in a square of snow as the icon', () => {
+    const prints = (x: number, y: number) => solid(px(T_PAW_PRINTS, x, y));
+    expect(share(T_PAW_PRINTS, solid)).toBeLessThan(0.25);
+    expect(share(T_PAW_ICON, solid)).toBe(1);
+    expect(all((x, y) => !prints(x, y) || px(T_PAW_ICON, x, y).every((v, i) => v === px(T_PAW_PRINTS, x, y)[i]))).toBe(true);
+    // pressed in: blue-grey, darker than the snow round them
+    const inPrint = mean(T_PAW_PRINTS, 4, 18, 15, 29), snow = mean(B[SNOW].tex[0]);
+    expect(luma(inPrint)).toBeLessThan(luma(snow));
+    // two prints a tile, one in each half, so a trail keeps step from block to block
+    expect(share(T_PAW_PRINTS, solid, 0, 16, 16, 32)).toBeGreaterThan(0.1);
+    expect(share(T_PAW_PRINTS, solid, 16, 0, 32, 16)).toBeGreaterThan(0.1);
+  });
+
+  it('paint each bauble its colour, the star gold, and the fairy lights in many colours along a wire that joins up', () => {
+    const ball = (i: number) => mean(T_BAUBLE + i, 12, 14, 20, 22);
+    const [pink, red, gold] = [0, 1, 2].map(ball);
+    expect(pink[2]).toBeGreaterThan(pink[1] + 30);
+    expect(red[0]).toBeGreaterThan(2 * Math.max(red[1], red[2]));
+    expect(gold[1]).toBeGreaterThan(gold[2] + 50);
+    const st = mean(T_STAR, 12, 8, 20, 16);
+    expect(st[0]).toBeGreaterThan(200);
+    expect(st[2]).toBeLessThan(st[1] - 60);
+    // bulbs: bright, saturated texels of at least four different hues
+    const hues = new Set<number>();
+    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+      const [r, g, b, a] = px(T_FAIRY_LIGHTS, x, y), hi = Math.max(r, g, b), lo = Math.min(r, g, b);
+      if (a && hi > 180 && hi - lo > 100) hues.add(r === hi ? (b > g ? 5 : g > 150 ? 1 : 0) : g === hi ? 2 : 3);
+    }
+    expect(hues.size).toBeGreaterThanOrEqual(4);
+    // the wire leaves one side of the tile at the height it comes in at the other
+    const wireRows = (x: number) => Array.from({ length: TS }, (_, y) => y).filter((y) => { const c = px(T_FAIRY_LIGHTS, x, y); return c[3] && luma(c) < 80; });
+    expect(wireRows(0).length).toBeGreaterThan(0);
+    for (const y of wireRows(TS - 1)) expect(wireRows(0).some((w) => Math.abs(w - y) <= 1)).toBe(true);
   });
 });
 

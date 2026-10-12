@@ -1,6 +1,6 @@
 import { CS, W, D } from './config';
-import { AIR, WATER, SOLID, MODEL, SUPPORT, STACKS, LOGGABLE, OFFSET, WATERLOGGED, M_CUBE, M_TORCH, M_CROSS, M_INSET, M_FLAT,
-  S_FLOOR, S_WATER, S_WALL, S_TORCH, waterState } from './blocks';
+import { AIR, WATER, VINES, SOLID, MODEL, SUPPORT, STACKS, LOGGABLE, OFFSET, WATERLOGGED, M_CUBE, M_TORCH, M_CROSS, M_INSET, M_FLAT,
+  S_FLOOR, S_WATER, S_WALL, S_TORCH, S_HANG, waterState } from './blocks';
 import { TORCH_SUPPORT, torchBox } from './torch';
 import { hash3 } from './noise';
 
@@ -11,7 +11,8 @@ import { hash3 } from './noise';
 //
 // Support: a plant stands on the block below (a solid cube, or more of itself if it stacks), a lily
 // pad on water, vines against a wall (the block their state faces, or more vines above facing the
-// same way), a torch on the block its state faces. Whenever a block changes, the blocks it held up
+// same way; other wall blocks only the wall), a torch on the block its state faces, a bauble hangs
+// from the solid cube above it. Whenever a block changes, the blocks it held up
 // that have nothing to hold them any more pop off (popUnsupported), and so on up the chain: break
 // the sand under a cactus and the whole cactus falls.
 
@@ -23,8 +24,20 @@ export const INSET = 1 / 16;
 export const FLAT_UP = 1 / 64, FLAT_OUT = 1 / 16;
 /** A lily pad floats on the water's surface, this far below the floor of its own block (a source's surface is 1/8 below its top) */
 export const ON_WATER = 1 / 8 - 1 / 64;
-/** A flat block's state: 0 on the floor (or the water), 1–4 against the wall at −x, +x, −z, +z (TORCH_SUPPORT) */
-export const FLAT_FLOOR = 0;
+/**
+ * A flat block's state: 0 on the floor (or the water), turned by a hash of where it is (lily pads);
+ * 1–4 against the wall at −x, +x, −z, +z (TORCH_SUPPORT); 5–8 on the floor, turned 0–3 (FLAT_TURNED +
+ * the turn: blocks that turn the way the player looks, see flatTurnFor)
+ */
+export const FLAT_FLOOR = 0, FLAT_TURNED = 5;
+/** The wall a flat block with state `st` is against: 1–4 (TORCH_SUPPORT), 0 on the floor */
+export const flatWall = (st: number) => { const s = st & 15; return s >= 1 && s <= 4 ? s : 0; };
+/** How a flat block on the floor is turned: 0–3 (its tile's top toward −z, −x, +z, +x), −1 by a hash of where it is */
+export const flatTurn = (st: number) => { const s = st & 15; return s >= FLAT_TURNED && s < FLAT_TURNED + 4 ? s - FLAT_TURNED : -1; };
+/** The turn (see flatTurn) of a block placed by a player looking along `yaw` (0 looks toward −z), however far round it is wound */
+export const flatTurnFor = (yaw: number) => Math.round(yaw / (Math.PI / 2)) & 3;
+/** A hanging block's hit box: round the ball, up to the block it hangs from */
+const HANG_BOX = [0.28, 0.3, 0.28, 0.72, 1, 0.72];
 /** How far an offset plant (grass, flowers) may sit off the middle of its block, each way */
 const OFF = 0.2;
 const K_OFF = 0x2d8f61a3;
@@ -53,12 +66,13 @@ export function blockBox(id: number, st: number, seed: number, x: number, y: num
     case M_TORCH: return torchBox(st);
     case M_INSET: return [INSET, 0, INSET, 1 - INSET, 1, 1 - INSET];
     case M_CROSS: {
+      if (SUPPORT[id] === S_HANG) return HANG_BOX;
       const o = OFFSET[id] ? plantOffset(seed, x, y, z) : [0, 0], a = 0.15;
       return [a + o[0], 0, a + o[1], 1 - a + o[0], 0.9, 1 - a + o[1]];
     }
     case M_FLAT: {
-      const s = st & 7, t = 0.1;
-      if (s < 1 || s > 4) return [0, 0, 0, 1, t, 1];
+      const s = flatWall(st), t = 0.1;
+      if (!s) return [0, 0, 0, 1, t, 1];
       const [dx, , dz] = TORCH_SUPPORT[s];
       return [dx > 0 ? 1 - t : 0, 0, dz > 0 ? 1 - t : 0, dx < 0 ? t : 1, 1, dz < 0 ? t : 1];
     }
@@ -89,16 +103,18 @@ export function holds(w: Omit<SupportWorld, 'setBlock'>, id: number, st: number,
     }
     case S_WATER: return waterState(w.getBlock(x, y - 1, z), w.getState(x, y - 1, z)) >= 0;
     case S_WALL: {
-      const s = st & 7;
-      if (s < 1 || s > 4) return false;
+      const s = flatWall(st);
+      if (!s) return false;
       const [dx, dy, dz] = TORCH_SUPPORT[s];
+      // vines also hang from more vines (curtains); a stocking or a wreath needs its wall
       return isCube(w.getBlock(x + dx, y + dy, z + dz)) || unknown(w, x + dx, z + dz) ||
-        (w.getBlock(x, y + 1, z) === id && (w.getState(x, y + 1, z) & 7) === s);
+        (id === VINES && w.getBlock(x, y + 1, z) === id && flatWall(w.getState(x, y + 1, z)) === s);
     }
     case S_TORCH: {
       const [dx, dy, dz] = TORCH_SUPPORT[st <= 4 ? st : 0];
       return isCube(w.getBlock(x + dx, y + dy, z + dz)) || unknown(w, x + dx, z + dz);
     }
+    case S_HANG: return isCube(w.getBlock(x, y + 1, z));
     default: return true;
   }
 }

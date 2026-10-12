@@ -1,8 +1,8 @@
 import { CS, H, SH, NSEC, W as WORLD_W, D as WORLD_D } from './config';
-import { AIR, LEAVES, WATER, B, ROT, OCCLUDES, PASS, MODEL, FILTER, SOLID, OPAQUE, LOGGABLE, OFFSET, FALLING, WATERLOGGED, M_TORCH, M_LIQUID,
-  M_CROSS, M_INSET, M_FLAT, S_WATER, SUPPORT, faceHidden, liquidHeight } from './blocks';
+import { AIR, LEAVES, WATER, B, ROT, OCCLUDES, PASS, MODEL, FILTER, SOLID, OPAQUE, LOGGABLE, OFFSET, FALLING, WATERLOGGED, EMIT, M_TORCH,
+  M_LIQUID, M_CROSS, M_INSET, M_FLAT, S_WATER, SUPPORT, faceHidden, liquidHeight } from './blocks';
 import { TORCH_MODELS, TORCH_SUPPORT } from './torch';
-import { CROSS_IN, INSET, FLAT_UP, FLAT_OUT, ON_WATER, plantOffset } from './plants';
+import { CROSS_IN, INSET, FLAT_UP, FLAT_OUT, ON_WATER, plantOffset, flatWall, flatTurn } from './plants';
 import { hash3 } from './noise';
 
 /* ======================= CHUNK MESHING (+AO, smooth light) ======================= */
@@ -184,6 +184,8 @@ const TP = FP / TEX;
 const NO_OFFSET = [0, 0];
 /** Most blocks a merged water surface spans each way (texture coordinates are bytes: 7 × TEX ≤ 255) */
 const MERGE = 7;
+/** The uv rotation of a flat block on the floor that puts its tile's top toward −z, −x, +z, +x (turns 0–3, see flatTurn) */
+export const FLAT_ROT = [2, 1, 0, 3];
 
 /** Mesh a whole chunk: all its sections, merged per pass (see meshSection; handy in tests). */
 export function meshChunk(pad: Uint8Array, light: Uint8Array, state: Uint8Array | null, x0: number, z0: number, seed: number,
@@ -373,9 +375,9 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
     }
 
     if (model === M_CROSS || model === M_FLAT) {
-      // plants: lit by the light in their own block, a little darker at the foot, no AO
+      // plants: lit by the light in their own block, a little darker at the foot (not ones that glow), no AO
       const v = light[pi], sky = (v >> 4) * 17, blk = (v & 15) * 17, j = 1 - b.jit * hash3(seed, x, y, z), tl = tex[0];
-      const kt = Math.round(j * 255), kb = Math.round(j * (model === M_CROSS ? 0.78 : 1) * 255);
+      const kt = Math.round(j * 255), kb = Math.round(j * (model === M_CROSS && !EMIT[id] ? 0.78 : 1) * 255);
       if (model === M_CROSS) {                     // two quads crossed corner to corner, seen from both sides
         const o = OFFSET[id] ? plantOffset(seed, x, y, z) : NO_OFFSET, a = CROSS_IN, c = 1 - CROSS_IN, bx = lx + o[0], bz = lz + o[1];
         for (let d = 0; d < 2; d++) {
@@ -385,8 +387,8 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
         }
         continue;
       }
-      const s = st & 7;
-      if (s >= 1 && s <= 4) {                      // against a wall: a quad just out from it
+      const s = flatWall(st);
+      if (s) {                                     // against a wall: a quad just out from it
         const [dx, , dz] = TORCH_SUPPORT[s], w = dx < 0 || dz < 0 ? FLAT_OUT : 1 - FLAT_OUT;
         const at = (u: number): [number, number] => (dx ? [lx + w, lz + u] : [lx + u, lz + w]);
         const [ax, az] = at(0), [bx, bz] = at(1);
@@ -394,8 +396,9 @@ export function meshSection(pad: Uint8Array, light: Uint8Array, state: Uint8Arra
           pv(out, bx, y + 1, bz, kt, sky, blk, TEX, TEX, tl), pv(out, bx, y, bz, kb, sky, blk, TEX, 0, tl));
         continue;
       }
-      // on the floor, or afloat on the water below, turned any of four ways
-      const h = y + (SUPPORT[id] === S_WATER ? -ON_WATER : FLAT_UP), rot = Math.floor(hash3(seed, x * 3 + 7, y, z - 7) * 4);
+      // on the floor, or afloat on the water below, turned any of four ways: as its state says, or by a hash of where it is
+      const t = flatTurn(st), h = y + (SUPPORT[id] === S_WATER ? -ON_WATER : FLAT_UP);
+      const rot = t < 0 ? Math.floor(hash3(seed, x * 3 + 7, y, z - 7) * 4) : FLAT_ROT[t];
       const F = FACES[2];
       for (let i = 0; i < 4; i++) {
         const c = F.v[i], q = F.uv[(i + rot) & 3];

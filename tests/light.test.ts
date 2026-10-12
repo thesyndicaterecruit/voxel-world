@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CS, H, CHUNK_VOL, CI } from '../src/config';
-import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS, ICE, GLOW_CRYSTAL } from '../src/blocks';
+import { AIR, STONE, GLASS, LEAVES, WATER, TORCH, PLANKS, ICE, GLOW_CRYSTAL, STAR, FAIRY_LIGHTS } from '../src/blocks';
 import { computeLight, lightChunk, relight, relightMany, skyOf, blockOf, cellKey, keyX, type LightWorld } from '../src/light';
 
 /** The test worlds are low: everything happens below y = LOW (above, light is open sky), unless a test says otherwise */
@@ -145,6 +145,21 @@ describe('block light', () => {
     expect(t.blk(9, 11, 8)).toBe(0);
   });
 
+  it('comes from a star (15, the brightest) and from fairy lights (8), and goes when they do', () => {
+    const t = room();
+    t.edit(8, 10, 8, STAR);
+    expect(t.light()).toEqual(t.fresh());
+    expect([t.blk(8, 10, 8), t.blk(9, 10, 8), t.blk(12, 14, 12)]).toEqual([15, 14, 15 - 12]);
+    t.edit(4, 13, 6, FAIRY_LIGHTS);                    // on the wall at −x
+    expect(t.light()).toEqual(t.fresh());
+    t.edit(8, 10, 8, AIR);
+    expect(t.light()).toEqual(t.fresh());
+    expect([t.blk(4, 13, 6), t.blk(5, 13, 6), t.blk(4, 13, 9)]).toEqual([8, 7, 5]);
+    t.edit(4, 13, 6, AIR);
+    expect(t.light()).toEqual(t.fresh());
+    expect(t.blk(5, 13, 6)).toBe(0);
+  });
+
   it('goes back to darkness when the torch is removed', () => {
     const t = room();
     t.edit(8, 10, 8, TORCH);
@@ -217,6 +232,19 @@ describe('light across chunk borders', () => {
     expect(t.blk(CS + 5, 11, 12)).toBe(0);
   });
 
+  it('from a star on a tree by the border: placed, and gone in one batch with the leaves under it', () => {
+    const S = CS * 3, t = testWorld(S, S);
+    t.fill(0, 0, 0, S - 1, 9, S - 1, STONE);
+    t.fill(CS - 3, 10, 20, CS + 1, 14, 24, LEAVES);    // a bush across the border
+    t.lightAll();
+    t.edit(CS - 1, 15, 22, STAR);                       // on top of it, at the border
+    expect(t.light()).toEqual(t.fresh());
+    expect(t.blk(CS + 13, 15, 22)).toBe(15 - 14);
+    t.editMany([[CS - 1, 14, 22, AIR], [CS - 1, 15, 22, AIR]]);   // the leaves broken and the star popping off, relit together
+    expect(t.light()).toEqual(t.fresh());
+    expect(t.blk(CS + 3, 15, 22)).toBe(0);
+  });
+
   it('treats missing chunks (beyond the world edge) as walls', () => {
     // all stone; a tunnel in the centre chunk continues into the west chunk, up a shaft to the sky
     const blocks9 = new Uint8Array(9 * CHUNK_VOL).fill(STONE), at = (k: number, x: number, y: number, z: number) => k * CHUNK_VOL + CI(x, y, z);
@@ -255,7 +283,7 @@ describe('incremental updates match a fresh computation', { timeout: 60000 }, ()
   it('after every one of many random edits', () => {
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    const ids = [AIR, AIR, AIR, STONE, STONE, TORCH, GLASS, LEAVES, WATER, PLANKS, ICE, GLOW_CRYSTAL];
+    const ids = [AIR, AIR, AIR, STONE, STONE, TORCH, GLASS, LEAVES, WATER, PLANKS, ICE, GLOW_CRYSTAL, STAR, FAIRY_LIGHTS];
     const t = ground(32, 32);
     // some rooms and overhangs to make it interesting
     for (let k = 0; k < 40; k++) {
@@ -281,7 +309,7 @@ describe('incremental updates match a fresh computation', { timeout: 60000 }, ()
   it('after every batch of many random edits relit together (water spreading, a wall going up)', () => {
     let seed = 11;
     const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    const ids = [AIR, AIR, STONE, TORCH, GLASS, LEAVES, WATER, WATER, PLANKS, ICE, GLOW_CRYSTAL];
+    const ids = [AIR, AIR, STONE, TORCH, GLASS, LEAVES, WATER, WATER, PLANKS, ICE, GLOW_CRYSTAL, STAR, FAIRY_LIGHTS];
     const t = ground(48, 32);
     for (let k = 0; k < 40; k++) {
       const x = Math.floor(rand() * 46), z = Math.floor(rand() * 30), y = 10 + Math.floor(rand() * 8);

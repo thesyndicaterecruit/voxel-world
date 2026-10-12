@@ -6,6 +6,7 @@ import {
   COAL_ORE, COPPER_ORE, IRON_ORE, GOLD_ORE, GLOW_CRYSTAL, T_SNOW, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES, BUILD_ON, LOGGABLE,
   SUPPORT, STACKS, OFFSET, S_NONE, S_FLOOR, S_WATER, S_WALL, S_TORCH, WATERLOGGED, waterState,
   PRESENT, PRESENTS, CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD, SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE, T_PRESENT,
+  PAW_PRINTS, BAUBLE, BAUBLES, FAIRY_LIGHTS, WREATH, STOCKING, STAR, T_PAW_PRINTS, T_PAW_ICON, TURNS, EMIT, S_HANG,
 } from '../src/blocks';
 import { TILE_PAINTERS } from '../src/textures';
 
@@ -15,6 +16,8 @@ const SEE_THROUGH = [GLASS, LEAVES, WATER, TORCH];
 /** The Christmas blocks (Milestone 1a: the cubes) */
 const CHRISTMAS = [...PRESENTS.map((_, i) => PRESENT + i), CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD, SNOW_BRICKS,
   FROSTED_GLASS, PUZZLE_ICE];
+/** The Christmas decorations (Milestone 1b), in the picker's order */
+const DECORATIONS = [STAR, ...BAUBLES.map((_, i) => BAUBLE + i), FAIRY_LIGHTS, WREATH, STOCKING, PAW_PRINTS];
 
 describe('block registry', () => {
   it('keeps every id: chunks and saves store them', () => {
@@ -36,7 +39,12 @@ describe('block registry', () => {
   it('keeps the ids of the Christmas blocks', () => {
     expect(CHRISTMAS).toEqual([42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53]);
     expect(PRESENTS.map((_, i) => B[PRESENT + i].name)).toEqual(['Red Present', 'Green Present', 'Gold Present', 'Pink Present']);
-    expect(B.length).toBe(54);
+  });
+
+  it('keeps the ids of the Christmas decorations', () => {
+    expect([PAW_PRINTS, BAUBLE, BAUBLE + 1, BAUBLE + 2, FAIRY_LIGHTS, WREATH, STOCKING, STAR]).toEqual([54, 55, 56, 57, 58, 59, 60, 61]);
+    expect(BAUBLES.map((_, i) => B[BAUBLE + i].name)).toEqual(['Pink Bauble', 'Red Bauble', 'Gold Bauble']);
+    expect(B.length).toBe(62);
   });
 
   it('has a painter for every tile', () => {
@@ -80,6 +88,7 @@ describe('block registry', () => {
     const tiles = B.filter((b) => b.id > TORCH && b.id < PRESENT).flatMap((b) => [...new Set(b.tex)]);
     expect(new Set(tiles).size).toBe(tiles.length);
     const used = new Set(B.filter((b) => b.id > TORCH).flatMap((b) => [...b.tex, b.icon]));
+    expect(used.has(T_PAW_ICON)).toBe(true);                         // an icon of its own
     expect([...used].filter((t) => t >= T_SNOW).length).toBe(NT - T_SNOW);
   });
 
@@ -106,6 +115,24 @@ describe('block registry', () => {
     expect(new Set([CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE].map((id) => B[id].tex[0])).size).toBe(7);
   });
 
+  it('describes the Christmas decorations: drawn and held up like plants, the star and the fairy lights glowing', () => {
+    for (const id of DECORATIONS) {
+      const b = B[id];
+      expect([b.solid, b.opaque, b.renderPass, b.lightFilter, b.waterlog, b.stacks, b.offset]).toEqual([false, false, 'cutout', 0, 'no', false, false]);
+      expect([TARGETABLE[id], BUILD_ON[id], OCCLUDES[id]]).toEqual([1, 0, 0]);   // they can be broken; nothing builds against them
+      expect(b.particle).not.toBe(b.tex[0]);                                      // their tiles are mostly clear: bits of a solid one fly off
+    }
+    expect(DECORATIONS.map((id) => B[id].model)).toEqual(['cross', 'cross', 'cross', 'cross', 'flat', 'flat', 'flat', 'flat']);
+    expect(DECORATIONS.map((id) => SUPPORT[id])).toEqual([S_FLOOR, S_HANG, S_HANG, S_HANG, S_WALL, S_WALL, S_WALL, S_FLOOR]);
+    expect(DECORATIONS.map((id) => EMIT[id])).toEqual([15, 0, 0, 0, 8, 0, 0, 0]);
+    // the glowing ones are drawn just as bright everywhere: no jitter
+    expect([B[STAR].jit, B[FAIRY_LIGHTS].jit]).toEqual([0, 0]);
+    // paw prints make way for building, turn the way the player looks, show the prints in snow as their icon, fly off as snow
+    expect(DECORATIONS.filter((id) => REPLACEABLE[id])).toEqual([PAW_PRINTS]);
+    expect(B.filter((b) => TURNS[b.id]).map((b) => b.id)).toEqual([PAW_PRINTS]);
+    expect([B[PAW_PRINTS].tex[0], B[PAW_PRINTS].icon, B[PAW_PRINTS].particle]).toEqual([T_PAW_PRINTS, T_PAW_ICON, T_SNOW]);
+  });
+
   it('puts every block but air on exactly one tab of the block picker', () => {
     expect(PICKER.map((t) => t.name)).toEqual(['Natural', 'Stone', 'Wood', 'Plants', 'Light', 'Liquids', 'Christmas']);
     const all = PICKER.flatMap((t) => [...t.blocks]);
@@ -113,7 +140,7 @@ describe('block registry', () => {
   });
 
   it('has every Christmas block on the Christmas tab, and nothing else', () => {
-    expect(PICKER.find((t) => t.name === 'Christmas')!.blocks).toEqual(CHRISTMAS);
+    expect(PICKER.find((t) => t.name === 'Christmas')!.blocks).toEqual([...CHRISTMAS, ...DECORATIONS]);
   });
 
   it('keeps the first 8 hotbar slots, so slot numbers in old saves still mean the same block', () => {
@@ -127,8 +154,8 @@ describe('block registry', () => {
       expect(OPAQUE[b.id]).toBe(+b.opaque);
       expect(PASS[b.id]).toBe(['opaque', 'cutout', 'translucent'].indexOf(b.renderPass));
       expect(MODEL[b.id]).toBe(['cube', 'torch', 'liquid', 'cross', 'inset', 'flat'].indexOf(b.model));
-      expect(SUPPORT[b.id]).toBe(['none', 'floor', 'water', 'wall', 'torch'].indexOf(b.support));
-      expect([STACKS[b.id], LOGGABLE[b.id], OFFSET[b.id]]).toEqual([+b.stacks, +(b.waterlog !== 'no'), +b.offset]);
+      expect(SUPPORT[b.id]).toBe(['none', 'floor', 'water', 'wall', 'torch', 'hang'].indexOf(b.support));
+      expect([STACKS[b.id], LOGGABLE[b.id], OFFSET[b.id], TURNS[b.id], EMIT[b.id]]).toEqual([+b.stacks, +(b.waterlog !== 'no'), +b.offset, +b.turns, b.lightEmission]);
     }
     // aim at anything but air and liquids; build into air and liquids only
     expect([AIR, WATER, TORCH, GLASS, STONE].map((id) => TARGETABLE[id])).toEqual([0, 0, 1, 1, 1]);

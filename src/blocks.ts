@@ -13,11 +13,16 @@ export const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, PLANKS 
   // Christmas: the cubes
   /** Presents in 4 colours: PRESENT + 0 … 3, red, green, gold, pink */
   PRESENT = 42, CANDY_CANE = 46, PINK_CANDY_CANE = 47, GINGERBREAD = 48, ICING = 49, ICED_GINGERBREAD = 50, SNOW_BRICKS = 51,
-  FROSTED_GLASS = 52, PUZZLE_ICE = 53;
+  FROSTED_GLASS = 52, PUZZLE_ICE = 53,
+  // Christmas: the decorations (models flat and cross)
+  /** Baubles in 3 colours: BAUBLE + 0 … 2, pink, red, gold */
+  PAW_PRINTS = 54, BAUBLE = 55, FAIRY_LIGHTS = 58, WREATH = 59, STOCKING = 60, STAR = 61;
 /** The terracotta colours' names, in id order from TERRACOTTA */
 export const TERRACOTTAS = ['Terracotta', 'White Terracotta', 'Orange Terracotta', 'Yellow Terracotta', 'Red Terracotta', 'Brown Terracotta'];
 /** The presents' names, in id order from PRESENT */
 export const PRESENTS = ['Red Present', 'Green Present', 'Gold Present', 'Pink Present'];
+/** The baubles' names, in id order from BAUBLE */
+export const BAUBLES = ['Pink Bauble', 'Red Bauble', 'Gold Bauble'];
 
 // Texture tiles (painted procedurally in textures.ts — no image files).
 // The order must match TILE_PAINTERS in textures.ts; new tiles go at the end.
@@ -36,8 +41,11 @@ export const T_SNOW = 47, T_ICE = 48, T_PACKED_ICE = 49, T_SANDSTONE_TOP = 50, T
   T_CACTUS = 78, T_CACTUS_BOTTOM = 79, T_LILY_PAD = 80, T_VINES = 81,
   /** The presents' tiles, two per colour (in PRESENTS order): T_PRESENT + 2i the top (ribbon and bow), + 2i + 1 the sides */
   T_PRESENT = 82 /* … 89 */, T_CANDY_CANE = 90, T_PINK_CANDY_CANE = 91, T_GINGERBREAD = 92, T_ICING = 93, T_ICED_GINGERBREAD = 94,
-  T_SNOW_BRICKS = 95, T_FROSTED_GLASS = 96, T_PUZZLE_ICE = 97;
-export const NT = 98;
+  T_SNOW_BRICKS = 95, T_FROSTED_GLASS = 96, T_PUZZLE_ICE = 97,
+  /** Paw prints: the prints alone (clear round them, so they sink into snow) and its icon (the prints in a square of snow) */
+  T_PAW_PRINTS = 98, T_PAW_ICON = 99, T_BAUBLE = 100 /* … 102, in BAUBLES order */, T_FAIRY_LIGHTS = 103, T_WREATH = 104,
+  T_STOCKING = 105, T_STAR = 106;
+export const NT = 107;
 
 /** Which mesh of a chunk a block's faces go into (see streaming.ts / textures.ts). */
 export type RenderPass = 'opaque' | 'cutout' | 'translucent';
@@ -52,12 +60,13 @@ export const M_CUBE = 0, M_TORCH = 1, M_LIQUID = 2, M_CROSS = 3, M_INSET = 4, M_
 const MODELS: Model[] = ['cube', 'torch', 'liquid', 'cross', 'inset', 'flat'];
 /**
  * What holds a block up (plants.ts): nothing; the block below (a solid cube, or more of itself if it
- * stacks); water below; a wall — the block its state faces, or more of it above, facing the same way;
- * or, for a torch, the block its state faces (see torch.ts). Without it, it pops off.
+ * stacks); water below; a wall — the block its state faces (vines: or more vines above, facing the
+ * same way); for a torch, the block its state faces (see torch.ts); or, for something that hangs
+ * (baubles), a solid cube right above. Without it, it pops off.
  */
-export type Support = 'none' | 'floor' | 'water' | 'wall' | 'torch';
-const SUPPORTS: Support[] = ['none', 'floor', 'water', 'wall', 'torch'];
-export const S_NONE = 0, S_FLOOR = 1, S_WATER = 2, S_WALL = 3, S_TORCH = 4;
+export type Support = 'none' | 'floor' | 'water' | 'wall' | 'torch' | 'hang';
+const SUPPORTS: Support[] = ['none', 'floor', 'water', 'wall', 'torch', 'hang'];
+export const S_NONE = 0, S_FLOOR = 1, S_WATER = 2, S_WALL = 3, S_TORCH = 4, S_HANG = 5;
 
 export interface BlockType {
   id: number;
@@ -103,6 +112,8 @@ export interface BlockType {
   slow: number;
   /** It would hurt to touch (the cactus): the player tells playerEvents.touch, a hook for damage */
   hurts: boolean;
+  /** Placed facing the way the player looks (paw prints): a flat block on the floor whose state keeps the turn (plants.ts) */
+  turns: boolean;
 }
 
 export const B: BlockType[] = [];
@@ -111,7 +122,7 @@ const def = (id: number, name: string, top: number, side: number, bot: number, o
   (B[id] = {
     id, name, tex: [side, top, bot], solid: true, opaque: true, renderPass: 'opaque', lightEmission: 0, lightFilter: 15,
     model: 'cube', cullSame: false, jit: 0.06, icon: side, particle: side, slippery: false, support: 'none', stacks: false, waterlog: 'no',
-    replaceable: false, offset: false, slow: 1, hurts: false, ...o,
+    replaceable: false, offset: false, slow: 1, hurts: false, turns: false, ...o,
   });
 /** A plant: not solid, lets light through, crossed quads in the cutout pass, held up by the block below */
 const plant = (id: number, name: string, tile: number, o: Partial<BlockType> = {}) =>
@@ -185,6 +196,15 @@ def(FROSTED_GLASS, 'Frosted Glass', T_FROSTED_GLASS, T_FROSTED_GLASS, T_FROSTED_
   { opaque: false, renderPass: 'cutout', lightFilter: 0, cullSame: true, jit: 0 });
 // puzzle ice: the slide puzzle's floor, a square to a block; slippery like packed ice (the slide comes with the puzzle)
 def(PUZZLE_ICE, 'Puzzle Ice', T_PUZZLE_ICE, T_PUZZLE_ICE, T_PUZZLE_ICE, { jit: 0.02, slippery: true });
+// Christmas decorations: plants in how they're drawn and held up. Their tiles are mostly clear, so the bits that
+// fly off when they break take a solid tile of their colour. The star and the fairy lights glow: drawn at full
+// brightness (textures.ts), never darker in places (no jitter).
+plant(PAW_PRINTS, 'Paw Prints', T_PAW_PRINTS, { model: 'flat', replaceable: true, turns: true, jit: 0.04, icon: T_PAW_ICON, particle: T_SNOW });
+BAUBLES.forEach((name, i) => plant(BAUBLE + i, name, T_BAUBLE + i, { support: 'hang', jit: 0.04, particle: T_PRESENT + [7, 1, 5][i] }));
+plant(FAIRY_LIGHTS, 'Fairy Lights', T_FAIRY_LIGHTS, { model: 'flat', support: 'wall', lightEmission: 8, jit: 0, particle: T_LEAVES });
+plant(WREATH, 'Wreath', T_WREATH, { model: 'flat', support: 'wall', jit: 0.05, particle: T_LEAVES });
+plant(STOCKING, 'Stocking', T_STOCKING, { model: 'flat', support: 'wall', jit: 0.05, particle: T_PRESENT + 1 });
+plant(STAR, 'Star', T_STAR, { lightEmission: 15, jit: 0, particle: T_PRESENT + 5 });
 
 // The hotbar a new world starts with (and every world saved before save version 7 had: their slot
 // numbers point at these). The block picker puts other blocks in its slots; each world keeps its own.
@@ -201,7 +221,7 @@ export const PICKER: readonly { name: string; blocks: readonly number[] }[] = [
   { name: 'Light', blocks: [TORCH, GLOW_CRYSTAL] },
   { name: 'Liquids', blocks: [WATER] },
   { name: 'Christmas', blocks: [...PRESENTS.map((_, i) => PRESENT + i), CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICING, ICED_GINGERBREAD,
-    SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE] },
+    SNOW_BRICKS, FROSTED_GLASS, PUZZLE_ICE, STAR, ...BAUBLES.map((_, i) => BAUBLE + i), FAIRY_LIGHTS, WREATH, STOCKING, PAW_PRINTS] },
 ];
 
 // Tiles with no "up" direction get a random rotation per face, which hides tiling repetition
@@ -240,6 +260,8 @@ export const MODEL = table((b) => MODELS.indexOf(b.model));
 export const SUPPORT = table((b) => SUPPORTS.indexOf(b.support));
 /** Stands on more of itself */
 export const STACKS = table((b) => b.stacks);
+/** Placed facing the way the player looks (its state keeps the turn) */
+export const TURNS = table((b) => b.turns);
 /** Can sit inside water (WATERLOGGED) */
 export const LOGGABLE = table((b) => b.waterlog !== 'no');
 /** Drawn off the middle of its block (plants.ts plantOffset) */

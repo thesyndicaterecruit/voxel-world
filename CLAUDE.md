@@ -10,7 +10,7 @@ are islands of 14 biomes (meadows, forests, snowy peaks, deserts, badlands, jung
 volcano, three kinds of ocean…) with the sea at y = 48, whose grass, leaves and water take their
 biome's colours; worlds made before the world grew taller keep the first generator (sea at y = 20)
 so their ground never shifts. You walk around with an on-screen joystick, look by dragging, and
-break/place 53 block types (glass, torches, ice, ores, a glowing crystal, plants, presents and candy canes among them), any
+break/place 61 block types (glass, torches, ice, ores, a glowing crystal, plants, presents, candy canes and Christmas decorations among them), any
 of them put in the hotbar from a creative block picker. Worlds are save files in IndexedDB: edited chunks
 plus the player state and hotbar, picked
 from a list on the start card. The sea and inland lakes are water blocks. Mid-range Android phones in
@@ -57,8 +57,9 @@ src/
   shading.ts         Light → brightness: shared light uniforms (daylight, sky tint, floor, Brightness, flicker
                      time), the chunk shader's light code, lightColor() for CPU-lit things
   torch.ts           Torch facing (block state), support offsets, hit boxes, the stick-and-flame model (pure)
-  plants.ts          Blocks that aren't cubes (pure): plant offsets, hit boxes (blockBox), what holds a block up
-                     (holds) and popping what nothing holds any more (popUnsupported)
+  plants.ts          Blocks that aren't cubes (pure): plant offsets, hit boxes (blockBox), flat blocks' state (flatWall,
+                     flatTurn, flatTurnFor), what holds a block up (holds) and popping what nothing holds any more
+                     (popUnsupported)
   light.ts           Skylight + block light (pure): lighting a chunk from scratch (worker), relightMany() after edits
   water.ts           Flowing water (main thread): ticks, updates only where something disturbed it, the flow rules,
                      pending updates for saving
@@ -111,10 +112,12 @@ src/
                      Brightness, Day length, Always day, clock, Teleport to a biome, save & exit), fullscreen, start
                      screen + world list, error display
   style.css          All styles
-tests/               Unit tests of the pure modules (Vitest): registry + face culling, tiles (painted in Node: the ones
-                     before the Christmas tiles unchanged, how the Christmas tiles look), plants (popping off when
-                     unsupported, hit boxes, offsets), light (spreading, removal,
-                     chunk borders, incremental = fresh, single and batched, high up), mesher (water surfaces too),
+tests/               Unit tests of the pure modules (Vitest): registry + face culling, tiles (painted in Node: every
+                     approved tile unchanged, how the Christmas tiles look), plants (popping off when unsupported,
+                     every Christmas decoration in every state, curtains of vines only, hit boxes, offsets, turning
+                     the way the player looks), light (spreading, removal, chunk borders, incremental = fresh,
+                     single and batched, high up, the star and fairy lights), mesher (water surfaces too, lily pads
+                     and vines unchanged, paw prints turned by their state, the star at full brightness),
                      sections (meshing, splicing, counts, light worked out only as high as needed, water falling
                      through them), torch geometry, save format + migration, RLE, mipmaps, generation (generator
                      1's fingerprints, determinism, sea fill, lakes that hold), biomes (data, every biome in 3 of
@@ -136,7 +139,10 @@ e2e/                 Browser tests (Playwright, phone emulation): game.ts drives
                      at night, frame time looking out to sea, flow carrying on after a reload), biomes (the menu
                      teleport by touch, then every biome pictured from the air; generation time per chunk), the
                      Christmas blocks (their tab by touch, in portrait too, placed and broken; by day, at sunset
-                     and at night, each the colour it should be, frosted glass half see-through)
+                     and at night, each the colour it should be, frosted glass half see-through), the Christmas
+                     decorations (a bauble hung under leaves, the star on a tree, paw prints the way you look,
+                     things on a wall, each broken by its own hit box and popping off with its support; a
+                     decorated tree by day and at night, the star and fairy lights glowing, a paw-print trail)
 docs/                Pictures for pull requests (not part of the game); CHRISTMAS_PLAN.md (the current plan) and
                      CHRISTMAS_PROMPTS.md (one prompt per session for it)
 vitest.config.ts, playwright.config.ts
@@ -261,8 +267,9 @@ light changed, ahead of everything else.
 - **Other determinism:** clouds come from `mulberry(seed ^ …)`, so the same seed gives the same sky.
   Texture painters share `trand` (fixed seed), so `TILE_PAINTERS` order in `textures.ts` must match
   the `T_*` ids in `blocks.ts`; don't add `trand()` calls in the middle without accepting that every
-  texture changes. `tests/textures.test.ts` paints every tile in Node (`paintTile`) and keeps a
-  fingerprint of the tiles before the Christmas ones, so a painter inserted in the middle fails it.
+  texture changes. `tests/textures.test.ts` paints every tile in Node (`paintTile`) and keeps
+  fingerprints of every tile approved so far (up to the Christmas cubes'), so a painter inserted in
+  the middle fails it; extend it once a milestone's new tiles are approved.
 - **Water:** the sea and lakes are `WATER` blocks (not solid, translucent pass, `lightFilter` 2 so
   deep water gets darker, model 'liquid'). Generation fills the air below the sea level
   (`world.seaLevel`, the generator's) with still water (sources); generator 1 also digs lakes into
@@ -334,7 +341,9 @@ light changed, ahead of everything else.
   moss, basalt, obsidian, coal/copper/iron/gold ore, glow crystal — 37–41 plants: tall grass,
   seagrass, cactus, lily pad, vines — 42–53 Christmas cubes: presents in 4 colours (`PRESENT` + 0 … 3,
   red, green, gold, pink; `PRESENTS` their names), candy cane and pink candy cane blocks, gingerbread,
-  icing, gingerbread with icing, snow bricks, frosted glass, puzzle ice), a name, a tile per face kind
+  icing, gingerbread with icing, snow bricks, frosted glass, puzzle ice — 54–61 Christmas decorations:
+  paw prints, baubles in 3 colours (`BAUBLE` + 0 … 2, pink, red, gold; `BAUBLES`), fairy lights,
+  wreath, stocking, star), a name, a tile per face kind
   (sandstone has a top, sides and bottom; basalt and podzol a top and sides; a present a top with a bow
   — also its icon — and sides with a ribbon, a pair of tiles per colour from `T_PRESENT`; gingerbread
   with icing has icing's top, gingerbread's bottom and sides of its own, drips painted down them),
@@ -346,9 +355,10 @@ light changed, ahead of everything else.
   (hotbar tile), `particle` (tile of the bits that fly off when it breaks), `slippery` (the feet
   barely grip: ice, packed ice and puzzle ice, see player.ts), optional `fastTex` (tiles when meshed as an opaque
   cube: leaves with Fancy leaves off), and for plants (see Plants) `support` ('none' | 'floor' |
-  'water' | 'wall' | 'torch'), `stacks`, `waterlog` ('no' | 'can' | 'only'), `replaceable` (building
+  'water' | 'wall' | 'torch' | 'hang'), `stacks`, `waterlog` ('no' | 'can' | 'only'), `replaceable` (building
   there replaces it), `offset` (drawn off the middle of its block), `slow` (× the player's speed in
-  it) and `hurts` (touching it tells `playerEvents.touch`: the hook for damage).
+  it), `hurts` (touching it tells `playerEvents.touch`: the hook for damage) and `turns` (placed facing
+  the way the player looks: paw prints).
   `lightEmission` and `lightFilter` drive the light (see Light); `lightFilter` also decides which
   cubes darken AO corners. Ice is a cube in the translucent pass (like water: `lightFilter` 2,
   `cullSame`, no jitter so its top reflects the sky in the water shader, which animates only the
@@ -357,7 +367,11 @@ light changed, ahead of everything else.
   Frosted glass is glass in everything but its tile (cutout, `cullSame`, `lightFilter` 0): a frosted
   band round a clear window, every texel solid or clear (the cutout pass is alpha-tested), so it
   shows part of what's behind it. Puzzle ice is an opaque cube, a bevelled square to a block so a
-  floor of it reads as a grid, `slippery` like packed ice until Milestone 9 gives it the slide. Hot loops use the `Uint8Array` tables
+  floor of it reads as a grid, `slippery` like packed ice until Milestone 9 gives it the slide. The
+  Christmas decorations are plants in how they're drawn and held up (see Plants): their tiles are
+  mostly clear, so their `particle` is a solid tile of their colour (paw prints: snow; their `icon` is
+  the prints in a square of snow). The star (light 15) and the fairy lights (8) glow: their tiles are
+  `TILE_KIND` 3 and they have no jitter. Hot loops use the `Uint8Array` tables
   (`SOLID`, `OPAQUE`, `OCCLUDES`, `TARGETABLE`, `REPLACEABLE` (air, liquids, plants that make way),
   `BUILD_ON` (cubes and the cactus), `SUPPORT`, `LOGGABLE`, …) instead of the objects. Face culling is
   `faceHidden(self, neighbour)`: an opaque neighbour hides a face, so does a same-type neighbour for
@@ -371,24 +385,34 @@ light changed, ahead of everything else.
   (`support: 'torch'`, see Plants). The model is built in texels (1/32 block, uv = position
   in the torch tile), tilted 22.5° and turned per state in `TORCH_MODELS`; the mesher copies it into
   the cutout pass (flame and tip full-bright), and the placement ghost uses it too.
-- **Plants** (`plants.ts`, the models in `mesher.ts`): *cross* (grass, seagrass): two quads corner to
-  corner `CROSS_IN` in from the block's corners, each seen from both sides (the two windings share
-  their 4 vertices), in the cutout pass, lit by the light in their own block, 0.78 as bright at the
-  foot, no AO; `offset` plants sit up to 0.2 off the middle by a hash of where they are
+- **Plants** (`plants.ts`, the models in `mesher.ts`): *cross* (grass, seagrass, baubles, the star):
+  two quads corner to corner `CROSS_IN` in from the block's corners, each seen from both sides (the two
+  windings share their 4 vertices), in the cutout pass, lit by the light in their own block, 0.78 as
+  bright at the foot (not a block that gives off light: the star), no AO; `offset` plants sit up to 0.2 off the middle by a hash of where they are
   (`plantOffset`, never toward −x/−z out of their chunk: vertex positions are unsigned). *inset* (the
   cactus): a box `INSET` (1/16) in from its block's sides, its top and bottom hidden under more of it
-  or an opaque block, flat-lit. *flat* (lily pads, vines): one quad seen from both sides — state 0 on
-  the floor (`FLAT_UP` above it), or on the water's surface for a block held up by water (`ON_WATER`
-  below its own block's floor), turned one of four ways; states 1–4 against the wall at −x, +x, −z,
-  +z (`TORCH_SUPPORT`), `FLAT_OUT` from it. Hit boxes (`blockBox`, raycast and outline) are small,
-  so a tap past a plant reaches the block behind. *Support:* `holds()` — 'floor' needs a solid cube
-  below (or more of itself if it `stacks`: the cactus), 'water' water below, 'wall' a solid cube
-  where its state faces or the same vine above facing the same way (curtains hang), 'torch' a torch's
-  rule. After every change `popUnsupported` pops what lost its support, and what that held up in turn
+  or an opaque block, flat-lit. *flat* (lily pads, vines, paw prints, fairy lights, wreaths,
+  stockings): one quad seen from both sides — state 0 on the floor (`FLAT_UP` above it), or on the
+  water's surface for a block held up by water (`ON_WATER` below its own block's floor), turned one
+  of four ways by a hash of where it is; states 1–4 against the wall at −x, +x, −z, +z
+  (`TORCH_SUPPORT`), `FLAT_OUT` from it; states 5–8 (`FLAT_TURNED` + 0 … 3) on the floor with its
+  tile's top toward −z, −x, +z, +x (`FLAT_ROT` in the mesher, the ghost the same): a block that
+  `turns` (paw prints) takes `flatTurnFor(player.yaw)`, the nearest of the four to where the player
+  looks, however far round the yaw is wound. Read the state with `flatWall` / `flatTurn` (the low 4
+  bits; never `& 7`, which would read 8 as 0). Hit boxes (`blockBox`, raycast and outline)
+  are small, so a tap past a plant reaches the block behind; a bauble's is round its ball, up to the
+  block it hangs from. *Support:* `holds()` — 'floor' needs a solid cube below (or more of itself if
+  it `stacks`: the cactus; leaves count, so the star tops a tree), 'water' water below, 'wall' a
+  solid cube where its state faces (vines also hang from the same vine above facing the same way:
+  curtains; a stocking or a wreath always needs its wall), 'torch' a torch's rule, 'hang' (baubles) a
+  solid cube right above (leaves, glass, a present). After every change `popUnsupported` pops what lost its support, and what that held up in turn
   (a waterlogged plant leaves its water). *Placing* (`interact.ts`): a replaceable target (grass,
   seagrass, vines) is replaced where it stands; nothing is built against a torch or a plant; a plant
   placed in water is waterlogged if it can be (`waterlog` 'can'/'only'), refused if not, and a
-  water-only plant is refused out of it; a lily pad aims at the water's surface (`aim(true)`).
+  water-only plant is refused out of it; a lily pad aims at the water's surface (`aim(true)`). A
+  hanging block goes wherever there's a solid cube above the spot (a tap on the underside of leaves;
+  against a side too, with a cube above the new spot), else "Hangs under a block". The Christmas
+  tab's blocks can't go under water ("Can't go under water"; plants "don't grow" there).
 - **Fancy leaves** (menu toggle, default on, saved in localStorage): on, leaves use the see-through
   `T_LEAVES_CUT` tile in the cutout pass; off, `streamer.setOpaqueLeaves(true)` meshes them as opaque
   cubes with the old solid tile (`fastTex`), culled like stone (`faceHidden(…, opaqueLeaves)`).
@@ -429,7 +453,7 @@ light changed, ahead of everything else.
   worked out from the blocks. Rules: a block's `lightFilter` is what light loses entering it (15:
   none gets in). Skylight enters the top layer at 15 and, straight down, loses only each block's
   filter (open air stays 15 to the ground, leaves take 1, water 2); any other way it loses max(1,
-  filter) per block. Block light starts at the emitter's `lightEmission` (torch 14) and loses max(1,
+  filter) per block. Block light starts at the emitter's `lightEmission` (torch 14, the star 15) and loses max(1,
   filter) per block every way. Light reaches at most 15 blocks, so a chunk is lit exactly from its
   3×3 neighbourhood: `lightChunk` in a worker, once it and its 8 neighbours are loaded. Above
   everything built or grown it is open sky (15, no block light), so lighting only works up to 16

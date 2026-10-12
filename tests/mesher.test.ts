@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { CS, H } from '../src/config';
 import { STONE, GLASS, LEAVES, WATER, TORCH, T_WATER_STILL, T_WATER_FLOW, FALLING, TALL_GRASS, SEAGRASS, CACTUS, LILY_PAD, VINES,
   WATERLOGGED, T_TALL_GRASS, T_CACTUS, PRESENT, T_PRESENT, FROSTED_GLASS, PUZZLE_ICE, ICED_GINGERBREAD, T_ICING, T_ICED_GINGERBREAD,
-  T_GINGERBREAD } from '../src/blocks';
-import { INSET, FLAT_OUT, ON_WATER, CROSS_IN } from '../src/plants';
+  T_GINGERBREAD, PAW_PRINTS, STAR, BAUBLE, T_BAUBLE, T_STAR } from '../src/blocks';
+import { INSET, FLAT_OUT, ON_WATER, CROSS_IN, FLAT_TURNED } from '../src/plants';
 import { PAD_VOL, PI, FP, TEX, meshChunk, type PassMesh } from '../src/mesher';
 import { TORCH_MODELS } from '../src/torch';
 
@@ -254,5 +254,55 @@ describe('plants', () => {
     for (const v of verts(mesh([[4, 6, 4, VINES]], false, [[4, 6, 4, 1]])[1]!)) expect(v[0]).toBeCloseTo(4 + FLAT_OUT, 1);
     for (const v of verts(mesh([[4, 6, 4, VINES]], false, [[4, 6, 4, 4]])[1]!)) expect(v[2]).toBeCloseTo(5 - FLAT_OUT, 1);
     expect(CROSS_IN).toBeGreaterThan(0);
+  });
+
+  it('draws lily pads (state 0: turned by a hash of where they are) and vines exactly as they always were', () => {
+    // a pond with lily pads at many spots, and vines on every side of stone posts: the fingerprint of
+    // their mesh was taken before flat blocks could be turned by their state (Milestone 1b)
+    const blocks: number[][] = [], states: number[][] = [];
+    for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
+      blocks.push([x, 4, z, WATER]);
+      if ((x + z) % 3 === 0) blocks.push([x, 5, z, LILY_PAD]);
+    }
+    for (let z = 1; z < CS; z += 3) for (let x = 1; x < CS; x += 3) {
+      blocks.push([x, 8, z, STONE]);
+      for (const [dx, dz, s] of [[-1, 0, 2], [1, 0, 1], [0, -1, 4], [0, 1, 3]]) {
+        if (x + dx < 0 || z + dz < 0 || x + dx >= CS || z + dz >= CS) continue;
+        blocks.push([x + dx, 8, z + dz, VINES]); states.push([x + dx, 8, z + dz, s]);
+      }
+    }
+    const m = mesh(blocks, false, states, undefined, [256, 256], 0)[1]!;
+    let h = 0x811c9dc5;
+    for (const a of [m.pos, m.col, m.uv, m.layer, m.index]) for (let i = 0; i < a.length; i++) h = Math.imul(h ^ a[i], 16777619);
+    expect((h >>> 0).toString(16)).toBe('d01e4729');
+    // the pads come first (the lower layer), 4 corners each: all four turns are there
+    const pads = blocks.filter((b) => b[3] === LILY_PAD).length, turns = new Set<string>();
+    for (let k = 0; k < pads; k++) turns.add(`${m.uv[k * 8]},${m.uv[k * 8 + 1]}`);
+    expect(turns.size).toBe(4);
+  });
+
+  it('turns paw prints the way their state says: the top of their tile toward −z, −x, +z, +x', () => {
+    const WAYS = [[0, -1], [-1, 0], [0, 1], [1, 0]];
+    for (let turn = 0; turn < 4; turn++) {
+      const vs = verts(mesh([[4, 5, 4, STONE], [4, 6, 4, PAW_PRINTS]], false, [[4, 6, 4, FLAT_TURNED + turn]])[1]!);
+      expect(vs.length).toBe(4);                                   // one quad, seen from both sides (two windings, the same corners)
+      for (const v of vs) expect(v[1]).toBeCloseTo(6, 1);          // on the floor
+      const top = vs.filter((v) => v[4] === TEX);                 // the corners at the top of the tile (v = TEX)
+      expect(top.length).toBe(2);
+      const mx = (top[0][0] + top[1][0]) / 2 - 4.5, mz = (top[0][2] + top[1][2]) / 2 - 4.5;
+      expect([Math.round(mx * 2), Math.round(mz * 2)], `turn ${turn}`).toEqual(WAYS[turn]);
+    }
+  });
+
+  it('hangs a bauble as crossed quads, and draws a star at full brightness all the way down', () => {
+    expect(quads([[4, 7, 4, LEAVES], [4, 6, 4, BAUBLE]])[1]).toBeGreaterThanOrEqual(4);
+    expect(verts(mesh([[4, 6, 4, BAUBLE + 2]])[1]!).every((v) => v[5] === T_BAUBLE + 2)).toBe(true);
+    const star = mesh([[4, 5, 4, STONE], [4, 6, 4, STAR]])[1]!;
+    expect(star.layer.every((l) => l === T_STAR)).toBe(true);
+    for (let i = 0; i < star.col.length; i += 3) expect(star.col[i]).toBe(255);   // no jitter, not darker at its foot
+    // other plants still are darker at the foot
+    const grass = mesh([[4, 5, 4, STONE], [4, 6, 4, TALL_GRASS]])[1]!, shades = new Set<number>();
+    for (let i = 0; i < grass.col.length; i += 3) shades.add(grass.col[i]);
+    expect(shades.size).toBe(2);
   });
 });

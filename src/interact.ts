@@ -1,11 +1,11 @@
 import { H } from './config';
-import { AIR, BEDROCK, GRASS, DIRT, WATER, B, REPLACEABLE, BUILD_ON, SOLID, OPAQUE, MODEL, SUPPORT, LOGGABLE, WATERLOGGED, M_TORCH,
-  M_LIQUID, S_WATER, S_WALL, S_TORCH } from './blocks';
+import { AIR, BEDROCK, GRASS, DIRT, WATER, B, REPLACEABLE, BUILD_ON, SOLID, OPAQUE, MODEL, SUPPORT, LOGGABLE, WATERLOGGED, TURNS, PICKER,
+  M_TORCH, M_LIQUID, S_WATER, S_WALL, S_TORCH } from './blocks';
 import { world, type Hit } from './world';
-import { P, V, aim, collides, overlapsPlayer } from './player';
+import { P, V, player, aim, collides, overlapsPlayer } from './player';
 import { hud, toast } from './ui';
 import { torchStateFor } from './torch';
-import { blockBox, holds } from './plants';
+import { blockBox, holds, flatTurnFor, FLAT_TURNED } from './plants';
 import type { Effects } from './effects';
 
 /* ===================== BREAK / PLACE ===================== */
@@ -15,7 +15,9 @@ import type { Effects } from './effects';
 const buzz = (ms: number) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) { /* ignore */ } };
 const UNIT = [0, 0, 0, 1, 1, 1];
 /** Why a block that needs holding up can't stay where it was put, by what it needs (SUPPORT) */
-const UNHELD = ['', 'Needs solid ground under it', 'Goes on water', 'Goes on walls', 'Torches need a solid block'];
+const UNHELD = ['', 'Needs solid ground under it', 'Goes on water', 'Goes on walls', 'Torches need a solid block', 'Hangs under a block'];
+/** The Christmas tab's blocks: decorations, which don't "grow" */
+const DECOR = new Set(PICKER.find((t) => t.name === 'Christmas')!.blocks);
 
 export interface Interaction {
   /** Break or place (depending on the HUD mode) at the crosshair. */
@@ -42,10 +44,13 @@ function placement(h: Hit, id: number): { x: number; y: number; z: number; state
     state = torchStateFor(h.nx, h.ny, h.nz);
     if (state < 0 || (sup === S_WALL && state === 0)) return sup === S_WALL ? UNHELD[S_WALL] : 'Torches go on top of blocks or on walls';
   }
+  // paw prints point the way the player is looking
+  if (TURNS[id]) state = FLAT_TURNED + flatTurnFor(player.yaw);
   if (MODEL[id] === M_TORCH && wet) return "Torches don't burn under water";
   if (!SOLID[id] && b.model !== 'liquid') {
-    // in water, a plant that can sit there is waterlogged; the others don't grow there, and water plants grow nowhere else
-    if (wet && b.waterlog === 'no') return sup === S_WATER ? UNHELD[S_WATER] : "Doesn't grow under water";
+    // in water, a plant that can sit there is waterlogged; the others don't grow there (and decorations don't go
+    // there), and water plants grow nowhere else
+    if (wet && b.waterlog === 'no') return sup === S_WATER ? UNHELD[S_WATER] : DECOR.has(id) ? "Can't go under water" : "Doesn't grow under water";
     if (!wet && b.waterlog === 'only') return 'Only grows under water';
     if (wet) state |= WATERLOGGED;
   }
