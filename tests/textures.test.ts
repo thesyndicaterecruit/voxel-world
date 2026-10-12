@@ -3,6 +3,7 @@ import { B, NT, PRESENT, PRESENTS, CANDY_CANE, PINK_CANDY_CANE, GINGERBREAD, ICI
   PUZZLE_ICE, SNOW, T_PRESENT, PAW_PRINTS, BAUBLE, BAUBLES, FAIRY_LIGHTS, WREATH, STOCKING, STAR, T_PAW_PRINTS, T_PAW_ICON, T_BAUBLE,
   T_FAIRY_LIGHTS, T_STAR } from '../src/blocks';
 import { TILE_PAINTERS, paintTile } from '../src/textures';
+import { blockBox, CROSS_IN } from '../src/plants';
 
 // Every tile painted the way the game paints them (in order: they share one random sequence), as
 // 32 × 32 RGBA, rows top down.
@@ -65,12 +66,31 @@ describe('the Christmas decorations\' tiles', () => {
     expect(share(T_PAW_PRINTS, solid)).toBeLessThan(0.25);
     expect(share(T_PAW_ICON, solid)).toBe(1);
     expect(all((x, y) => !prints(x, y) || px(T_PAW_ICON, x, y).every((v, i) => v === px(T_PAW_PRINTS, x, y)[i]))).toBe(true);
-    // pressed in: blue-grey, darker than the snow round them
-    const inPrint = mean(T_PAW_PRINTS, 4, 18, 15, 29), snow = mean(B[SNOW].tex[0]);
-    expect(luma(inPrint)).toBeLessThan(luma(snow));
+    // pressed in: the prints (their solid texels) blue-grey, darker than the snow round them
+    const sum = [0, 0, 0];
+    let n = 0;
+    for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) if (prints(x, y)) { px(T_PAW_PRINTS, x, y).slice(0, 3).forEach((v, i) => (sum[i] += v)); n++; }
+    const inPrint = sum.map((v) => v / n), snow = mean(B[SNOW].tex[0]);
+    expect(luma(inPrint)).toBeLessThan(luma(snow) - 30);
+    expect(inPrint[2]).toBeGreaterThan(inPrint[0]);
     // two prints a tile, one in each half, so a trail keeps step from block to block
     expect(share(T_PAW_PRINTS, solid, 0, 16, 16, 32)).toBeGreaterThan(0.1);
     expect(share(T_PAW_PRINTS, solid, 16, 0, 32, 16)).toBeGreaterThan(0.1);
+  });
+
+  it('hang each bauble inside its hit box: a tap anywhere on the ball reaches it', () => {
+    for (let i = 0; i < BAUBLES.length; i++) {
+      const t = T_BAUBLE + i, box = blockBox(BAUBLE + i, 0, 1, 0, 0, 0)!;
+      let x0 = TS, x1 = -1, y1 = -1;
+      for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) if (solid(px(t, x, y))) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+      // the tile spans the crossed quads' diagonal (CROSS_IN in from the corners) and the block's height
+      const across = (u: number) => CROSS_IN + (1 - 2 * CROSS_IN) * u;
+      expect(box[1], BAUBLES[i]).toBeLessThanOrEqual(1 - (y1 + 1) / TS);    // down to the bottom of the ball
+      for (const [lo, hi] of [[box[0], box[3]], [box[2], box[5]]]) {
+        expect(lo).toBeLessThanOrEqual(across(x0 / TS));
+        expect(hi).toBeGreaterThanOrEqual(across((x1 + 1) / TS));
+      }
+    }
   });
 
   it('paint each bauble its colour, the star gold, and the fairy lights in many colours along a wire that joins up', () => {

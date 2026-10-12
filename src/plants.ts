@@ -37,7 +37,7 @@ export const flatTurn = (st: number) => { const s = st & 15; return s >= FLAT_TU
 /** The turn (see flatTurn) of a block placed by a player looking along `yaw` (0 looks toward −z), however far round it is wound */
 export const flatTurnFor = (yaw: number) => Math.round(yaw / (Math.PI / 2)) & 3;
 /** A hanging block's hit box: round the ball, up to the block it hangs from */
-const HANG_BOX = [0.28, 0.3, 0.28, 0.72, 1, 0.72];
+const HANG_BOX = [0.26, 0.18, 0.26, 0.74, 1, 0.74];
 /** How far an offset plant (grass, flowers) may sit off the middle of its block, each way */
 const OFF = 0.2;
 const K_OFF = 0x2d8f61a3;

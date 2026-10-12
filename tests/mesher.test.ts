@@ -295,7 +295,12 @@ describe('plants', () => {
   });
 
   it('hangs a bauble as crossed quads, and draws a star at full brightness all the way down', () => {
-    expect(quads([[4, 7, 4, LEAVES], [4, 6, 4, BAUBLE]])[1]).toBeGreaterThanOrEqual(4);
+    // two quads corner to corner, each seen from both sides; under stone, the stone's underside still shows
+    expect(quads([[4, 6, 4, BAUBLE]])).toEqual([0, 4, 0]);
+    expect(quads([[4, 7, 4, STONE], [4, 6, 4, BAUBLE]])).toEqual([6, 4, 0]);
+    const corners = new Set(verts(mesh([[4, 6, 4, BAUBLE]])[1]!).map((v) => `${v[0].toFixed(2)},${v[2].toFixed(2)}`));
+    const at = (v: number) => (Math.round(v * FP) / FP).toFixed(2), a = at(4 + CROSS_IN), c = at(5 - CROSS_IN);   // positions are in 1/FP
+    expect(corners).toEqual(new Set([`${a},${a}`, `${c},${c}`, `${a},${c}`, `${c},${a}`]));
     expect(verts(mesh([[4, 6, 4, BAUBLE + 2]])[1]!).every((v) => v[5] === T_BAUBLE + 2)).toBe(true);
     const star = mesh([[4, 5, 4, STONE], [4, 6, 4, STAR]])[1]!;
     expect(star.layer.every((l) => l === T_STAR)).toBe(true);

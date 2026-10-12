@@ -140,7 +140,7 @@ test('the decorations by touch: a bauble under leaves, the star on a tree, paw p
   };
   // a tap just under the bauble's ball doesn't hit it
   await stand(page, sx + 0.5, Y, sz - 0.5);
-  expect((await aimAt(page, [sx - 0.5, Y + 1.15, sz - 0.5]))?.[6]).not.toBe(BAUBLE);
+  expect((await aimAt(page, [sx - 0.5, Y + 0.9, sz - 0.5]))?.[6]).not.toBe(BAUBLE);
   await breakAt([sx + 0.5, Y, sz - 0.5], [sx - 0.5, Y + 1.55, sz - 0.5], [sx - 1, Y + 1, sz - 1], BAUBLE);
   await breakAt([sx + 1.5, Y + 3, sz - 2.5], [sx - 2.5, Y + 4.45, sz - 2.5], [sx - 3, Y + 4, sz - 3], STAR);
   await breakAt(P, [sx + 1.5, Y + 0.05, sz + 3.5], [sx + 1, Y, sz + 3], PAW_PRINTS);
@@ -212,6 +212,7 @@ test('a decorated tree by day and at night: baubles, the star and fairy lights g
   await viewShot(page, 'paw-prints');
 
   // the star and the fairy lights stay bright at night; the snow round them doesn't
+  const LIGHTS_BOX = [0.4, 0.45, 0.6, 0.65];
   const glow = async (name: string, from: number[], at: number[], box = [0.48, 0.45, 0.52, 0.55]) => {
     await stand(page, from[0], from[1], from[2]);
     await aimAt(page, at);
@@ -221,13 +222,19 @@ test('a decorated tree by day and at night: baubles, the star and fairy lights g
     await page.evaluate((t) => window.__voxel.setTime(t), t);
     await ticks(page, 2);
     await glow(`star${t}`, [sx + 1.5, Y + 3, sz - 2.5], [sx - 2.5, Y + 4.6, sz - 2.5], [0.49, 0.47, 0.51, 0.53]);
-    await glow(`lights${t}`, [sx - 3.5, Y, sz + 3.5], [sx - 5, Y + 3.5, sz + 3.5], [0.4, 0.35, 0.6, 0.65]);
+    // below the top of the wall: no night sky (and its stars) in the box
+    await glow(`lights${t}`, [sx - 3.5, Y, sz + 3.5], [sx - 5, Y + 3.5, sz + 3.5], LIGHTS_BOX);
     await glow(`snow${t}`, [sx + 1.5, Y, sz + 0.5], [sx + 0.5, Y, sz + 0.5]);
   }
   const star = [luma(await meanColor(page, `star${NOON}`)), luma(await meanColor(page, `star${MIDNIGHT}`))];
   const snow = [luma(await meanColor(page, `snow${NOON}`)), luma(await meanColor(page, `snow${MIDNIGHT}`))];
   expect(star[1]).toBeGreaterThan(star[0] * 0.85);
   expect(snow[1]).toBeLessThan(snow[0] * 0.7);
+  // the bulbs shine at full brightness at midnight; the same view without them has nothing as bright
   expect(await brightest(page, `lights${MIDNIGHT}`)).toBeGreaterThan(200);
+  await page.evaluate(([x, y, z]) => { for (let k = z + 1; k <= z + 5; k++) window.__voxel.setBlock(x, y, k, 0); }, [sx - 5, Y + 3, sz]);
+  await edited(page);
+  await glow('bare', [sx - 3.5, Y, sz + 3.5], [sx - 5, Y + 3.5, sz + 3.5], LIGHTS_BOX);
+  expect(await brightest(page, 'bare')).toBeLessThan(150);
   expect(errors).toEqual([]);
 });

@@ -177,7 +177,7 @@ describe('Christmas decorations', () => {
     for (const id of BAUBLES.map((_, i) => BAUBLE + i)) {
       const b = blockBox(id, 0, 1, 0, 0, 0)!;
       expect(b[4]).toBe(1);                                        // up to the block above
-      expect(b[1]).toBeGreaterThan(0.2);                           // nothing to hit at its foot
+      expect(b[1]).toBeGreaterThan(0.1);                           // nothing to hit at its foot
       expect(b[3] - b[0]).toBeLessThan(0.5);                       // small: a tap beside it reaches the leaves
     }
     for (let turn = 0; turn < 4; turn++) expect(blockBox(PAW_PRINTS, FLAT_TURNED + turn, 1, 0, 0, 0)).toEqual([0, 0, 0, 1, 0.1, 1]);
