@@ -22,7 +22,7 @@ const TILT = (30 * Math.PI) / 180;
 /** Skylight at night (moonlight): enough to see by */
 const NIGHT_LIGHT = 0.38;
 /** Soft fog (where it snows) starts this much nearer the camera */
-const SOFT = 0.5;
+const SOFT = 0.35;
 
 const col = (hex: number) => new THREE.Color(hex);
 // colours by day, around sunrise/sunset, and at night

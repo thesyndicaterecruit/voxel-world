@@ -456,8 +456,8 @@ light changed, ahead of everything else.
   uploaded on frames when it changed; the shader reads a flake's column and hides it below the
   ceiling, fading it out over the last half block. Under water (the camera) nothing is drawn.
   *Winter atmosphere:* where it snows, `winterHaze` mixes a pale, cold haze (`WINTER_HAZE`,
-  `WINTER_AMOUNT` 0.22 at full snow) into the biomes' and `env.setHaze(…, soft)` starts the fog
-  nearer (up to half as far: `SOFT`), so a snowy place looks colder and softer, darkening with the
+  `WINTER_AMOUNT` 0.18 at full snow) into the biomes' and `env.setHaze(…, soft)` starts the fog
+  nearer (by up to a third: `SOFT`), so a snowy place looks colder and softer, darkening with the
   sky at night as the haze does.
 - **Hotbar:** 11 slots of 36 px that scroll sideways when they don't fit (portrait phones). Touches
   that start on `#hotbar` belong to it (`input.ts`), never to the joystick or look zones: a swipe

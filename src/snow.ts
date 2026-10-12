@@ -124,7 +124,7 @@ export function flakeLayout(n: number, seed: number): { pos: Float32Array; flake
 
 /* ---------- the winter haze ---------- */
 /** Where it snows, the fog and sky lean toward this pale, cold colour, this much at full snow */
-export const WINTER_HAZE = 0xd6e0ec, WINTER_AMOUNT = 0.22;
+export const WINTER_HAZE = 0xd6e0ec, WINTER_AMOUNT = 0.18;
 /**
  * The haze with winter's mixed in for snow amount `snow` (0–1): `rgb` (0–1 a channel) is the haze
  * colour, changed in place, and `amount` how much of it there is; returns the new amount.

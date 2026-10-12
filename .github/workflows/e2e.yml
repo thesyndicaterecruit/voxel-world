@@ -18,7 +18,8 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # the suite takes 20 minutes or so on a runner; room for a retry and the next milestones' tests
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -29,7 +30,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm run test:e2e
-      # the report holds the screenshots (day and night: e2e/lighting.spec.ts; water: e2e/water.spec.ts)
+      # the report holds the screenshots (day and night: e2e/lighting.spec.ts; water: e2e/water.spec.ts;
+      # snow: e2e/snow.spec.ts)
       # and, after a failure, traces
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
